@@ -1,0 +1,207 @@
+import { EventEmitter } from "node:events";
+import { AppServerClient } from "./app-server-client.js";
+import { CommandRouter } from "./command-router.js";
+import { ConfigStore } from "./config-store.js";
+import { EventBuffer } from "./event-buffer.js";
+import { Logger } from "./logger.js";
+import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
+import { RelayClient } from "./relay-client.js";
+import { filterThreadList, safeProjectPath } from "./utils.js";
+
+export class ConnectorService extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    this.logger = options.logger || new Logger();
+    this.configStore = options.configStore || new ConfigStore({ configDir: options.configDir, logger: this.logger });
+    this.appServer = options.appServer || new AppServerClient(this.configStore, this.logger);
+    this.relay = options.relay || new RelayClient(this.configStore, this.logger);
+    this.eventBuffer = new EventBuffer(options.eventBufferSize || 1000);
+    this.dashboard = null;
+    this.startedAt = null;
+    this.eventQueue = Promise.resolve();
+    this.threadAccess = new Map();
+    this.router = new CommandRouter({
+      configStore: this.configStore,
+      appServer: this.appServer,
+      service: this,
+      logger: this.logger,
+    });
+    this.#wireEvents();
+  }
+
+  async start() {
+    if (this.startedAt) return this.status();
+    await this.configStore.load();
+    this.startedAt = new Date().toISOString();
+    this.logger.info("connector", "Codex Relay Connector 已启动");
+    if (this.configStore.get().relay.autoConnect) {
+      this.connect().catch((error) => this.logger.error("connector", "自动连接失败", { message: error.message }));
+    }
+    return this.status();
+  }
+
+  attachDashboard(dashboard) {
+    this.dashboard = dashboard;
+  }
+
+  async stop() {
+    this.relay.disconnect("connector stopped");
+    await this.appServer.stop();
+    await this.dashboard?.stop();
+    this.startedAt = null;
+  }
+
+  async connect() {
+    await this.start();
+    const config = this.configStore.get();
+    const token = await this.configStore.token();
+    if (config.codex.autoStartAppServer) await this.appServer.start();
+    return this.relay.connect(token);
+  }
+
+  disconnect() {
+    this.relay.disconnect();
+    return this.status();
+  }
+
+  async testConnection() {
+    await this.start();
+    return this.relay.test(await this.configStore.token());
+  }
+
+  async updateConfig(patch, token) {
+    const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
+    if (wasConnected) this.relay.disconnect("configuration changed");
+    const config = await this.configStore.update(patch, token);
+    this.threadAccess.clear();
+    if (wasConnected || config.relay.autoConnect) await this.connect();
+    this.emit("status", await this.status());
+    return config;
+  }
+
+  async status() {
+    const config = await this.configStore.publicConfig();
+    return {
+      connector: {
+        state: this.startedAt ? "running" : "stopped",
+        startedAt: this.startedAt,
+      },
+      relay: this.relay.status(),
+      appServer: this.appServer.status(),
+      room: {
+        roomId: config.relay.roomId,
+        deviceId: config.relay.deviceId,
+        deviceName: config.relay.deviceName,
+      },
+      security: {
+        readOnly: config.readOnly,
+        allowedProjects: config.allowedProjects.length,
+        remoteApprovalEnabled: config.permissions.respondToApprovals,
+        tokenConfigured: config.relay.tokenConfigured,
+      },
+      protocol: {
+        version: 1,
+        latestSequence: this.eventBuffer.latestSequence(),
+      },
+      dashboard: this.dashboard?.status() || { state: "stopped", url: null },
+    };
+  }
+
+  async diagnostics() {
+    const checks = [];
+    try {
+      checks.push({ name: "codex", ok: true, ...(await this.appServer.checkAvailability()) });
+    } catch (error) {
+      checks.push({ name: "codex", ok: false, error: error.message });
+    }
+    const config = await this.configStore.publicConfig();
+    checks.push({
+      name: "configuration",
+      ok: Boolean(config.relay.url && config.relay.roomId && config.relay.tokenConfigured),
+      details: {
+        relayUrlConfigured: Boolean(config.relay.url),
+        roomConfigured: Boolean(config.relay.roomId),
+        tokenConfigured: config.relay.tokenConfigured,
+      },
+    });
+    return { status: await this.status(), checks, logs: this.logger.list(50) };
+  }
+
+  async syncAfter(lastSequence) {
+    const events = this.eventBuffer.after(lastSequence);
+    if (events !== null && !(Number(lastSequence || 0) === 0 && events.length === 0)) {
+      return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence() };
+    }
+    await this.appServer.start();
+    const allowedProjects = this.configStore.get().allowedProjects;
+    const threads = filterThreadList(await this.appServer.listThreads({ limit: 50 }), allowedProjects);
+    return {
+      mode: "snapshot",
+      status: await this.status(),
+      threads,
+      latestSequence: this.eventBuffer.latestSequence(),
+    };
+  }
+
+  #wireEvents() {
+    this.relay.on("command", async (message) => {
+      const response = await this.router.handle(message);
+      this.relay.send(response);
+    });
+    this.relay.on("connected", async () => {
+      this.relay.send({
+        version: 1,
+        type: "host.snapshot",
+        roomId: this.configStore.get().relay.roomId,
+        deviceId: this.configStore.get().relay.deviceId,
+        timestamp: new Date().toISOString(),
+        status: await this.status(),
+      });
+    });
+    this.relay.on("status", (status) => this.emit("status", status));
+    this.appServer.on("status", (status) => this.emit("status", status));
+    this.appServer.on("notification", (method, params) => {
+      const event = normalizeCodexNotification(method, params);
+      if (!event) return;
+      this.eventQueue = this.eventQueue
+        .then(() => this.#forwardEvent(event, params))
+        .catch((error) => this.logger.warn("connector", "Codex 事件转发失败", { message: error.message }));
+    });
+    this.appServer.on("approval", (approval) => {
+      this.eventQueue = this.eventQueue
+        .then(() => this.#forwardEvent({ type: "approval.requested", ...approval }, approval.params))
+        .catch((error) => this.logger.warn("connector", "审批事件转发失败", { message: error.message }));
+    });
+  }
+
+  async #forwardEvent(event, params = {}) {
+    if (!(await this.#isEventAllowed(params))) return;
+    const config = this.configStore.get();
+    const envelope = eventEnvelope(config, this.eventBuffer, event, extractContext(params));
+    this.relay.send(envelope);
+    this.emit("event", envelope);
+  }
+
+  async #isEventAllowed(params) {
+    const allowedProjects = this.configStore.get().allowedProjects;
+    if (!allowedProjects.length) return true;
+    const context = extractContext(params);
+    const cwd = params.cwd || params.thread?.cwd;
+    if (cwd) {
+      const allowed = Boolean(safeProjectPath(cwd, allowedProjects));
+      if (context.threadId) this.threadAccess.set(context.threadId, allowed);
+      return allowed;
+    }
+    if (!context.threadId) return false;
+    if (this.threadAccess.has(context.threadId)) return this.threadAccess.get(context.threadId);
+    try {
+      const result = await this.appServer.readThread(context.threadId);
+      const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
+      this.threadAccess.set(context.threadId, allowed);
+      return allowed;
+    } catch (error) {
+      this.logger.warn("connector", "无法确认事件所属项目，已停止远程转发", { threadId: context.threadId, message: error.message });
+      return false;
+    }
+  }
+}

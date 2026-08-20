@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-relay.local/schemas/protocol-v1.json",
+  "title": "Codex Relay Protocol v1",
+  "description": "Messages exchanged between a Codex host connector, Relay, and remote client.",
+  "oneOf": [
+    { "$ref": "#/$defs/hostHello" },
+    { "$ref": "#/$defs/hostWelcome" },
+    { "$ref": "#/$defs/hostSnapshot" },
+    { "$ref": "#/$defs/command" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/ping" },
+    { "$ref": "#/$defs/pong" },
+    { "$ref": "#/$defs/relayError" }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["version", "type", "roomId", "deviceId", "timestamp"],
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "type": "string" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "deviceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "threadId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string", "minLength": 1 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "hostHello": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["requestId", "deviceName", "token", "capabilities"],
+          "properties": {
+            "type": { "const": "host.hello" },
+            "requestId": { "type": "string", "minLength": 1 },
+            "deviceName": { "type": "string", "maxLength": 128 },
+            "token": { "type": "string", "minLength": 1 },
+            "capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "test": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "hostWelcome": {
+      "type": "object",
+      "required": ["version", "type", "connectionId"],
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "const": "host.welcome" },
+        "connectionId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "hostSnapshot": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "required": ["status"], "properties": { "type": { "const": "host.snapshot" }, "status": { "type": "object" } } }
+      ]
+    },
+    "command": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["requestId", "targetDeviceId", "command"],
+          "properties": {
+            "type": { "const": "codex.command" },
+            "requestId": { "type": "string", "minLength": 1 },
+            "targetDeviceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "command": { "$ref": "#/$defs/commandPayload" }
+          }
+        }
+      ]
+    },
+    "commandPayload": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "ping", "host.get_status", "sync.request", "thread.list", "thread.read", "thread.create",
+            "thread.resume", "thread.select", "turn.start", "turn.steer", "turn.interrupt", "approval.respond"
+          ]
+        },
+        "threadId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string", "minLength": 1 },
+        "approvalId": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "cwd": { "type": "string", "minLength": 1 },
+        "cursor": { "type": ["string", "null"] },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "lastSequence": { "type": "integer", "minimum": 0 },
+        "decision": { "enum": ["accept", "acceptForSession", "decline", "cancel"] }
+      }
+    },
+    "event": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["eventId", "sequence", "event"],
+          "properties": {
+            "type": { "const": "codex.event" },
+            "eventId": { "type": "string", "minLength": 1 },
+            "sequence": { "type": "integer", "minimum": 1 },
+            "event": { "type": "object", "required": ["type"] }
+          }
+        }
+      ]
+    },
+    "result": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["requestId", "success"],
+          "properties": {
+            "type": { "const": "codex.command.result" },
+            "requestId": { "type": "string", "minLength": 1 },
+            "success": { "type": "boolean" },
+            "result": {},
+            "error": {
+              "type": "object",
+              "required": ["code", "message"],
+              "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "details": {} }
+            }
+          }
+        }
+      ]
+    },
+    "ping": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "type": { "const": "ping" } } }
+      ]
+    },
+    "pong": {
+      "type": "object",
+      "required": ["version", "type"],
+      "properties": { "version": { "const": 1 }, "type": { "const": "pong" }, "timestamp": { "type": "string", "format": "date-time" } }
+    },
+    "relayError": {
+      "type": "object",
+      "required": ["version", "type", "code", "message"],
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "const": "relay.error" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

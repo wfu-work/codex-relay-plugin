@@ -1,0 +1,10 @@
+{
+  "name": "codex-relay-plugin",
+  "version": "0.1.0+codex.20260820131449",
+  "private": true,
+  "type": "module",
+  "description": "通过受控 Relay 安全连接本机 Codex 会话与远程设备。",
+  "engines": {
+    "node": ">=22"
+  }
+}

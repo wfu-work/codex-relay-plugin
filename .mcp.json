@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "codex-relay": {
+      "command": "node",
+      "args": ["./server/mcp-server.js"],
+      "cwd": ".",
+      "env_vars": [
+        "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "PATH",
+        "CODEX_HOME",
+        "CODEX_RELAY_CONFIG_DIR",
+        "CODEX_RELAY_TOKEN"
+      ],
+      "startup_timeout_sec": 15,
+      "tool_timeout_sec": 120
+    }
+  }
+}

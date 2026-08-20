@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Codex Relay</title>
+  <desc id="description">Two protected endpoints joined through a bidirectional relay gateway.</desc>
+  <defs>
+    <pattern id="codex-dots" width="72" height="72" patternUnits="userSpaceOnUse">
+      <circle cx="14" cy="14" r="10" fill="#B8F2D2" />
+      <circle cx="52" cy="14" r="13" fill="#78DDB6" />
+      <circle cx="14" cy="52" r="13" fill="#45C396" />
+      <circle cx="52" cy="52" r="10" fill="#168766" />
+    </pattern>
+    <mask id="relay-cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#fff" />
+      <path
+        d="M220 218h57v-19l33 29-33 29v-19h-57zm72 76h-57v19l-33-29 33-29v19h57z"
+        fill="#000"
+      />
+    </mask>
+    <g id="relay-mark">
+      <path d="M48 128c0-35.3 28.7-64 64-64h88c13.3 0 24 10.7 24 24v64h-56v-32h-56c-4.4 0-8 3.6-8 8v256c0 4.4 3.6 8 8 8h56v-32h56v64c0 13.3-10.7 24-24 24h-88c-35.3 0-64-28.7-64-64z" />
+      <path d="M464 128c0-35.3-28.7-64-64-64h-88c-13.3 0-24 10.7-24 24v64h56v-32h56c4.4 0 8 3.6 8 8v256c0 4.4-3.6 8-8 8h-56v-32h-56v64c0 13.3 10.7 24 24 24h88c35.3 0 64-28.7 64-64z" />
+      <path d="M166 228h54v56h-54zm126 0h54v56h-54z" />
+      <path d="M256 158 326 208v96l-70 50-70-50v-96z" />
+    </g>
+  </defs>
+
+  <g mask="url(#relay-cutouts)">
+    <use href="#relay-mark" fill="#188666" opacity="0.18" />
+    <use href="#relay-mark" fill="url(#codex-dots)" />
+  </g>
+</svg>

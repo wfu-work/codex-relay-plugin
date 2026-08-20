@@ -1,0 +1,35 @@
+{
+  "name": "codex-relay-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Codex-to-relay connector packaged as a Codex plugin.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/mcp-server.js",
+    "dashboard": "node server/dashboard-cli.js",
+    "dev": "node scripts/dev.mjs",
+    "ui:build": "vite build",
+    "ui:watch": "vite build --watch",
+    "build": "npm run ui:build && node scripts/build.mjs",
+    "clean": "node scripts/clean.mjs",
+    "validate:build": "node scripts/validate-build.mjs",
+    "smoke:build": "node scripts/smoke-build.mjs",
+    "check": "npm run ui:build && node --check server/*.js scripts/*.mjs && node --test",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4"
+  },
+  "devDependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "ant-design-vue": "^4.2.6",
+    "esbuild": "^0.25.9",
+    "vite": "^7.3.6",
+    "vue": "^3.5.41",
+    "vue-router": "^4.6.4"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "codex-relay",
+  "interface": {
+    "displayName": "Codex Relay"
+  },
+  "plugins": [
+    {
+      "name": "codex-relay-plugin",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-relay-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -13,7 +13,7 @@
 - Codex 插件清单、MCP Server 和 Relay 管理 skill
 - Vue 3 + Ant Design Vue 本机配置台：Relay 地址、房间、Token、设备名、自动连接、重连参数
 - 与 Codex 视觉语言一致的浅色 / 深色主题和响应式布局
-- Token 存入跨平台权限 `0600` 的本地文件，并在本机配置台回显
+- Token 存入用户目录下的本地 `secrets.json`（Unix 使用 `0600` 权限），并在本机配置台回显
 - Codex App Server stdio 客户端：会话列表/读取/创建/恢复、发送/调整/中断 turn、审批响应
 - App Server 通知实时转换为 Relay 事件，并提供 1000 条内存重放缓冲
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
@@ -31,14 +31,93 @@ Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server
 
 Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证房间成员并转发协议消息。
 
+## 安装（GitHub，推荐）
+
+本仓库已经包含可发布的生产插件和标准 marketplace 清单，普通用户不需要
+clone、安装依赖或自己构建。安装命令会从 GitHub 获取仓库，再从
+`.agents/plugins/marketplace.json` 找到 `plugins/codex-relay-plugin/`。
+
+### 前置条件
+
+- [Codex CLI](https://developers.openai.com/codex/cli) 0.146 或更高版本，并且支持
+  `codex plugin` 与 `codex app-server`。
+- Node.js 22 或更高版本（MCP Server 由本机 `node` 启动）。
+- Git，以及访问 GitHub 仓库的网络权限。
+
+先确认命令版本：
+
+```bash
+codex --version
+node --version
+```
+
+插件可在 Codex CLI 或 ChatGPT desktop app 中使用；Codex IDE extension 当前不支持插件。
+
+### 安装 Codex Relay
+
+在终端依次执行：
+
+```bash
+# 添加 GitHub marketplace（仓库的 main 分支）
+codex plugin marketplace add wfu-work/codex-relay-plugin --ref main
+
+# 可选：确认 marketplace 已登记
+codex plugin marketplace list
+
+# 安装插件（marketplace 名称来自 .agents/plugins/marketplace.json）
+codex plugin add codex-relay-plugin@codex-relay
+
+# 可选：确认插件已安装
+codex plugin list --marketplace codex-relay
+```
+
+也可以把第一条命令替换为完整 Git URL：
+
+```bash
+codex plugin marketplace add https://github.com/wfu-work/codex-relay-plugin.git --ref main
+```
+
+这里不要使用 `--sparse .agents/plugins`：插件产物位于仓库的
+`plugins/codex-relay-plugin/`，需要同时下载 marketplace 清单和该目录。
+
+安装完成后退出当前 Codex 进程并新建一个任务（例如重新运行 `codex`，或在会话中执行
+`/new`）。插件的 skill 和 MCP Server 会在新任务启动时加载。进入 `/plugins` 可以查看
+`Codex Relay` 的启用状态；首次使用时打开配置台，填写 Relay 地址、房间 ID、设备名称和
+Token，再按需开启自动连接及远程权限。
+
+### 更新或卸载
+
+发布新版本后，在已安装插件的机器上执行：
+
+```bash
+# 刷新 GitHub marketplace 快照
+codex plugin marketplace upgrade codex-relay
+
+# 重新安装当前 marketplace 中的最新插件版本
+codex plugin add codex-relay-plugin@codex-relay
+```
+
+更新后同样需要新建 Codex 任务。如果要卸载插件或移除 marketplace：
+
+```bash
+codex plugin remove codex-relay-plugin@codex-relay
+codex plugin marketplace remove codex-relay
+```
+
 ## 开发、构建与发布
+
+维护者或需要修改源码时，先获取仓库并在仓库根目录操作：
+
+```bash
+git clone https://github.com/wfu-work/codex-relay-plugin.git
+cd codex-relay-plugin
+```
 
 要求：Node.js 22+、可用的 `codex` 命令，以及支持 `codex app-server` 的 Codex 版本。
 
 本地开发（配置和密钥写入项目内被忽略的 `.codex-relay-data/`）：
 
 ```bash
-cd /Users/wfu/Documents/GPT/codex-relay-plugin
 make dev
 ```
 
@@ -68,59 +147,31 @@ make help        # 查看全部命令
 
 `make build` 会生成 `plugins/codex-relay-plugin/`。其中 MCP Server 已包含运行时依赖，在线安装后不需要执行 `npm install`。这个目录是发布产物，应随源码一同提交；请修改根目录源码，不要直接修改生成文件。
 
-### 推送为在线 marketplace
-
-先在 GitHub、GitLab 或其他 Git 服务创建一个空仓库。当前插件目录嵌套在其他 Git 仓库中，因此首次发布必须把它初始化为独立仓库：
+如果需要测试本地构建，可把当前仓库目录临时作为 marketplace：
 
 ```bash
-make git-init REPO_URL=git@github.com:OWNER/codex-relay-plugin.git
-make push
+make build
+codex plugin marketplace add "$(pwd)"
+codex plugin add codex-relay-plugin@codex-relay
 ```
 
-HTTPS 远程也可以使用：
+本地 marketplace 与 GitHub marketplace 使用同一个名称；如果机器上已经登记了 GitHub
+版本，请先执行 `codex plugin marketplace remove codex-relay`，再添加本地目录。
 
-```bash
-make git-init REPO_URL=https://github.com/OWNER/codex-relay-plugin.git
-```
-
-之后每次发布只需：
+仓库已经配置好 `origin`：
 
 ```bash
 make push MESSAGE="release: describe the change"
 ```
 
-`make push` 会先运行测试和生产构建，提交当前独立插件仓库的全部变更，再推送当前分支。可通过 `REMOTE=upstream` 或 `BRANCH=main` 覆盖目标；如果检测到当前目录不是独立 Git 仓库，它会拒绝推送，避免误操作父仓库。
-
-远程仓库包含标准 marketplace 文件 `.agents/plugins/marketplace.json`。推送后，其他 Codex 用户可执行：
-
-```bash
-codex plugin marketplace add OWNER/codex-relay-plugin --ref main
-codex plugin add codex-relay-plugin@codex-relay
-```
-
-也可以把第一条命令中的 GitHub shorthand 换成 HTTPS Git URL 或 SSH Git URL。更新发布后，使用方执行：
-
-```bash
-codex plugin marketplace upgrade codex-relay
-codex plugin add codex-relay-plugin@codex-relay
-```
-
-本地安装生产构建时，可直接把仓库作为 marketplace：
-
-```bash
-make build
-codex plugin marketplace add /absolute/path/to/codex-relay-plugin
-codex plugin add codex-relay-plugin@codex-relay
-```
-
-安装或更新后请新建 Codex 任务，使 skill 和 MCP 工具重新加载。
+`make push` 会先运行测试和生产构建，提交当前独立 Git 仓库的全部变更，再推送当前分支。可通过 `REMOTE=upstream` 或 `BRANCH=main` 覆盖目标；如果是在其他父仓库中使用本目录，请先用 `make git-init REPO_URL=<url>` 初始化独立仓库。
 
 ## 配置位置
 
 默认目录为 `~/.codex-relay-plugin/`：
 
-- `config.json`：非敏感配置，权限 `0600`
-- `secrets.json`：跨平台 Token 存储，权限 `0600`
+- `config.json`：非敏感配置；Unix 权限 `0600`
+- `secrets.json`：跨平台 Token 存储；Unix 权限 `0600`
 
 环境变量：
 

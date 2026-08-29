@@ -25,6 +25,24 @@ test("configuration persists with owner-only permissions", async (t) => {
   assert.equal(reloaded.get().relay.url, "ws://127.0.0.1:8787/ws");
 });
 
+test("relay token uses the cross-platform file store and is returned to the local dashboard", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-token-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+
+  const updated = await store.update({ relay: { roomId: "token-room" } }, "relay-token-value");
+  assert.equal(updated.relay.token, undefined);
+  assert.equal(updated.relay.tokenConfigured, true);
+
+  const secretStat = await fs.stat(path.join(configDir, "secrets.json"));
+  assert.equal(secretStat.mode & 0o777, 0o600);
+  const reloaded = new ConfigStore({ configDir });
+  await reloaded.load();
+  assert.equal((await reloaded.publicConfig()).relay.token, undefined);
+  assert.equal((await reloaded.publicConfig({ includeToken: true })).relay.token, "relay-token-value");
+});
+
 test("public relays require TLS and URL credentials are rejected", () => {
   const base = defaultConfig();
   base.relay.url = "ws://relay.example.com/ws";

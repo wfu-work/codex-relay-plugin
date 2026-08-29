@@ -1,5 +1,5 @@
 <script setup>
-import { CheckCircleOutlined, ClearOutlined, ExclamationCircleFilled, ReloadOutlined, ToolOutlined } from '@ant-design/icons-vue';
+import { CheckCircleOutlined, ClearOutlined, ExclamationCircleFilled, FileSearchOutlined, ReloadOutlined } from '@ant-design/icons-vue';
 import { useRelay } from '../stores/relay.js';
 
 const { state, shortTime, refreshLogs, clearLogs, runDiagnostics } = useRelay();
@@ -9,10 +9,10 @@ const { state, shortTime, refreshLogs, clearLogs, runDiagnostics } = useRelay();
   <section class="content-section diagnostics-section route-page">
     <div class="section-title">
       <div><div class="eyebrow">OBSERVABILITY</div><h1>诊断与日志</h1><p>在出现连接问题时，从本机 Codex、配置和 Relay 凭据三处快速定位。</p></div>
-      <a-button :loading="state.loading.diagnostics" @click="runDiagnostics"><ToolOutlined />运行诊断</a-button>
+      <a-button :loading="state.loading.diagnostics" @click="runDiagnostics"><FileSearchOutlined />运行诊断</a-button>
     </div>
     <a-card :bordered="false" class="surface-card diagnostics-card">
-      <div v-if="!state.diagnostics" class="diagnostics-empty"><ToolOutlined /><strong>准备好检查 Relay</strong><span>运行诊断，检查 Codex 命令、本地配置和 Relay 凭据。</span></div>
+      <div v-if="!state.diagnostics" class="diagnostics-empty"><FileSearchOutlined /><strong>准备好检查 Relay</strong><span>运行诊断，检查 Codex 命令、本地配置和 Relay 凭据。</span></div>
       <div v-else class="checks" aria-live="polite"><div v-for="check in state.diagnostics.checks" :key="check.name" class="check-row"><CheckCircleOutlined v-if="check.ok" class="check-ok" /><ExclamationCircleFilled v-else class="check-fail" /><div><strong>{{ check.name }}</strong><span>{{ check.ok ? (check.version || JSON.stringify(check.details || { ok: true })) : (check.error || JSON.stringify(check.details || {})) }}</span></div><a-tag :color="check.ok ? 'success' : 'error'">{{ check.ok ? '通过' : '失败' }}</a-tag></div></div>
       <a-divider />
       <div class="log-heading"><span>RECENT LOCAL LOG</span><div><a-button type="text" size="small" @click="refreshLogs"><ReloadOutlined />刷新</a-button><a-button type="text" danger size="small" @click="clearLogs"><ClearOutlined />清空</a-button></div></div>

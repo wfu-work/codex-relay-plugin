@@ -2,15 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import {
-  ArrowRightOutlined,
+  DashboardOutlined,
+  FileSearchOutlined,
   LinkOutlined,
   LockOutlined,
   MenuOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
-  ThunderboltOutlined,
-  ToolOutlined,
 } from '@ant-design/icons-vue';
 import { useRelay } from '../stores/relay.js';
 
@@ -30,11 +29,11 @@ const {
 } = useRelay();
 
 const navItems = [
-  { to: '/overview', label: '总览', icon: ThunderboltOutlined },
-  { to: '/connection', label: 'Relay 连接', icon: LinkOutlined },
+  { to: '/overview', label: '总览', icon: DashboardOutlined },
+  { to: '/connection', label: '连接设置', icon: LinkOutlined },
   { to: '/permissions', label: '远程权限', icon: SafetyCertificateOutlined },
   { to: '/advanced', label: '高级设置', icon: SettingOutlined },
-  { to: '/diagnostics', label: '诊断日志', icon: ToolOutlined },
+  { to: '/diagnostics', label: '诊断日志', icon: FileSearchOutlined },
 ];
 
 const pageTitle = computed(() => route.meta.title || 'Relay 管理');
@@ -53,8 +52,8 @@ onBeforeUnmount(stop);
     <a-layout-sider :width="252" class="app-sider" :class="{ 'mobile-open': mobileNavOpen }">
       <div class="sider-inner">
         <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
-          <div><strong>Codex Relay</strong><span>LOCAL CONTROL PLANE</span></div>
+          <img class="brand-mark" src="/recodex-icon.svg" alt="recodex" />
+          <div><strong>Codex Relay</strong><span>本地连接控制台</span></div>
         </div>
 
         <div class="sider-label">控制台</div>
@@ -86,7 +85,7 @@ onBeforeUnmount(stop);
       <a-layout-header class="topbar">
         <div class="topbar-left">
           <a-button type="text" class="mobile-menu" aria-label="打开导航" @click="mobileNavOpen = !mobileNavOpen"><MenuOutlined /></a-button>
-          <span class="crumb-muted">本机控制台</span><ArrowRightOutlined class="crumb-arrow" /><strong>{{ pageTitle }}</strong>
+          <strong class="topbar-title">{{ pageTitle }}</strong>
         </div>
         <div class="topbar-right">
           <span v-if="state.dirty" class="dirty-indicator"><span></span>有未保存更改</span>

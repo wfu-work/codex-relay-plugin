@@ -603,12 +603,8 @@ import os from "node:os";
 import path3 from "node:path";
 
 // server/secret-store.js
-import { execFile as execFile2 } from "node:child_process";
 import fs from "node:fs/promises";
 import path2 from "node:path";
-import { promisify as promisify2 } from "node:util";
-var execFileAsync2 = promisify2(execFile2);
-var SERVICE = "codex-relay-plugin";
 var SecretStore = class {
   constructor(configDir, logger) {
     this.configDir = configDir;
@@ -620,34 +616,6 @@ var SecretStore = class {
     if (process.env.CODEX_RELAY_TOKEN) return process.env.CODEX_RELAY_TOKEN;
     const account = roomId || "default";
     if (this.cache.has(account)) return this.cache.get(account);
-    try {
-      if (process.platform === "darwin") {
-        const { stdout } = await execFileAsync2("security", [
-          "find-generic-password",
-          "-s",
-          SERVICE,
-          "-a",
-          account,
-          "-w"
-        ]);
-        const token2 = stdout.trim() || null;
-        this.cache.set(account, token2);
-        return token2;
-      }
-      if (process.platform === "linux") {
-        const { stdout } = await execFileAsync2("secret-tool", [
-          "lookup",
-          "service",
-          SERVICE,
-          "room",
-          account
-        ]);
-        const token2 = stdout.trim() || null;
-        this.cache.set(account, token2);
-        return token2;
-      }
-    } catch {
-    }
     const values = await this.#readFallback();
     const token = values[account] || null;
     this.cache.set(account, token);
@@ -656,26 +624,6 @@ var SecretStore = class {
   async set(roomId, token) {
     const account = roomId || "default";
     if (!token) return this.delete(account);
-    try {
-      if (process.platform === "darwin") {
-        await execFileAsync2("security", [
-          "add-generic-password",
-          "-U",
-          "-s",
-          SERVICE,
-          "-a",
-          account,
-          "-w",
-          token
-        ]);
-        this.cache.set(account, token);
-        return { backend: "keychain" };
-      }
-    } catch (error) {
-      this.logger?.warn("secret-store", "\u7CFB\u7EDF Keychain \u5199\u5165\u5931\u8D25\uFF0C\u4F7F\u7528\u6743\u9650\u53D7\u9650\u7684\u672C\u5730\u6587\u4EF6", {
-        message: error.message
-      });
-    }
     const values = await this.#readFallback();
     values[account] = token;
     await this.#writeFallback(values);
@@ -684,18 +632,6 @@ var SecretStore = class {
   }
   async delete(roomId) {
     const account = roomId || "default";
-    try {
-      if (process.platform === "darwin") {
-        await execFileAsync2("security", [
-          "delete-generic-password",
-          "-s",
-          SERVICE,
-          "-a",
-          account
-        ]);
-      }
-    } catch {
-    }
     const values = await this.#readFallback();
     delete values[account];
     await this.#writeFallback(values);
@@ -771,13 +707,15 @@ var ConfigStore = class {
     if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
     return structuredClone(this.config);
   }
-  async publicConfig() {
+  async publicConfig({ includeToken = false } = {}) {
     const config = this.get();
+    const token = await this.secretStore.get(config.relay.roomId);
     return {
       ...config,
       relay: {
         ...config.relay,
-        tokenConfigured: Boolean(await this.secretStore.get(config.relay.roomId))
+        ...includeToken ? { token: token || "" } : {},
+        tokenConfigured: Boolean(token)
       }
     };
   }
@@ -1451,7 +1389,7 @@ var DashboardServer = class {
   }
   async #api(request, response, url) {
     if (request.method === "GET" && url.pathname === "/api/config") {
-      return this.#json(response, 200, await this.service.configStore.publicConfig());
+      return this.#json(response, 200, await this.service.configStore.publicConfig({ includeToken: true }));
     }
     if (request.method === "GET" && url.pathname === "/api/status") {
       return this.#json(response, 200, await this.service.status());
@@ -1464,7 +1402,8 @@ var DashboardServer = class {
     }
     if (request.method === "PUT" && url.pathname === "/api/config") {
       const body = await this.#body(request);
-      const config = await this.service.updateConfig(body.config || {}, body.token);
+      await this.service.updateConfig(body.config || {}, body.token);
+      const config = await this.service.configStore.publicConfig({ includeToken: true });
       return this.#json(response, 200, config);
     }
     if (request.method === "POST" && url.pathname === "/api/connection/test") {

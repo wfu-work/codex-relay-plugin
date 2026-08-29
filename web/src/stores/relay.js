@@ -111,6 +111,7 @@ function applyConfig(config) {
   relayState.form.relayUrl = config.relay?.url || '';
   relayState.form.roomId = config.relay?.roomId || '';
   relayState.form.deviceName = config.relay?.deviceName || '';
+  relayState.form.token = config.relay?.token || '';
   relayState.form.autoConnect = Boolean(config.relay?.autoConnect);
   relayState.form.heartbeatSeconds = config.relay?.heartbeatSeconds ?? 20;
   relayState.form.reconnectMaxSeconds = config.relay?.reconnectMaxSeconds ?? 30;
@@ -180,7 +181,6 @@ async function saveConfig() {
       method: 'PUT',
       body: JSON.stringify({ config: collectConfig(), token: relayState.form.token || undefined }),
     });
-    relayState.form.token = '';
     applyConfig(updated);
     await refreshStatus(true);
     message.success('配置已保存并应用');

@@ -62,13 +62,15 @@ export class ConfigStore {
     return structuredClone(this.config);
   }
 
-  async publicConfig() {
+  async publicConfig({ includeToken = false } = {}) {
     const config = this.get();
+    const token = await this.secretStore.get(config.relay.roomId);
     return {
       ...config,
       relay: {
         ...config.relay,
-        tokenConfigured: Boolean(await this.secretStore.get(config.relay.roomId)),
+        ...(includeToken ? { token: token || "" } : {}),
+        tokenConfigured: Boolean(token),
       },
     };
   }

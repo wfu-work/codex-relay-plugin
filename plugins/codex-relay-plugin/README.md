@@ -13,7 +13,7 @@
 - Codex 插件清单、MCP Server 和 Relay 管理 skill
 - Vue 3 + Ant Design Vue 本机配置台：Relay 地址、房间、Token、设备名、自动连接、重连参数
 - 与 Codex 视觉语言一致的浅色 / 深色主题和响应式布局
-- Token 存入 macOS Keychain；不可用时回退到权限 `0600` 的本地文件
+- Token 存入跨平台权限 `0600` 的本地文件，并在本机配置台回显
 - Codex App Server stdio 客户端：会话列表/读取/创建/恢复、发送/调整/中断 turn、审批响应
 - App Server 通知实时转换为 Relay 事件，并提供 1000 条内存重放缓冲
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
@@ -120,7 +120,7 @@ codex plugin add codex-relay-plugin@codex-relay
 默认目录为 `~/.codex-relay-plugin/`：
 
 - `config.json`：非敏感配置，权限 `0600`
-- `secrets.json`：没有系统 Keychain 时的回退存储，权限 `0600`
+- `secrets.json`：跨平台 Token 存储，权限 `0600`
 
 环境变量：
 

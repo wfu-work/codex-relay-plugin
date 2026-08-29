@@ -84,7 +84,7 @@ export class DashboardServer {
 
   async #api(request, response, url) {
     if (request.method === "GET" && url.pathname === "/api/config") {
-      return this.#json(response, 200, await this.service.configStore.publicConfig());
+      return this.#json(response, 200, await this.service.configStore.publicConfig({ includeToken: true }));
     }
     if (request.method === "GET" && url.pathname === "/api/status") {
       return this.#json(response, 200, await this.service.status());
@@ -97,7 +97,8 @@ export class DashboardServer {
     }
     if (request.method === "PUT" && url.pathname === "/api/config") {
       const body = await this.#body(request);
-      const config = await this.service.updateConfig(body.config || {}, body.token);
+      await this.service.updateConfig(body.config || {}, body.token);
+      const config = await this.service.configStore.publicConfig({ includeToken: true });
       return this.#json(response, 200, config);
     }
     if (request.method === "POST" && url.pathname === "/api/connection/test") {

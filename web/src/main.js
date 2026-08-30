@@ -1,5 +1,6 @@
 import { createApp } from "vue";
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -27,6 +28,7 @@ createApp(App)
   .use(ConfigProvider)
   .use(Layout)
   .use(Button)
+  .use(Alert)
   .use(Tag)
   .use(Divider)
   .use(Card)

@@ -86,6 +86,31 @@ export const securityLabel = computed(() => {
 export const securityType = computed(() => securityLabel.value === '远程审批已启用' ? 'warning' : 'success');
 export const configReady = computed(() => Boolean(relayState.form.relayUrl && relayState.form.spaceId && relayState.status?.security?.tokenConfigured));
 
+function describeRelayError(errorOrMessage) {
+  const code = typeof errorOrMessage === 'object' ? errorOrMessage?.code : '';
+  const messageText = typeof errorOrMessage === 'object' ? errorOrMessage?.message : errorOrMessage;
+  const message = String(messageText || '').trim();
+  const normalized = message.toLowerCase();
+  if (code === 'auth.invalid_token' || normalized.includes('invalid connect token') || normalized.includes('无效 connect token')) {
+    return '连接令牌无效或已失效。请回到 Relay 控制台重新签发，并确认 Space ID 与签发时一致。';
+  }
+  if (code === 'auth.token_expired' || normalized.includes('token expired') || normalized.includes('令牌已过期')) {
+    return '连接令牌已过期。请从 Relay 控制台重新复制最新令牌；如果已配置自动续期，请同时填写 Endpoint Grant。';
+  }
+  if (code === 'auth.proof_mismatch' || normalized.includes('proof mismatch')) {
+    return '连接令牌绑定了另一台设备。请在当前设备重新签发令牌，不要沿用旧设备的令牌。';
+  }
+  if (code === 'RELAY_UNAVAILABLE' || normalized.includes('websocket 连接失败') || normalized.includes('无法连接 relay')) {
+    return '暂时连不到 Relay。请检查 Relay 地址、网络和服务是否已启动，再重新测试连接。';
+  }
+  if (code === 'CONFIG_INCOMPLETE' || normalized.includes('尚未配置')) {
+    return '还缺少连接信息。请填写 Relay 地址、Space ID 和 Connect Token。';
+  }
+  return message || '连接失败，请运行诊断查看具体原因。';
+}
+
+export const relayErrorHint = computed(() => describeRelayError(relayState.status?.relay?.lastError));
+
 function setTheme(value) {
   relayState.themeMode = value;
   localStorage.setItem('codex-relay-theme', value);
@@ -106,7 +131,11 @@ async function api(path, options = {}) {
     },
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message || '请求失败 (' + response.status + ')');
+  if (!response.ok) {
+    const error = new Error(body.error?.message || '请求失败 (' + response.status + ')');
+    error.code = body.error?.code;
+    throw error;
+  }
   return body;
 }
 
@@ -166,7 +195,7 @@ async function refreshStatus(silent = false) {
   try {
     relayState.status = await api('/api/status');
   } catch (error) {
-    if (!silent) message.error(error.message);
+    if (!silent) message.error(describeRelayError(error));
   }
 }
 
@@ -174,7 +203,7 @@ async function refreshLogs(silent = false) {
   try {
     relayState.logs = (await api('/api/logs?limit=120')).logs || [];
   } catch (error) {
-    if (!silent) message.error(error.message);
+    if (!silent) message.error(describeRelayError(error));
   }
 }
 
@@ -202,7 +231,7 @@ async function saveConfig() {
     message.success('配置已保存并应用');
     return true;
   } catch (error) {
-    message.error(error.message);
+    message.error(describeRelayError(error));
     return false;
   } finally {
     relayState.loading.save = false;
@@ -215,8 +244,10 @@ async function runConnection(action, successText) {
     await api('/api/connection/' + action, { method: 'POST' });
     message.success(successText);
     await Promise.all([refreshStatus(true), refreshLogs(true)]);
+    return true;
   } catch (error) {
-    message.error(error.message);
+    message.error(describeRelayError(error));
+    return false;
   } finally {
     relayState.loading[action] = false;
   }
@@ -229,7 +260,7 @@ async function runDiagnostics() {
     message.success('诊断完成');
     await refreshLogs(true);
   } catch (error) {
-    message.error(error.message);
+    message.error(describeRelayError(error));
   } finally {
     relayState.loading.diagnostics = false;
   }
@@ -241,7 +272,7 @@ async function clearLogs() {
     relayState.logs = [];
     message.success('日志已清空');
   } catch (error) {
-    message.error(error.message);
+    message.error(describeRelayError(error));
   }
 }
 
@@ -271,7 +302,7 @@ async function start() {
     statusTimer = setInterval(() => refreshStatus(true), 2500);
     logTimer = setInterval(() => refreshLogs(true), 10000);
   } catch (error) {
-    message.error(error.message);
+    message.error(describeRelayError(error));
   }
 }
 
@@ -300,6 +331,7 @@ export function useRelay() {
     securityLabel,
     securityType,
     configReady,
+    relayErrorHint,
     setTheme,
     api,
     applyConfig,

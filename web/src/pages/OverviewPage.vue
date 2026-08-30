@@ -1,5 +1,5 @@
 <script setup>
-import { ApiOutlined, CloudServerOutlined } from '@ant-design/icons-vue';
+import { ApiOutlined, CloudServerOutlined, ExclamationCircleFilled } from '@ant-design/icons-vue';
 import { useRelay } from '../stores/relay.js';
 
 const {
@@ -9,6 +9,7 @@ const {
   relayStatusType,
   appServerLabel,
   configReady,
+  relayErrorHint,
   shortTime,
   runConnection,
 } = useRelay();
@@ -25,6 +26,11 @@ const {
           <a-button type="primary" size="large" :loading="state.loading.connect" :disabled="['connected', 'connecting', 'authenticating'].includes(relayStateValue)" @click="runConnection('connect', 'Relay 已连接')"><ApiOutlined />连接 Relay</a-button>
           <a-button size="large" :loading="state.loading.test" @click="runConnection('test', 'Relay 握手和认证通过')">测试连接</a-button>
           <a-button type="text" size="large" :disabled="relayStateValue === 'disconnected'" :loading="state.loading.disconnect" @click="runConnection('disconnect', 'Relay 已断开')">断开</a-button>
+        </div>
+        <div v-if="relayStateValue === 'error' && relayErrorHint" class="connection-alert" role="alert">
+          <ExclamationCircleFilled />
+          <div><strong>连接没有建立</strong><span>{{ relayErrorHint }}</span></div>
+          <RouterLink to="/connection">检查连接信息</RouterLink>
         </div>
       </div>
       <div class="hero-signal">

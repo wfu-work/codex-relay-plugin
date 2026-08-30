@@ -1,41 +1,191 @@
 <script setup>
-import { CheckCircleFilled, KeyOutlined, LockOutlined, MobileOutlined, WifiOutlined } from '@ant-design/icons-vue';
+import { computed, ref } from 'vue';
+import {
+  CheckCircleFilled,
+  EditOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
+  InfoCircleOutlined,
+  KeyOutlined,
+  LockOutlined,
+  MobileOutlined,
+  WifiOutlined,
+} from '@ant-design/icons-vue';
+import { message } from 'ant-design-vue';
 import { useRelay } from '../stores/relay.js';
 
-const { state, saveConfig } = useRelay();
+const {
+  state,
+  configReady,
+  api,
+  applyConfig,
+  saveConfig,
+  runConnection,
+} = useRelay();
+
+const showEditor = ref(false);
+const showToken = ref(false);
+const advancedKeys = ref([]);
+
+const tokenConfigured = computed(() => Boolean(state.status?.security?.tokenConfigured || state.form.token?.trim()));
+const tokenTail = computed(() => state.form.token?.trim() ? state.form.token.trim().slice(-4) : '未设置');
+
+async function saveAndTest() {
+  if (!state.form.token && !tokenConfigured.value) {
+    message.warning('还缺少 Connect Token，请从 Relay 控制台复制后粘贴');
+    return;
+  }
+  const saved = await saveConfig();
+  if (!saved) return;
+  const tested = await runConnection('test', '连接测试通过');
+  if (tested) showEditor.value = false;
+}
+
+async function cancelEditing() {
+  if (!state.dirty) {
+    showEditor.value = false;
+    return;
+  }
+  try {
+    applyConfig(await api('/api/config'));
+    showEditor.value = false;
+    message.info('已放弃未保存的修改');
+  } catch {
+    message.error('无法恢复已保存的连接信息，请刷新页面后重试');
+  }
+}
 </script>
 
 <template>
-  <section class="content-section route-page">
+  <section class="content-section route-page connection-page">
     <div class="section-title">
-      <div><div class="eyebrow">CONNECTION</div><h1>连接设置</h1><p>Connector 只向外建立 WebSocket，不开放本机公网端口。</p></div>
+      <div>
+        <div class="eyebrow">CONNECTION</div>
+        <h1>连接设置</h1>
+        <p>把 Relay 控制台签发的信息粘贴到这里即可。首次使用只需要填写 3 项内容，其余参数会自动处理。</p>
+      </div>
+      <a-tag v-if="configReady" color="success" class="setup-state-tag"><CheckCircleFilled /> 已配置</a-tag>
     </div>
-    <a-card :bordered="false" class="surface-card">
-      <a-form layout="vertical" :model="state.form" @finish="saveConfig">
+
+    <a-card v-if="configReady && !showEditor" :bordered="false" class="surface-card setup-summary-card">
+      <div class="setup-summary-head">
+        <div class="setup-status-icon"><CheckCircleFilled /></div>
+        <div>
+          <div class="setup-kicker">READY TO CONNECT</div>
+          <h2>连接信息已保存</h2>
+          <p>你可以直接测试连接；如果提示令牌无效，请从 Relay 控制台重新签发一份。</p>
+        </div>
+      </div>
+      <div class="connection-summary-grid">
+        <div><span>Relay 地址</span><strong>{{ state.form.relayUrl }}</strong></div>
+        <div><span>Space</span><strong>{{ state.form.spaceId }}</strong></div>
+        <div><span>设备</span><strong>{{ state.form.deviceName || '未命名设备' }}</strong></div>
+        <div><span>Connect Token</span><strong class="masked-value">•••• {{ tokenTail }}</strong><em>已安全保存</em></div>
+      </div>
+      <div class="setup-summary-actions">
+        <a-button type="primary" :loading="state.loading.test" @click="runConnection('test', '连接测试通过')"><WifiOutlined />测试连接</a-button>
+        <a-button @click="showEditor = true"><EditOutlined />修改连接信息</a-button>
+      </div>
+    </a-card>
+
+    <a-card v-else :bordered="false" class="surface-card setup-card">
+      <div class="setup-intro">
+        <div class="setup-kicker">{{ configReady ? '编辑连接' : '首次设置 · 约 1 分钟' }}</div>
+        <h2>只需要复制 3 项信息</h2>
+        <p>在 Relay 控制台签发连接令牌后，粘贴 Relay 地址、Space ID 和 Connect Token。设备名称可选，用于在手机端识别这台电脑。</p>
+      </div>
+
+      <div class="setup-steps" aria-label="配置步骤">
+        <div class="setup-step active"><span>1</span><div><strong>连接入口</strong><small>Relay 地址</small></div></div>
+        <div class="setup-step active"><span>2</span><div><strong>空间身份</strong><small>Space ID 与设备名</small></div></div>
+        <div class="setup-step active"><span>3</span><div><strong>完成认证</strong><small>Connect Token</small></div></div>
+      </div>
+
+      <a-alert class="setup-tip" type="info" show-icon>
+        <template #icon><InfoCircleOutlined /></template>
+        <template #message>从 Relay 控制台复制同一次签发的信息</template>
+        <template #description>Space ID 和 Connect Token 必须属于同一个 Space；看到 “invalid connect token” 时，请重新签发，不要继续重复使用旧令牌。</template>
+      </a-alert>
+
+      <a-form layout="vertical" :model="state.form" @finish="saveAndTest">
+        <a-form-item label="Relay 地址" name="relayUrl" required>
+          <a-input v-model:value="state.form.relayUrl" placeholder="例如：wss://relay.example.com/v1/connect" autocomplete="url">
+            <template #prefix><WifiOutlined /></template>
+          </a-input>
+          <div class="field-help">不知道填什么？直接复制 Relay 控制台显示的连接地址。公网地址需要使用 WSS。</div>
+        </a-form-item>
+
         <a-row :gutter="[20, 2]">
-          <a-col :xs="24" :lg="16"><a-form-item label="Relay 地址" name="relayUrl" required><a-input v-model:value="state.form.relayUrl" placeholder="wss://relay.example.com/v1/connect" autocomplete="url"><template #prefix><WifiOutlined /></template></a-input><div class="field-help">Protocol v1 使用 /v1/connect；公网连接必须使用 WSS，仅回环地址允许 WS。</div></a-form-item></a-col>
-          <a-col :xs="24" :sm="12" :lg="8"><a-form-item label="Space ID" name="spaceId" required><a-input v-model:value="state.form.spaceId" placeholder="studio-mac" maxlength="128" /></a-form-item></a-col>
-          <a-col :xs="24" :sm="12" :lg="8"><a-form-item label="设备名称"><a-input v-model:value="state.form.deviceName" placeholder="MacBook Pro" maxlength="128"><template #prefix><MobileOutlined /></template></a-input></a-form-item></a-col>
-          <a-col :xs="24" :lg="16"><a-form-item label="Connect Token"><template #extra><span class="token-state" :class="{ configured: state.status?.security?.tokenConfigured }"><CheckCircleFilled v-if="state.status?.security?.tokenConfigured" />{{ state.status?.security?.tokenConfigured ? '已保存' : '未配置' }}</span></template><a-input v-model:value="state.form.token" placeholder="输入短期 Connect Token" autocomplete="off"><template #prefix><KeyOutlined /></template></a-input><div class="field-help">Connect Token 由 Relay 控制面签发并绑定本机 Endpoint 公钥；只在首帧发送，日志和 URL 不会记录。</div></a-form-item></a-col>
-          <a-col :xs="24" :lg="16"><a-form-item label="Endpoint Grant"><a-input v-model:value="state.form.endpointGrant" placeholder="输入短期 Endpoint Grant" autocomplete="off"><template #prefix><KeyOutlined /></template></a-input><div class="field-help">Grant 只用于 HTTPS 自动续期，不会用于 WebSocket 握手；请与 Token 一起存入本机安全存储。</div></a-form-item></a-col>
-          <a-col :xs="24" :lg="8"><a-form-item label="Grant 过期时间（毫秒）"><a-input-number v-model:value="state.form.grantExpiresAt" :min="0" class="full-width" placeholder="由 Relay 返回" /></a-form-item></a-col>
-          <a-col :xs="24" :lg="16"><a-form-item label="Token 刷新地址"><a-input v-model:value="state.form.tokenEndpoint" placeholder="https://relay.example.com/api/connect-tokens/refresh" autocomplete="url" /><div class="field-help">公网必须使用 HTTPS；仅本机调试允许 http://127.0.0.1 或 localhost。</div></a-form-item></a-col>
-          <a-col :xs="24" :lg="16"><a-form-item label="Endpoint 公钥"><a-input :value="state.form.endpointPublicKey" readonly /><div class="field-help">签发 Connect Token 时将此 Ed25519 公钥提交给 Relay。私钥只保存在本机安全文件。</div></a-form-item></a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item label="Space ID" name="spaceId" required>
+              <a-input v-model:value="state.form.spaceId" placeholder="例如：space_my_team" maxlength="128" />
+              <div class="field-help">手机端和本机必须加入同一个 Space。</div>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item label="设备名称">
+              <a-input v-model:value="state.form.deviceName" placeholder="例如：我的 Mac" maxlength="128">
+                <template #prefix><MobileOutlined /></template>
+              </a-input>
+              <div class="field-help">可选，只用于远程界面识别设备。</div>
+            </a-form-item>
+          </a-col>
         </a-row>
-        <div class="form-footer"><span><LockOutlined /> 配置只保存在本机</span><a-button html-type="submit" type="primary" :loading="state.loading.save">保存连接配置</a-button></div>
+
+        <a-form-item label="Connect Token" name="token" required>
+          <a-input v-model:value="state.form.token" :type="showToken ? 'text' : 'password'" placeholder="粘贴 Relay 控制台签发的连接令牌" autocomplete="off">
+            <template #prefix><KeyOutlined /></template>
+            <template #suffix>
+              <a-button type="text" html-type="button" class="field-icon-button" :aria-label="showToken ? '隐藏令牌' : '显示令牌'" @click="showToken = !showToken">
+                <EyeOutlined v-if="!showToken" />
+                <EyeInvisibleOutlined v-else />
+              </a-button>
+            </template>
+          </a-input>
+          <div class="field-help"><span v-if="tokenConfigured" class="token-state configured"><CheckCircleFilled /> 已保存，将安全存放在本机</span><span v-else>只在首次认证时发送，不会写入 URL 或日志。</span></div>
+        </a-form-item>
+
+        <a-collapse v-model:active-key="advancedKeys" ghost class="advanced-collapse setup-advanced">
+          <a-collapse-panel key="credentials" header="高级凭据与自动续期（大多数情况不需要填写）">
+            <p class="advanced-intro">只有 Relay 控制台同时提供了 Endpoint Grant 时，才需要填写这一部分。留空不会影响基本连接。</p>
+            <a-row :gutter="[20, 2]">
+              <a-col :xs="24" :lg="16">
+                <a-form-item label="Endpoint Grant"><a-input v-model:value="state.form.endpointGrant" placeholder="Relay 控制台提供时再填写" autocomplete="off"><template #prefix><KeyOutlined /></template></a-input></a-form-item>
+              </a-col>
+              <a-col :xs="24" :lg="8">
+                <a-form-item label="Grant 过期时间（毫秒）"><a-input-number v-model:value="state.form.grantExpiresAt" :min="0" class="full-width" placeholder="由 Relay 返回" /></a-form-item>
+              </a-col>
+              <a-col :xs="24" :lg="16">
+                <a-form-item label="Token 刷新地址"><a-input v-model:value="state.form.tokenEndpoint" placeholder="留空则按 Relay 地址自动推导" autocomplete="url" /><div class="field-help">公网地址必须使用 HTTPS。</div></a-form-item>
+              </a-col>
+              <a-col :xs="24" :lg="16">
+                <a-form-item label="Endpoint 公钥"><a-input :value="state.form.endpointPublicKey" readonly /><div class="field-help">这是本机身份公钥，只需提供给 Relay 控制台签发令牌，不需要手动修改。</div></a-form-item>
+              </a-col>
+            </a-row>
+          </a-collapse-panel>
+        </a-collapse>
+
+        <div class="form-footer setup-form-footer">
+          <span><LockOutlined /> 凭据只保存在本机安全存储</span>
+          <div class="setup-form-actions">
+            <a-button v-if="configReady" aria-label="取消编辑" @click="cancelEditing">取消</a-button>
+            <a-button html-type="button" :loading="state.loading.save" @click="saveConfig">仅保存</a-button>
+            <a-button html-type="submit" type="primary" :loading="state.loading.save || state.loading.test"><WifiOutlined />保存并测试连接</a-button>
+          </div>
+        </div>
       </a-form>
     </a-card>
 
-    <section class="page-guidance" aria-labelledby="connection-guide-title">
+    <section class="page-guidance compact-guidance" aria-labelledby="connection-guide-title">
       <div class="guidance-intro">
-        <span>配置说明</span>
-        <h2 id="connection-guide-title">让本机与手机加入同一个可信 Space</h2>
-        <p>保存配置不会自动放开远程写权限。连接建立后，你仍可以在权限页面逐项决定手机端能够执行哪些操作。</p>
+        <span>不确定怎么填？</span>
+        <h2 id="connection-guide-title">从 Relay 控制台复制，不需要猜参数</h2>
+        <p>Relay 地址、Space ID 和 Connect Token 必须来自同一个 Space。其余信息由本机自动生成或按需续期。</p>
       </div>
       <div class="guidance-list">
-        <div><i></i><p><strong>Relay 地址决定连接入口</strong><span>生产环境建议使用可信证书的 WSS 地址，避免凭据和会话事件在传输过程中暴露。</span></p></div>
-        <div><i></i><p><strong>Space ID 用于隔离端点</strong><span>本机插件和手机端必须使用同一个 Space；设备名称只用于远程界面中识别这台 Codex 主机。</span></p></div>
-        <div><i></i><p><strong>Connect Token 绑定公钥</strong><span>短期 Token 与 Endpoint 公钥成对使用，撤销或过期后需从 Relay 控制面重新签发。</span></p></div>
+        <div><i></i><p><strong>1. 先签发连接令牌</strong><span>在 Relay 控制台完成签发后，复制连接地址、Space ID 和 Connect Token。</span></p></div>
+        <div><i></i><p><strong>2. 回到这里保存并测试</strong><span>点击“保存并测试连接”，成功后总览页会显示已连接状态。</span></p></div>
+        <div><i></i><p><strong>3. 令牌无效就重新签发</strong><span>令牌可能已过期、被撤销，或属于另一台设备；重新签发即可，不必修改高级参数。</span></p></div>
       </div>
     </section>
   </section>

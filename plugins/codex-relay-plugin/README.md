@@ -11,7 +11,7 @@
 ## 已实现
 
 - Codex 插件清单、MCP Server 和 Relay 管理 skill
-- Vue 3 + Ant Design Vue 本机配置台：Relay 地址、房间、Token、设备名、自动连接、重连参数
+- Vue 3 + Ant Design Vue 本机配置台：Relay 地址、Space、Connect Token、设备名、自动连接、重连参数
 - 与 Codex 视觉语言一致的浅色 / 深色主题和响应式布局
 - Token 存入用户目录下的本地 `secrets.json`（Unix 使用 `0600` 权限），并在本机配置台回显
 - Codex App Server stdio 客户端：会话列表/读取/创建/恢复、发送/调整/中断 turn、审批响应
@@ -29,7 +29,7 @@ Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server
                                      └── 127.0.0.1 随机端口配置台
 ```
 
-Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证房间成员并转发协议消息。
+Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息。
 
 ## 安装（GitHub，推荐）
 
@@ -82,8 +82,8 @@ codex plugin marketplace add https://github.com/wfu-work/codex-relay-plugin.git 
 
 安装完成后退出当前 Codex 进程并新建一个任务（例如重新运行 `codex`，或在会话中执行
 `/new`）。插件的 skill 和 MCP Server 会在新任务启动时加载。进入 `/plugins` 可以查看
-`Codex Relay` 的启用状态；首次使用时打开配置台，填写 Relay 地址、房间 ID、设备名称和
-Token，再按需开启自动连接及远程权限。
+`Codex Relay` 的启用状态；首次使用时打开配置台，填写 Relay 地址、Space ID、设备名称和
+Connect Token，再按需开启自动连接及远程权限。
 
 ### 更新或卸载
 
@@ -127,8 +127,8 @@ UI 源码位于 `web/`，生产静态文件位于 `ui/`。请修改 `web/src/`�
 
 配置台采用 Vue Router 的 Hash 路由，统一保留侧栏、顶部连接状态和主题切换。页面地址如下：
 
-- `#/overview`：连接状态、房间、设备、事件序号和快速连接操作
-- `#/connection`：Relay 地址、房间 ID、设备名称和 Token
+- `#/overview`：连接状态、Space、设备、事件序号和快速连接操作
+- `#/connection`：Relay 地址、Space ID、设备名称和 Connect Token
 - `#/permissions`：只读模式、远程操作权限和项目白名单
 - `#/advanced`：Codex App Server、工作目录、心跳、重连和自动启动
 - `#/diagnostics`：环境诊断、本地日志、刷新和清空操作
@@ -171,34 +171,62 @@ make push MESSAGE="release: describe the change"
 默认目录为 `~/.codex-relay-plugin/`：
 
 - `config.json`：非敏感配置；Unix 权限 `0600`
-- `secrets.json`：跨平台 Token 存储；Unix 权限 `0600`
+- `secrets.json`：按 Space 保存 Connect Token、Endpoint Grant、过期时间和刷新地址；Unix 权限 `0600`
 
 环境变量：
 
 - `CODEX_RELAY_CONFIG_DIR`：覆盖配置目录，适合测试
 - `CODEX_RELAY_TOKEN`：覆盖持久化 Token，适合受控运行环境
 
+当配置了 `endpointGrant` 和 `grantExpiresAt`（未填写 `tokenEndpoint` 时，插件会按 Relay
+地址推导 `/api/connect-tokens/refresh`）时，插件会在 Connect Token 剩余约 60 秒时自动用本机 Endpoint 私钥签名刷新请求，并把 Relay 返回的新 Token 原子写回
+`secrets.json`。刷新请求不携带用户 JWT，Grant 不会写入日志；公网刷新地址必须使用 HTTPS，
+仅回环地址允许 HTTP 调试。若 Token 已过期且 Grant 无效、撤销或过期，插件会停止重连并等待
+重新签发凭证。Relay 在已建立连接达到 Token 生命周期后会主动要求重连，插件会先续期再重新认证。
+
 ## Relay 握手
 
-连接后，插件首先发送 `host.hello`，其中包含 `version`、`roomId`、`deviceId`、`deviceName`、Token、时间戳和 capabilities。Relay 验证 Token，并返回 `host.welcome`；认证失败返回 `relay.error`。Relay 收到 `ping` 后应返回 `pong`。单条消息上限为 1 MiB。
+Protocol v1 的连接地址为 `wss://<relay-host>/v1/connect`。连接后，插件首先发送
+`connect.hello`，其中包含 `version`、`spaceId`、`endpointId`、`endpointType`、短期
+Token、完整的 Ed25519 `endpointProof` 和 capabilities。Endpoint proof 绑定本机公钥、
+时间戳、随机 nonce 与 Connect Token；Relay 验证 proof 后返回 `connect.welcome`；认证失败返回
+`relay.error`。业务命令和事件都放在 `stream.message.payload` 中，Relay 不解析
+payload。Relay 收到 `ping` 后返回 `pong`，单条消息上限由
+`connect.welcome.maxFrameSize` 宣布。
 
-完整字段和 JSON Schema 位于 [`schemas/relay-protocol.schema.json`](./schemas/relay-protocol.schema.json)。
+Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 或 hash；Token 只放在
+首帧。插件会读取 `connect.welcome.features`，当服务端未公布 `directed-routing` 时，
+插件会阻止需要定向路由的命令发送并提示当前套餐不支持该能力，避免把敏感命令广播到整个 Space。
+
+通用字段和校验规则位于同级的 [`relay-protocol`](../relay-protocol/README.md) 工程；
+本目录下的 [`schemas/relay-protocol.schema.json`](./schemas/relay-protocol.schema.json)
+只描述 Relay transport frame，Codex 业务 payload 保持不透明并由产品适配层定义。
 
 ## 手机端发送命令
 
-所有命令必须带唯一 `requestId`、发送端 `deviceId`、目标主机 `targetDeviceId`、房间和 5 分钟内的时间戳：
+手机端应通过 `stream.message` 发送命令；业务 payload 仍必须带唯一 `requestId`、发送端
+`deviceId`、目标主机 `targetDeviceId`、Space 和 5 分钟内的时间戳：
 
 ```json
 {
   "version": 1,
-  "type": "codex.command",
-  "requestId": "phone-request-42",
-  "roomId": "studio-mac",
-  "deviceId": "phone_a1",
-  "targetDeviceId": "host_b2",
-  "threadId": "thread-id",
-  "timestamp": "2026-08-20T08:00:00.000Z",
-  "command": { "type": "turn.start", "text": "继续实现并运行测试" }
+  "type": "stream.message",
+  "messageId": "message-42",
+  "streamId": "codex",
+  "sequence": 1,
+  "from": "phone_a1",
+  "to": "host_b2",
+  "protocol": "codex.v1",
+  "payload": {
+    "type": "codex.command",
+    "requestId": "phone-request-42",
+    "spaceId": "studio-mac",
+    "deviceId": "phone_a1",
+    "targetDeviceId": "host_b2",
+    "threadId": "thread-id",
+    "timestamp": "2026-08-20T08:00:00.000Z",
+    "command": { "type": "turn.start", "text": "继续实现并运行测试" }
+  }
 }
 ```
 
@@ -229,16 +257,16 @@ make push MESSAGE="release: describe the change"
 
 ## Relay 服务必须负责
 
-1. 使用恒时比较或等价安全方式验证房间 Token，认证后把连接绑定到 `roomId + deviceId`。
-2. 只把命令路由给 `targetDeviceId`；不要把手机命令广播到房间内所有主机。
+1. 使用恒时比较或等价安全方式验证 Connect Token 和 Endpoint proof，认证后把连接绑定到 `spaceId + endpointId`。
+2. 只把命令路由给 `targetDeviceId`；不要把手机命令广播到 Space 内所有 Endpoint。
 3. 限制消息大小、连接数、认证尝试和每设备命令速率。
 4. 使用 WSS，禁止在日志、错误消息或监控标签中记录 Token 和完整会话内容。
-5. 为手机连接提供等价鉴权；不要因为已知 roomId 就允许加入房间。
+5. 为手机连接提供等价鉴权；不要因为已知 Space ID 就允许加入 Space。
 6. 保持消息内容不变并支持背压。协议 v1 不要求 Relay 持久化事件。
 
 ## 安全边界与当前限制
 
-- Relay 和手机端仍是信任边界；插件侧会再次验证房间、目标设备、时间戳、权限和项目范围。
+- Relay 和手机端仍是信任边界；插件侧会再次验证 Space、目标 Endpoint、时间戳、权限和项目范围。
 - 项目白名单为空表示允许访问全部本机会话；首次配置建议开启只读并填写白名单。
 - 远程审批风险较高，只有命令执行和文件变更审批会被转发；其他 App Server 客户端请求会被拒绝。
 - 当前远端输入仅支持文本，不包含图片、音频和附件。

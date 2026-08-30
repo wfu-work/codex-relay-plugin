@@ -24,7 +24,7 @@ export function redact(value) {
   if (typeof value === "string") {
     return value
       .replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]")
-      .replace(/("?(?:token|secret|authorization|api[_-]?key)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
+      .replace(/("?(?:token|connect[_-]?token|endpoint[_-]?grant|grant|secret|authorization|api[_-]?key|private[_-]?key|signature)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
   }
   return JSON.parse(redact(JSON.stringify(value)));
 }
@@ -35,6 +35,10 @@ export function normalizeRelayUrl(raw) {
     throw new Error("Relay 地址必须使用 ws:// 或 wss://");
   }
   if (!url.hostname) throw new Error("Relay 地址缺少主机名");
+  if (url.username || url.password) throw new Error("Relay 地址不能包含用户名或密码");
+  if (url.search || url.hash) throw new Error("Relay 地址不能包含 query 或 hash；Token 必须放在 connect.hello 首帧");
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
+  if (url.pathname !== "/v1/connect") throw new Error("Relay 地址必须使用 /v1/connect");
   return url.toString();
 }
 

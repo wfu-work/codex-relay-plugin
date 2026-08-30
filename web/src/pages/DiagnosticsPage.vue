@@ -28,7 +28,7 @@ const { state, shortTime, refreshLogs, clearLogs, runDiagnostics } = useRelay();
       </div>
       <div class="guidance-list">
         <div><i></i><p><strong>先运行本机诊断</strong><span>确认 Codex 命令可用、配置格式正确，并且连接所需凭据已经保存。</span></p></div>
-        <div><i></i><p><strong>再到总览测试连接</strong><span>测试会执行 Relay 握手和认证，但不会持续保持连接，适合验证地址、房间和 Token。</span></p></div>
+        <div><i></i><p><strong>再到总览测试连接</strong><span>测试会执行 Relay 握手和认证，但不会持续保持连接，适合验证地址、Space 和 Connect Token。</span></p></div>
         <div><i></i><p><strong>最后查看错误时间线</strong><span>按时间对照组件和错误信息，判断是网络断开、认证失败，还是本机 App Server 未就绪。</span></p></div>
         <div><i></i><p><strong>分享日志前检查路径信息</strong><span>日志不会代替完整配置，但仍可能包含 Relay 地址或本机项目路径，请在对外发送前确认内容。</span></p></div>
       </div>

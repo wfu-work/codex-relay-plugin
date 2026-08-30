@@ -47,12 +47,12 @@ const { state, saveConfig } = useRelay();
       <div class="guidance-intro">
         <span>安全建议</span>
         <h2 id="permission-guide-title">按使用场景逐步开放能力</h2>
-        <p>首次连接建议保持只读，先确认会话同步、设备身份和房间成员都符合预期，再开放写入或控制能力。</p>
+        <p>首次连接建议保持只读，先确认会话同步、设备身份和 Space 成员都符合预期，再开放写入或控制能力。</p>
       </div>
       <div class="guidance-list">
         <div><i></i><p><strong>日常查看只需读取权限</strong><span>如果手机端只用于观察任务进度，开启“查看会话”即可，不需要允许发送消息或创建会话。</span></p></div>
         <div><i></i><p><strong>控制权限应按需开启</strong><span>调整任务和停止任务会改变正在运行的 Codex 工作流，适合明确需要远程干预时使用。</span></p></div>
-        <div><i></i><p><strong>远程审批是敏感权限</strong><span>它可能放行命令或文件变更。启用前请确认 Relay、房间 Token 和手机端设备都由你控制。</span></p></div>
+        <div><i></i><p><strong>远程审批是敏感权限</strong><span>它可能放行命令或文件变更。启用前请确认 Relay、Connect Token 和手机端设备都由你控制。</span></p></div>
         <div><i></i><p><strong>用白名单限制项目范围</strong><span>每行填写一个绝对路径，可以把远程创建会话的范围限制在指定目录及其子目录内。</span></p></div>
       </div>
     </section>

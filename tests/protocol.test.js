@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultConfig } from "../server/config-store.js";
 import { EventBuffer } from "../server/event-buffer.js";
-import { eventEnvelope, normalizeCodexNotification, validateRelayCommand, validateRelayWelcome } from "../server/protocol.js";
+import { commandResult, eventEnvelope, normalizeCodexNotification, validateRelayCommand, validateRelayWelcome, wrapRelayFrame, unwrapRelayFrame } from "../server/protocol.js";
 
 function fixture(command = { type: "thread.list" }) {
   const config = defaultConfig();
-  config.relay.roomId = "room-1";
+  config.relay.spaceId = "space-1";
   config.relay.deviceId = "host-1";
   return {
     config,
@@ -14,7 +14,7 @@ function fixture(command = { type: "thread.list" }) {
       version: 1,
       type: "codex.command",
       requestId: "req-1",
-      roomId: "room-1",
+      spaceId: "space-1",
       deviceId: "phone-1",
       targetDeviceId: "host-1",
       timestamp: new Date().toISOString(),
@@ -58,10 +58,38 @@ test("event envelopes have monotonic sequences and host identity", () => {
 });
 
 test("validates the relay welcome protocol and connection identity", () => {
-  const welcome = { version: 1, type: "host.welcome", connectionId: "connection-1" };
+  const welcome = {
+    version: 1,
+    type: "connect.welcome",
+    connectionId: "connection-1",
+    sessionId: "session-1",
+    spaceId: "space-1",
+    endpointId: "endpoint-1",
+    maxFrameSize: 1024 * 1024,
+  };
   assert.equal(validateRelayWelcome(welcome), welcome);
   assert.throws(() => validateRelayWelcome({ ...welcome, version: 2 }), { code: "PROTOCOL_VERSION_UNSUPPORTED" });
-  assert.throws(() => validateRelayWelcome({ version: 1, type: "host.welcome" }), { code: "INVALID_MESSAGE" });
+  assert.throws(() => validateRelayWelcome({ version: 1, type: "host.welcome", connectionId: "connection-1" }), { code: "INVALID_MESSAGE" });
+  assert.throws(() => validateRelayWelcome({ version: 1, type: "connect.welcome", connectionId: "connection-1" }), { code: "INVALID_MESSAGE" });
+});
+
+test("wraps product messages in the transport envelope and unwraps them", () => {
+  const { config, message } = fixture();
+  const wrapped = wrapRelayFrame(message, config);
+  assert.equal(wrapped.type, "stream.message");
+  assert.equal(wrapped.streamId, "codex");
+  assert.equal(wrapped.to, "host-1");
+  const unwrapped = unwrapRelayFrame(wrapped);
+  assert.equal(unwrapped.type, "codex.command");
+  assert.equal(unwrapped.deviceId, "host-1");
+  assert.equal(unwrapped.targetDeviceId, "host-1");
+});
+
+test("routes command results back to the requesting endpoint", () => {
+  const { config } = fixture();
+  const result = commandResult(config, "req-1", { ok: true }, "phone-1");
+  assert.equal(result.targetDeviceId, "phone-1");
+  assert.equal(wrapRelayFrame(result, config).to, "phone-1");
 });
 
 test("only explicitly supported Codex notifications are relayable", () => {

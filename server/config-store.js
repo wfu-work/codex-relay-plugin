@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { isLoopbackHostname, randomId, normalizeRelayUrl } from "./utils.js";
 import { SecretStore } from "./secret-store.js";
+import { EndpointIdentityStore } from "./endpoint-identity-store.js";
 
 export const DEFAULT_PERMISSIONS = Object.freeze({
   readThreads: true,
@@ -18,7 +19,7 @@ export function defaultConfig() {
     version: 1,
     relay: {
       url: "",
-      roomId: "",
+      spaceId: "",
       deviceId: randomId("host"),
       deviceName: os.hostname(),
       autoConnect: false,
@@ -42,6 +43,7 @@ export class ConfigStore {
     this.configFile = path.join(this.configDir, "config.json");
     this.logger = logger;
     this.secretStore = new SecretStore(this.configDir, logger);
+    this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
     this.config = null;
   }
 
@@ -64,67 +66,127 @@ export class ConfigStore {
 
   async publicConfig({ includeToken = false } = {}) {
     const config = this.get();
-    const token = await this.secretStore.get(config.relay.roomId);
+    const credential = await this.secretStore.getCredential(relaySpaceId(config.relay));
+    const identity = await this.endpointIdentityStore.get();
     return {
       ...config,
       relay: {
         ...config.relay,
-        ...(includeToken ? { token: token || "" } : {}),
-        tokenConfigured: Boolean(token),
+        ...(includeToken ? {
+          token: credential?.connectToken || "",
+          ...(credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}),
+        } : {}),
+        tokenConfigured: Boolean(credential?.connectToken),
+        tokenExpiresAt: credential?.expiresAt || null,
+        endpointGrantConfigured: Boolean(credential?.endpointGrant),
+        grantExpiresAt: credential?.grantExpiresAt || null,
+        tokenEndpoint: credential?.tokenEndpoint || "",
+        endpointPublicKey: identity.publicKey,
       },
     };
   }
 
-  async update(patch, token) {
-    if (token !== undefined && (typeof token !== "string" || token.length > 16_384)) {
-      throw new Error("Relay Token 必须是长度不超过 16384 的字符串");
-    }
-    const previousRoom = this.config?.relay?.roomId;
+  async update(patch, credentialPatch) {
     const next = mergeConfig(this.get(), patch || {});
     validateConfig(next);
+    const nextSpace = relaySpaceId(next.relay);
+    let nextCredential;
+    if (credentialPatch !== undefined) {
+      if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
+      if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
+        throw new Error("Relay Token 凭证必须是对象");
+      }
+      if (Object.hasOwn(credentialPatch, "token")) {
+        throw new Error("Relay Token 必须通过字符串或 connectToken 字段提供");
+      }
+      const current = (await this.secretStore.getCredential(nextSpace)) || {};
+      const credential = credentialPatch.connectToken ? {
+        connectToken: credentialPatch.connectToken,
+        ...(credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {}),
+        ...credentialField(credentialPatch, "endpointGrant"),
+        ...credentialField(credentialPatch, "grantExpiresAt"),
+        ...credentialField(credentialPatch, "tokenEndpoint"),
+      } : {
+        ...current,
+        ...(credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {}),
+        ...credentialField(credentialPatch, "endpointGrant"),
+        ...credentialField(credentialPatch, "grantExpiresAt"),
+        ...credentialField(credentialPatch, "tokenEndpoint"),
+      };
+      if (Object.keys(credential).length) nextCredential = this.secretStore.validate(credential);
+    }
     await fs.mkdir(this.configDir, { recursive: true, mode: 0o700 });
     const temporary = `${this.configFile}.tmp`;
     await fs.writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
     await fs.rename(temporary, this.configFile);
     await fs.chmod(this.configFile, 0o600);
     this.config = next;
-    if (token !== undefined && token !== "") await this.secretStore.set(next.relay.roomId, token);
-    if (previousRoom && previousRoom !== next.relay.roomId && token === undefined) {
-      const oldToken = await this.secretStore.get(previousRoom);
-      if (oldToken) await this.secretStore.set(next.relay.roomId, oldToken);
-    }
-    this.logger?.info("config", "配置已保存", { relayUrl: next.relay.url, roomId: next.relay.roomId });
+    if (nextCredential) await this.secretStore.set(nextSpace, nextCredential);
+    // Connect Tokens are proof-bound to a single Space. Do not copy a token
+    // when the configured Space changes; an existing token for the new Space,
+    // if any, remains available in the per-Space secret store.
+    this.logger?.info("config", "配置已保存", { relayUrl: next.relay.url, spaceId: nextSpace });
     return this.publicConfig();
   }
 
+  async relayCredential() {
+    return this.secretStore.getCredential(relaySpaceId(this.get().relay));
+  }
+
   async token() {
-    return this.secretStore.get(this.get().relay.roomId);
+    const credential = await this.relayCredential();
+    return credential?.connectToken || null;
+  }
+
+  async updateRelayCredential(patch) {
+    const spaceId = relaySpaceId(this.get().relay);
+    await this.secretStore.update(spaceId, patch);
+    return this.secretStore.getCredential(spaceId);
+  }
+
+  async endpointIdentity() {
+    return this.endpointIdentityStore.get();
   }
 }
 
+function credentialField(patch, name) {
+  if (!Object.hasOwn(patch, name)) return {};
+  return patch[name] === "" || patch[name] === null ? { [name]: undefined } : { [name]: patch[name] };
+}
+
 function mergeConfig(base, patch) {
+  const relayPatch = patch.relay || {};
+  const spaceId = relayPatch.spaceId ?? base.relay.spaceId ?? "";
   return {
     ...base,
     ...patch,
-    relay: { ...base.relay, ...(patch.relay || {}) },
+    relay: { ...base.relay, ...relayPatch, spaceId },
     codex: { ...base.codex, ...(patch.codex || {}) },
     permissions: { ...base.permissions, ...(patch.permissions || {}) },
     allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects,
   };
 }
 
+export function relaySpaceId(relay) {
+  return String(relay?.spaceId || "");
+}
+
 export function validateConfig(config) {
   if (!config || typeof config !== "object" || config.version !== 1) throw new Error("配置版本无效");
   if (!config.relay || typeof config.relay !== "object") throw new Error("Relay 配置无效");
   if (config.relay.url) {
-    const relayUrl = new URL(normalizeRelayUrl(config.relay.url));
+    const normalizedRelayUrl = normalizeRelayUrl(config.relay.url);
+    const relayUrl = new URL(normalizedRelayUrl);
+    config.relay.url = normalizedRelayUrl;
     if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
       throw new Error("非本机 Relay 必须使用 wss:// 加密连接");
     }
     if (relayUrl.username || relayUrl.password) throw new Error("Relay 地址不能包含用户名或密码");
+    if (relayUrl.search || relayUrl.hash) throw new Error("Relay 地址不能包含 query 或 hash；Token 必须放在 connect.hello 首帧");
   }
-  if (config.relay.roomId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.roomId)) {
-    throw new Error("房间 ID 只能包含字母、数字、点、下划线、冒号和连字符");
+  const spaceId = relaySpaceId(config.relay);
+  if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
+    throw new Error("Space ID 只能包含字母、数字、点、下划线、冒号和连字符");
   }
   if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("设备 ID 无效");
   const heartbeat = Number(config.relay.heartbeatSeconds);

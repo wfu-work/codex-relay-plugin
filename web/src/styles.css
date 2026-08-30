@@ -140,7 +140,7 @@ button, input, textarea { font: inherit; }
 .live-dot.connecting, .live-dot.authenticating, .live-dot.reconnecting,
 .signal-pulse.connecting, .signal-pulse.authenticating, .signal-pulse.reconnecting { background: var(--warning); }
 .live-dot.error, .signal-pulse.error { background: var(--danger); }
-.sider-room { overflow: hidden; margin-top: 8px; color: var(--ink-faint); font: var(--text-caption)/1.4 var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
+.sider-space { overflow: hidden; margin-top: 8px; color: var(--ink-faint); font: var(--text-caption)/1.4 var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
 .theme-switcher {
   display: grid;
   grid-template-columns: 1fr 1fr;

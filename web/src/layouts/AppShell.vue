@@ -71,7 +71,7 @@ onBeforeUnmount(stop);
             <span>{{ relayLabel }}</span>
             <a-tag :color="relayStatusType">{{ relayStateValue === 'connected' ? 'LIVE' : 'IDLE' }}</a-tag>
           </div>
-          <div class="sider-room">{{ state.status?.room?.roomId || '尚未配置房间' }}</div>
+          <div class="sider-space">{{ state.status?.space?.spaceId || '尚未配置 Space' }}</div>
         </div>
         <div class="theme-switcher" aria-label="主题">
           <button :class="{ active: state.themeMode === 'light' }" type="button" @click="setTheme('light')">浅色</button>

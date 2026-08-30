@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path5) {
-      let input = path5;
+    function removeDotSegments(path6) {
+      let input = path6;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path5, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path5 && path5 !== "/" ? path5 : void 0;
+        const [path6, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path6 && path6 !== "/" ? path6 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6898,12 +6898,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs4, exportName) {
+    function addFormats(ajv, list, fs5, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs4[f]);
+        ajv.addFormat(f, fs5[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7152,10 +7152,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path5) {
-  if (!path5)
+function getElementAtPath(obj, path6) {
+  if (!path6)
     return obj;
-  return path5.reduce((acc, key) => acc?.[key], obj);
+  return path6.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7564,11 +7564,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path5, issues) {
+function prefixIssues(path6, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path5);
+    iss.path.unshift(path6);
     return iss;
   });
 }
@@ -7715,16 +7715,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path5 = []) => {
+  const processError = (error3, path6 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path5, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path6, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path6, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path5, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path6, ...issue2.path]);
       } else {
-        const fullpath = [...path5, ...issue2.path];
+        const fullpath = [...path6, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -15733,7 +15733,7 @@ function randomId(prefix) {
 }
 function redact(value) {
   if (typeof value === "string") {
-    return value.replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]").replace(/("?(?:token|secret|authorization|api[_-]?key)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
+    return value.replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]").replace(/("?(?:token|connect[_-]?token|endpoint[_-]?grant|grant|secret|authorization|api[_-]?key|private[_-]?key|signature)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
   }
   return JSON.parse(redact(JSON.stringify(value)));
 }
@@ -15743,6 +15743,10 @@ function normalizeRelayUrl(raw) {
     throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 ws:// \u6216 wss://");
   }
   if (!url.hostname) throw new Error("Relay \u5730\u5740\u7F3A\u5C11\u4E3B\u673A\u540D");
+  if (url.username || url.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
+  if (url.search || url.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
+  if (url.pathname !== "/v1/connect") throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 /v1/connect");
   return url.toString();
 }
 function isLoopbackHostname(hostname) {
@@ -15767,10 +15771,390 @@ function filterThreadList(result, allowedProjects) {
   };
 }
 
+// server/config-store.js
+import fs3 from "node:fs/promises";
+import os from "node:os";
+import path4 from "node:path";
+
+// server/secret-store.js
+import crypto2 from "node:crypto";
+import fs from "node:fs/promises";
+import path2 from "node:path";
+var SecretStore = class {
+  constructor(configDir, logger) {
+    this.configDir = configDir;
+    this.logger = logger;
+    this.fallbackFile = path2.join(configDir, "secrets.json");
+    this.cache = /* @__PURE__ */ new Map();
+    this.writeQueue = Promise.resolve();
+  }
+  async get(spaceId) {
+    const credential = await this.getCredential(spaceId);
+    return credential?.connectToken || null;
+  }
+  async getCredential(spaceId) {
+    if (process.env.CODEX_RELAY_TOKEN) {
+      return { connectToken: process.env.CODEX_RELAY_TOKEN };
+    }
+    const key = spaceId || "default";
+    if (this.cache.has(key)) return cloneCredential(this.cache.get(key));
+    const values = await this.#readFallback();
+    const credential = values[key] ? validateCredential(values[key]) : null;
+    this.cache.set(key, credential);
+    return cloneCredential(credential);
+  }
+  async set(spaceId, credential) {
+    const key = spaceId || "default";
+    if (!credential) return this.delete(key);
+    const normalized = validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      values[key] = normalized;
+      await this.#writeFallback(values);
+      this.cache.set(key, normalized);
+      return { backend: "file" };
+    });
+  }
+  async update(spaceId, patch) {
+    const current = await this.getCredential(spaceId) || {};
+    return this.set(spaceId, { ...current, ...patch });
+  }
+  validate(credential) {
+    return validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
+  }
+  async delete(spaceId) {
+    const key = spaceId || "default";
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      delete values[key];
+      await this.#writeFallback(values);
+      this.cache.set(key, null);
+    });
+  }
+  async #readFallback() {
+    try {
+      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
+    } catch (error2) {
+      if (error2.code === "ENOENT") return {};
+      throw error2;
+    }
+  }
+  async #writeFallback(values) {
+    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.fallbackFile}.${process.pid}.${crypto2.randomUUID()}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify(values, null, 2)}
+`, { mode: 384 });
+    await fs.rename(temporary, this.fallbackFile);
+    await fs.chmod(this.fallbackFile, 384);
+  }
+  #enqueue(operation) {
+    const next = this.writeQueue.then(operation, operation);
+    this.writeQueue = next.catch(() => void 0);
+    return next;
+  }
+};
+function validateCredential(value) {
+  if (typeof value === "string") value = { connectToken: value };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Relay \u51ED\u8BC1\u683C\u5F0F\u65E0\u6548");
+  }
+  const connectToken = validateSecret(value.connectToken, "Connect Token", true);
+  const endpointGrant = validateSecret(value.endpointGrant, "Endpoint Grant", false);
+  const expiresAt = validateExpiry(value.expiresAt, "Connect Token");
+  const grantExpiresAt = validateExpiry(value.grantExpiresAt, "Endpoint Grant");
+  const tokenEndpoint = validateTokenEndpoint(value.tokenEndpoint);
+  return {
+    connectToken,
+    ...expiresAt === void 0 ? {} : { expiresAt },
+    ...endpointGrant === void 0 ? {} : { endpointGrant },
+    ...grantExpiresAt === void 0 ? {} : { grantExpiresAt },
+    ...tokenEndpoint === void 0 ? {} : { tokenEndpoint }
+  };
+}
+function validateSecret(value, label, required2) {
+  if (value === void 0 || value === null || value === "") {
+    if (required2) throw new Error(`${label} \u4E0D\u80FD\u4E3A\u7A7A`);
+    return void 0;
+  }
+  const minimum = label === "Endpoint Grant" ? 16 : 1;
+  if (typeof value !== "string" || value.length < minimum || value.length > 16384 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${label} \u683C\u5F0F\u65E0\u6548`);
+  }
+  return value;
+}
+function validateExpiry(value, label) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} \u8FC7\u671F\u65F6\u95F4\u65E0\u6548`);
+  return value;
+}
+function validateTokenEndpoint(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (typeof value !== "string" || value.length > 2048) throw new Error("Token Endpoint \u65E0\u6548");
+  const endpoint = new URL(value);
+  if (!endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new Error("Token Endpoint \u4E0D\u80FD\u5305\u542B\u51ED\u8BC1\u3001query \u6216 hash");
+  }
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(endpoint.hostname);
+  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
+    throw new Error("\u975E\u672C\u673A Token Endpoint \u5FC5\u987B\u4F7F\u7528 https://");
+  }
+  return endpoint.toString();
+}
+function cloneCredential(value) {
+  return value ? { ...value } : null;
+}
+
+// server/endpoint-identity-store.js
+import crypto3 from "node:crypto";
+import fs2 from "node:fs/promises";
+import path3 from "node:path";
+var EndpointIdentityStore = class {
+  constructor(configDir) {
+    this.configDir = configDir;
+    this.file = path3.join(configDir, "endpoint-identity.json");
+    this.identity = null;
+  }
+  async get() {
+    if (this.identity) return { ...this.identity };
+    try {
+      this.identity = this.#validate(JSON.parse(await fs2.readFile(this.file, "utf8")));
+      await fs2.chmod(this.file, 384);
+      return { ...this.identity };
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    const pair = crypto3.generateKeyPairSync("ed25519");
+    const publicDer = pair.publicKey.export({ format: "der", type: "spki" });
+    const privateDer = pair.privateKey.export({ format: "der", type: "pkcs8" });
+    const identity = {
+      schemaVersion: 1,
+      publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
+      privateKey: Buffer.from(privateDer).toString("base64url")
+    };
+    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
+    await fs2.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
+`, { mode: 384 });
+    await fs2.rename(temporary, this.file);
+    await fs2.chmod(this.file, 384);
+    this.identity = identity;
+    return { ...identity };
+  }
+  #validate(value) {
+    if (!value || value.schemaVersion !== 1) throw new Error("Endpoint identity schema is invalid");
+    const publicBytes = Buffer.from(value.publicKey || "", "base64url");
+    const privateBytes = Buffer.from(value.privateKey || "", "base64url");
+    if (publicBytes.length !== 32 || publicBytes.toString("base64url") !== value.publicKey || privateBytes.length < 32 || privateBytes.toString("base64url") !== value.privateKey) {
+      throw new Error("Endpoint identity key material is invalid");
+    }
+    return { schemaVersion: 1, publicKey: value.publicKey, privateKey: value.privateKey };
+  }
+};
+
+// server/config-store.js
+var DEFAULT_PERMISSIONS = Object.freeze({
+  readThreads: true,
+  sendMessages: true,
+  createThreads: true,
+  steerTurns: true,
+  interruptTurns: true,
+  respondToApprovals: false
+});
+function defaultConfig() {
+  return {
+    version: 1,
+    relay: {
+      url: "",
+      spaceId: "",
+      deviceId: randomId("host"),
+      deviceName: os.hostname(),
+      autoConnect: false,
+      heartbeatSeconds: 20,
+      reconnectMaxSeconds: 30
+    },
+    codex: {
+      executable: "codex",
+      autoStartAppServer: true,
+      defaultWorkingDirectory: ""
+    },
+    permissions: { ...DEFAULT_PERMISSIONS },
+    allowedProjects: [],
+    readOnly: false
+  };
+}
+var ConfigStore = class {
+  constructor({ configDir, logger } = {}) {
+    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path4.join(os.homedir(), ".codex-relay-plugin");
+    this.configFile = path4.join(this.configDir, "config.json");
+    this.logger = logger;
+    this.secretStore = new SecretStore(this.configDir, logger);
+    this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
+    this.config = null;
+  }
+  async load() {
+    let saved = {};
+    try {
+      saved = JSON.parse(await fs3.readFile(this.configFile, "utf8"));
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    this.config = mergeConfig(defaultConfig(), saved);
+    validateConfig(this.config);
+    return this.config;
+  }
+  get() {
+    if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
+    return structuredClone(this.config);
+  }
+  async publicConfig({ includeToken = false } = {}) {
+    const config2 = this.get();
+    const credential = await this.secretStore.getCredential(relaySpaceId(config2.relay));
+    const identity = await this.endpointIdentityStore.get();
+    return {
+      ...config2,
+      relay: {
+        ...config2.relay,
+        ...includeToken ? {
+          token: credential?.connectToken || "",
+          ...credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}
+        } : {},
+        tokenConfigured: Boolean(credential?.connectToken),
+        tokenExpiresAt: credential?.expiresAt || null,
+        endpointGrantConfigured: Boolean(credential?.endpointGrant),
+        grantExpiresAt: credential?.grantExpiresAt || null,
+        tokenEndpoint: credential?.tokenEndpoint || "",
+        endpointPublicKey: identity.publicKey
+      }
+    };
+  }
+  async update(patch, credentialPatch) {
+    const next = mergeConfig(this.get(), patch || {});
+    validateConfig(next);
+    const nextSpace = relaySpaceId(next.relay);
+    let nextCredential;
+    if (credentialPatch !== void 0) {
+      if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
+      if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
+        throw new Error("Relay Token \u51ED\u8BC1\u5FC5\u987B\u662F\u5BF9\u8C61");
+      }
+      if (Object.hasOwn(credentialPatch, "token")) {
+        throw new Error("Relay Token \u5FC5\u987B\u901A\u8FC7\u5B57\u7B26\u4E32\u6216 connectToken \u5B57\u6BB5\u63D0\u4F9B");
+      }
+      const current = await this.secretStore.getCredential(nextSpace) || {};
+      const credential = credentialPatch.connectToken ? {
+        connectToken: credentialPatch.connectToken,
+        ...credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {},
+        ...credentialField(credentialPatch, "endpointGrant"),
+        ...credentialField(credentialPatch, "grantExpiresAt"),
+        ...credentialField(credentialPatch, "tokenEndpoint")
+      } : {
+        ...current,
+        ...credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {},
+        ...credentialField(credentialPatch, "endpointGrant"),
+        ...credentialField(credentialPatch, "grantExpiresAt"),
+        ...credentialField(credentialPatch, "tokenEndpoint")
+      };
+      if (Object.keys(credential).length) nextCredential = this.secretStore.validate(credential);
+    }
+    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.configFile}.tmp`;
+    await fs3.writeFile(temporary, `${JSON.stringify(next, null, 2)}
+`, { mode: 384 });
+    await fs3.rename(temporary, this.configFile);
+    await fs3.chmod(this.configFile, 384);
+    this.config = next;
+    if (nextCredential) await this.secretStore.set(nextSpace, nextCredential);
+    this.logger?.info("config", "\u914D\u7F6E\u5DF2\u4FDD\u5B58", { relayUrl: next.relay.url, spaceId: nextSpace });
+    return this.publicConfig();
+  }
+  async relayCredential() {
+    return this.secretStore.getCredential(relaySpaceId(this.get().relay));
+  }
+  async token() {
+    const credential = await this.relayCredential();
+    return credential?.connectToken || null;
+  }
+  async updateRelayCredential(patch) {
+    const spaceId = relaySpaceId(this.get().relay);
+    await this.secretStore.update(spaceId, patch);
+    return this.secretStore.getCredential(spaceId);
+  }
+  async endpointIdentity() {
+    return this.endpointIdentityStore.get();
+  }
+};
+function credentialField(patch, name) {
+  if (!Object.hasOwn(patch, name)) return {};
+  return patch[name] === "" || patch[name] === null ? { [name]: void 0 } : { [name]: patch[name] };
+}
+function mergeConfig(base, patch) {
+  const relayPatch = patch.relay || {};
+  const spaceId = relayPatch.spaceId ?? base.relay.spaceId ?? "";
+  return {
+    ...base,
+    ...patch,
+    relay: { ...base.relay, ...relayPatch, spaceId },
+    codex: { ...base.codex, ...patch.codex || {} },
+    permissions: { ...base.permissions, ...patch.permissions || {} },
+    allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects
+  };
+}
+function relaySpaceId(relay) {
+  return String(relay?.spaceId || "");
+}
+function validateConfig(config2) {
+  if (!config2 || typeof config2 !== "object" || config2.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
+  if (!config2.relay || typeof config2.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
+  if (config2.relay.url) {
+    const normalizedRelayUrl = normalizeRelayUrl(config2.relay.url);
+    const relayUrl = new URL(normalizedRelayUrl);
+    config2.relay.url = normalizedRelayUrl;
+    if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
+      throw new Error("\u975E\u672C\u673A Relay \u5FC5\u987B\u4F7F\u7528 wss:// \u52A0\u5BC6\u8FDE\u63A5");
+    }
+    if (relayUrl.username || relayUrl.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
+    if (relayUrl.search || relayUrl.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
+  }
+  const spaceId = relaySpaceId(config2.relay);
+  if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
+    throw new Error("Space ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
+  }
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.deviceId || "")) throw new Error("\u8BBE\u5907 ID \u65E0\u6548");
+  const heartbeat = Number(config2.relay.heartbeatSeconds);
+  if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
+    throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
+  }
+  const reconnectMax = Number(config2.relay.reconnectMaxSeconds);
+  if (!Number.isFinite(reconnectMax) || reconnectMax < 5 || reconnectMax > 600) {
+    throw new Error("\u6700\u5927\u91CD\u8FDE\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 600 \u79D2\u4E4B\u95F4");
+  }
+  if (typeof config2.relay.deviceName !== "string" || config2.relay.deviceName.length > 128) {
+    throw new Error("\u8BBE\u5907\u540D\u79F0\u65E0\u6548");
+  }
+  if (typeof config2.relay.autoConnect !== "boolean") throw new Error("\u81EA\u52A8\u8FDE\u63A5\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!config2.codex || typeof config2.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
+  if (typeof config2.codex.executable !== "string" || !config2.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
+  if (typeof config2.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
+  if (config2.codex.defaultWorkingDirectory && !path4.isAbsolute(config2.codex.defaultWorkingDirectory)) {
+    throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
+  }
+  if (typeof config2.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!config2.permissions || typeof config2.permissions !== "object") throw new Error("\u8FDC\u7A0B\u6743\u9650\u914D\u7F6E\u65E0\u6548");
+  for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
+    if (typeof config2.permissions[name] !== "boolean") throw new Error(`\u8FDC\u7A0B\u6743\u9650 ${name} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
+  }
+  if (typeof config2.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!Array.isArray(config2.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
+  for (const project of config2.allowedProjects) {
+    if (typeof project !== "string" || !path4.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
+  }
+  return config2;
+}
+
 // server/protocol.js
 var PROTOCOL_VERSION = 1;
 function validateRelayWelcome(message) {
-  if (!message || typeof message !== "object" || message.type !== "host.welcome") {
+  if (!message || typeof message !== "object" || message.type !== "connect.welcome") {
     throw new RelayError("INVALID_MESSAGE", "Relay welcome \u6D88\u606F\u65E0\u6548");
   }
   if (message.version !== PROTOCOL_VERSION) {
@@ -15779,7 +16163,37 @@ function validateRelayWelcome(message) {
   if (!message.connectionId || typeof message.connectionId !== "string") {
     throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7F3A\u5C11 connectionId");
   }
+  if (!message.sessionId || !message.spaceId || !message.endpointId) {
+    throw new RelayError("INVALID_MESSAGE", "Protocol v1 welcome \u7F3A\u5C11 sessionId\u3001spaceId \u6216 endpointId");
+  }
+  if (!Number.isSafeInteger(message.maxFrameSize) || message.maxFrameSize <= 0) {
+    throw new RelayError("INVALID_MESSAGE", "Protocol v1 welcome \u7F3A\u5C11\u6709\u6548 maxFrameSize");
+  }
   return message;
+}
+var PRODUCT_FRAME_TYPES = /* @__PURE__ */ new Set(["codex.command", "codex.command.result", "codex.event", "host.snapshot"]);
+function wrapRelayFrame(message, config2) {
+  if (!message || typeof message !== "object" || message.type === "stream.message") return message;
+  if (!PRODUCT_FRAME_TYPES.has(message.type)) return message;
+  return {
+    version: PROTOCOL_VERSION,
+    type: "stream.message",
+    messageId: message.messageId || randomId("msg"),
+    streamId: message.streamId || "codex",
+    sequence: Number.isInteger(message.sequence) ? message.sequence : void 0,
+    from: config2.relay.deviceId,
+    ...message.targetDeviceId ? { to: message.targetDeviceId } : {},
+    protocol: "codex.v1",
+    encrypted: false,
+    payload: message
+  };
+}
+function unwrapRelayFrame(message) {
+  if (!message || message.type !== "stream.message" || !message.payload || typeof message.payload !== "object") return message;
+  const payload = { ...message.payload };
+  if (message.from) payload.deviceId = message.from;
+  if (message.to) payload.targetDeviceId = message.to;
+  return payload;
 }
 var COMMAND_PERMISSIONS = Object.freeze({
   "host.get_status": "readThreads",
@@ -15802,7 +16216,7 @@ function validateRelayCommand(message, config2) {
   if (!message.requestId || typeof message.requestId !== "string") throw new RelayError("INVALID_MESSAGE", "\u7F3A\u5C11 requestId");
   if (!message.deviceId || typeof message.deviceId !== "string") throw new RelayError("INVALID_MESSAGE", "\u7F3A\u5C11\u53D1\u9001\u7AEF deviceId");
   if (message.targetDeviceId !== config2.relay.deviceId) throw new RelayError("DEVICE_NOT_TARGETED", "\u547D\u4EE4\u672A\u53D1\u9001\u7ED9\u672C\u673A\u8BBE\u5907");
-  if (message.roomId !== config2.relay.roomId) throw new RelayError("ROOM_NOT_JOINED", "\u547D\u4EE4\u623F\u95F4\u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
+  if (message.spaceId !== relaySpaceId(config2.relay)) throw new RelayError("SPACE_NOT_JOINED", "\u547D\u4EE4 Space \u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
   const commandType = message.command?.type;
   if (!Object.hasOwn(COMMAND_PERMISSIONS, commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", `\u4E0D\u652F\u6301\u7684\u547D\u4EE4\uFF1A${commandType || "unknown"}`);
@@ -15826,7 +16240,7 @@ function eventEnvelope(config2, buffer, event, context = {}) {
     type: "codex.event",
     eventId: randomId("evt"),
     deviceId: config2.relay.deviceId,
-    roomId: config2.relay.roomId,
+    spaceId: relaySpaceId(config2.relay),
     sequence: buffer.nextSequence(),
     timestamp: nowIso(),
     ...context.threadId ? { threadId: context.threadId } : {},
@@ -15834,25 +16248,27 @@ function eventEnvelope(config2, buffer, event, context = {}) {
     event
   });
 }
-function commandResult(config2, requestId, result) {
+function commandResult(config2, requestId, result, targetDeviceId) {
   return {
     version: PROTOCOL_VERSION,
     type: "codex.command.result",
     requestId,
     deviceId: config2.relay.deviceId,
-    roomId: config2.relay.roomId,
+    spaceId: relaySpaceId(config2.relay),
+    ...targetDeviceId ? { targetDeviceId } : {},
     timestamp: nowIso(),
     success: true,
     result
   };
 }
-function commandError(config2, requestId, error2) {
+function commandError(config2, requestId, error2, targetDeviceId) {
   return {
     version: PROTOCOL_VERSION,
     type: "codex.command.result",
     requestId: requestId || randomId("invalid"),
     deviceId: config2.relay.deviceId,
-    roomId: config2.relay.roomId,
+    spaceId: relaySpaceId(config2.relay),
+    ...targetDeviceId ? { targetDeviceId } : {},
     timestamp: nowIso(),
     success: false,
     error: {
@@ -15940,7 +16356,7 @@ var CommandRouter = class {
   async #run(config2, message, fingerprint) {
     try {
       const result = await this.#execute(message.command, message);
-      const response = commandResult(config2, message.requestId, result ?? {});
+      const response = commandResult(config2, message.requestId, result ?? {}, message.deviceId);
       this.#remember(message.requestId, fingerprint, response);
       return response;
     } catch (error2) {
@@ -15954,7 +16370,7 @@ var CommandRouter = class {
       code: relayError.code,
       message: relayError.message
     });
-    const response = commandError(config2, message?.requestId, relayError);
+    const response = commandError(config2, message?.requestId, relayError, message?.deviceId);
     if (message?.requestId && fingerprint && !this.#completed.has(message.requestId)) {
       this.#remember(message.requestId, fingerprint, response);
     }
@@ -16062,7 +16478,7 @@ var CommandRouter = class {
 };
 function commandFingerprint(message) {
   return JSON.stringify({
-    roomId: message.roomId,
+    spaceId: message.spaceId,
     deviceId: message.deviceId,
     targetDeviceId: message.targetDeviceId,
     threadId: message.threadId || null,
@@ -16078,209 +16494,6 @@ function stableValue(value) {
 function requireString(value, name) {
   if (typeof value !== "string" || !value.trim()) throw new RelayError("INVALID_MESSAGE", `\u7F3A\u5C11 ${name}`);
   return value;
-}
-
-// server/config-store.js
-import fs2 from "node:fs/promises";
-import os from "node:os";
-import path3 from "node:path";
-
-// server/secret-store.js
-import fs from "node:fs/promises";
-import path2 from "node:path";
-var SecretStore = class {
-  constructor(configDir, logger) {
-    this.configDir = configDir;
-    this.logger = logger;
-    this.fallbackFile = path2.join(configDir, "secrets.json");
-    this.cache = /* @__PURE__ */ new Map();
-  }
-  async get(roomId) {
-    if (process.env.CODEX_RELAY_TOKEN) return process.env.CODEX_RELAY_TOKEN;
-    const account = roomId || "default";
-    if (this.cache.has(account)) return this.cache.get(account);
-    const values = await this.#readFallback();
-    const token = values[account] || null;
-    this.cache.set(account, token);
-    return token;
-  }
-  async set(roomId, token) {
-    const account = roomId || "default";
-    if (!token) return this.delete(account);
-    const values = await this.#readFallback();
-    values[account] = token;
-    await this.#writeFallback(values);
-    this.cache.set(account, token);
-    return { backend: "file" };
-  }
-  async delete(roomId) {
-    const account = roomId || "default";
-    const values = await this.#readFallback();
-    delete values[account];
-    await this.#writeFallback(values);
-    this.cache.set(account, null);
-  }
-  async #readFallback() {
-    try {
-      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
-    } catch (error2) {
-      if (error2.code === "ENOENT") return {};
-      throw error2;
-    }
-  }
-  async #writeFallback(values) {
-    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
-    await fs.writeFile(this.fallbackFile, `${JSON.stringify(values, null, 2)}
-`, { mode: 384 });
-    await fs.chmod(this.fallbackFile, 384);
-  }
-};
-
-// server/config-store.js
-var DEFAULT_PERMISSIONS = Object.freeze({
-  readThreads: true,
-  sendMessages: true,
-  createThreads: true,
-  steerTurns: true,
-  interruptTurns: true,
-  respondToApprovals: false
-});
-function defaultConfig() {
-  return {
-    version: 1,
-    relay: {
-      url: "",
-      roomId: "",
-      deviceId: randomId("host"),
-      deviceName: os.hostname(),
-      autoConnect: false,
-      heartbeatSeconds: 20,
-      reconnectMaxSeconds: 30
-    },
-    codex: {
-      executable: "codex",
-      autoStartAppServer: true,
-      defaultWorkingDirectory: ""
-    },
-    permissions: { ...DEFAULT_PERMISSIONS },
-    allowedProjects: [],
-    readOnly: false
-  };
-}
-var ConfigStore = class {
-  constructor({ configDir, logger } = {}) {
-    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path3.join(os.homedir(), ".codex-relay-plugin");
-    this.configFile = path3.join(this.configDir, "config.json");
-    this.logger = logger;
-    this.secretStore = new SecretStore(this.configDir, logger);
-    this.config = null;
-  }
-  async load() {
-    let saved = {};
-    try {
-      saved = JSON.parse(await fs2.readFile(this.configFile, "utf8"));
-    } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
-    }
-    this.config = mergeConfig(defaultConfig(), saved);
-    validateConfig(this.config);
-    return this.config;
-  }
-  get() {
-    if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
-    return structuredClone(this.config);
-  }
-  async publicConfig({ includeToken = false } = {}) {
-    const config2 = this.get();
-    const token = await this.secretStore.get(config2.relay.roomId);
-    return {
-      ...config2,
-      relay: {
-        ...config2.relay,
-        ...includeToken ? { token: token || "" } : {},
-        tokenConfigured: Boolean(token)
-      }
-    };
-  }
-  async update(patch, token) {
-    if (token !== void 0 && (typeof token !== "string" || token.length > 16384)) {
-      throw new Error("Relay Token \u5FC5\u987B\u662F\u957F\u5EA6\u4E0D\u8D85\u8FC7 16384 \u7684\u5B57\u7B26\u4E32");
-    }
-    const previousRoom = this.config?.relay?.roomId;
-    const next = mergeConfig(this.get(), patch || {});
-    validateConfig(next);
-    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.configFile}.tmp`;
-    await fs2.writeFile(temporary, `${JSON.stringify(next, null, 2)}
-`, { mode: 384 });
-    await fs2.rename(temporary, this.configFile);
-    await fs2.chmod(this.configFile, 384);
-    this.config = next;
-    if (token !== void 0 && token !== "") await this.secretStore.set(next.relay.roomId, token);
-    if (previousRoom && previousRoom !== next.relay.roomId && token === void 0) {
-      const oldToken = await this.secretStore.get(previousRoom);
-      if (oldToken) await this.secretStore.set(next.relay.roomId, oldToken);
-    }
-    this.logger?.info("config", "\u914D\u7F6E\u5DF2\u4FDD\u5B58", { relayUrl: next.relay.url, roomId: next.relay.roomId });
-    return this.publicConfig();
-  }
-  async token() {
-    return this.secretStore.get(this.get().relay.roomId);
-  }
-};
-function mergeConfig(base, patch) {
-  return {
-    ...base,
-    ...patch,
-    relay: { ...base.relay, ...patch.relay || {} },
-    codex: { ...base.codex, ...patch.codex || {} },
-    permissions: { ...base.permissions, ...patch.permissions || {} },
-    allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects
-  };
-}
-function validateConfig(config2) {
-  if (!config2 || typeof config2 !== "object" || config2.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
-  if (!config2.relay || typeof config2.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
-  if (config2.relay.url) {
-    const relayUrl = new URL(normalizeRelayUrl(config2.relay.url));
-    if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
-      throw new Error("\u975E\u672C\u673A Relay \u5FC5\u987B\u4F7F\u7528 wss:// \u52A0\u5BC6\u8FDE\u63A5");
-    }
-    if (relayUrl.username || relayUrl.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
-  }
-  if (config2.relay.roomId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.roomId)) {
-    throw new Error("\u623F\u95F4 ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
-  }
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.deviceId || "")) throw new Error("\u8BBE\u5907 ID \u65E0\u6548");
-  const heartbeat = Number(config2.relay.heartbeatSeconds);
-  if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
-    throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
-  }
-  const reconnectMax = Number(config2.relay.reconnectMaxSeconds);
-  if (!Number.isFinite(reconnectMax) || reconnectMax < 5 || reconnectMax > 600) {
-    throw new Error("\u6700\u5927\u91CD\u8FDE\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 600 \u79D2\u4E4B\u95F4");
-  }
-  if (typeof config2.relay.deviceName !== "string" || config2.relay.deviceName.length > 128) {
-    throw new Error("\u8BBE\u5907\u540D\u79F0\u65E0\u6548");
-  }
-  if (typeof config2.relay.autoConnect !== "boolean") throw new Error("\u81EA\u52A8\u8FDE\u63A5\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!config2.codex || typeof config2.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
-  if (typeof config2.codex.executable !== "string" || !config2.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
-  if (typeof config2.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
-  if (config2.codex.defaultWorkingDirectory && !path3.isAbsolute(config2.codex.defaultWorkingDirectory)) {
-    throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
-  }
-  if (typeof config2.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!config2.permissions || typeof config2.permissions !== "object") throw new Error("\u8FDC\u7A0B\u6743\u9650\u914D\u7F6E\u65E0\u6548");
-  for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
-    if (typeof config2.permissions[name] !== "boolean") throw new Error(`\u8FDC\u7A0B\u6743\u9650 ${name} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
-  }
-  if (typeof config2.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!Array.isArray(config2.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
-  for (const project of config2.allowedProjects) {
-    if (typeof project !== "string" || !path3.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
-  }
-  return config2;
 }
 
 // server/event-buffer.js
@@ -16355,6 +16568,142 @@ var Logger = class extends EventEmitter2 {
 
 // server/relay-client.js
 import { EventEmitter as EventEmitter3 } from "node:events";
+import crypto5 from "node:crypto";
+
+// server/relay-token-service.js
+import crypto4 from "node:crypto";
+var REFRESH_LEAD_MS = 6e4;
+var RelayTokenService = class {
+  #refreshing = null;
+  constructor(configStore, logger, options = {}) {
+    this.configStore = configStore;
+    this.logger = logger;
+    this.fetch = options.fetch || globalThis.fetch;
+  }
+  async usableToken({ force = false, credential: suppliedCredential = null } = {}) {
+    const credential = suppliedCredential || await this.#credential();
+    if (!credential?.connectToken) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Connect Token");
+    const expiring = Number.isSafeInteger(credential.expiresAt) && credential.expiresAt <= Date.now() + REFRESH_LEAD_MS;
+    if (!force && !expiring) return credential.connectToken;
+    if (!credential.endpointGrant) {
+      if (!force && credential.expiresAt > Date.now()) return credential.connectToken;
+      throw new RelayError("auth.grant_required", "Connect Token \u5DF2\u8FC7\u671F\u4E14\u672A\u914D\u7F6E Endpoint Grant");
+    }
+    if (Number.isSafeInteger(credential.grantExpiresAt) && credential.grantExpiresAt <= Date.now()) {
+      throw new RelayError("auth.grant_expired", "Endpoint Grant \u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u7B7E\u53D1\u51ED\u8BC1");
+    }
+    if (!this.#refreshing) {
+      this.#refreshing = this.#refresh(credential).finally(() => {
+        this.#refreshing = null;
+      });
+    }
+    return (await this.#refreshing).connectToken;
+  }
+  async #refresh(credential) {
+    const identity = await this.configStore.endpointIdentity();
+    const tokenEndpoint = credential.tokenEndpoint || deriveTokenEndpoint(this.configStore.get().relay.url);
+    if (!tokenEndpoint) throw new RelayError("auth.refresh_invalid", "\u672A\u914D\u7F6E\u6709\u6548\u7684 Token \u5237\u65B0\u5730\u5740");
+    const requestId = randomId("refresh");
+    const issuedAt = Date.now();
+    const nonce = crypto4.randomBytes(24).toString("base64url");
+    const canonical = [
+      "relay-connect-token-v1",
+      requestId,
+      issuedAt,
+      nonce,
+      credential.endpointGrant
+    ].join("\n");
+    const privateKey = crypto4.createPrivateKey({
+      key: Buffer.from(identity.privateKey, "base64url"),
+      format: "der",
+      type: "pkcs8"
+    });
+    let response;
+    try {
+      response = await this.fetch(tokenEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          endpointGrant: credential.endpointGrant,
+          proof: {
+            requestId,
+            issuedAt,
+            nonce,
+            signature: crypto4.sign(null, Buffer.from(canonical), privateKey).toString("base64url")
+          }
+        }),
+        signal: AbortSignal.timeout(1e4)
+      });
+    } catch (error2) {
+      throw new RelayError("RELAY_UNAVAILABLE", `Connect Token \u5237\u65B0\u5931\u8D25\uFF1A${error2.message}`);
+    }
+    const body = await response.json().catch(() => null);
+    const errorCode = body?.data?.errorCode;
+    if (!response.ok || Number.isInteger(body?.code) && body.code !== 200) {
+      throw new RelayError(errorCode || "auth.refresh_rejected", body?.msg || `Connect Token \u5237\u65B0\u88AB\u62D2\u7EDD\uFF08HTTP ${response.status}\uFF09`);
+    }
+    const data = body?.data && typeof body.data === "object" ? body.data : body;
+    if (typeof data?.connectToken !== "string" || data.connectToken.length < 32 || !/^[A-Za-z0-9_-]+$/.test(data.connectToken) || !Number.isSafeInteger(data.expiresAt) || data.expiresAt <= Date.now()) {
+      throw new RelayError("INVALID_MESSAGE", "Relay \u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u5237\u65B0\u51ED\u8BC1");
+    }
+    if (typeof this.configStore.updateRelayCredential !== "function") {
+      throw new RelayError("AUTH_FAILED", "\u5F53\u524D\u51ED\u8BC1\u5B58\u50A8\u4E0D\u652F\u6301\u81EA\u52A8\u7EED\u671F");
+    }
+    const updated = await this.configStore.updateRelayCredential({
+      connectToken: data.connectToken,
+      expiresAt: data.expiresAt,
+      ...credential.tokenEndpoint ? {} : { tokenEndpoint },
+      ...Number.isSafeInteger(data.grantExpiresAt) ? { grantExpiresAt: data.grantExpiresAt } : {}
+    });
+    this.logger.info("relay", "Connect Token \u5DF2\u901A\u8FC7 Endpoint Grant \u81EA\u52A8\u7EED\u671F", {
+      expiresAt: new Date(updated.expiresAt).toISOString()
+    });
+    return updated;
+  }
+  async #credential() {
+    if (typeof this.configStore.relayCredential === "function") {
+      return this.configStore.relayCredential();
+    }
+    const token = typeof this.configStore.token === "function" ? await this.configStore.token() : typeof this.configStore.get === "function" ? await this.configStore.get() : null;
+    if (typeof token === "string") return token ? { connectToken: token } : null;
+    if (typeof token?.relay?.token === "string" && token.relay.token) {
+      return { connectToken: token.relay.token };
+    }
+    return null;
+  }
+};
+function deriveTokenEndpoint(relayUrl) {
+  try {
+    const url = new URL(relayUrl);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.pathname = "/api/connect-tokens/refresh";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+// server/relay-client.js
+var TERMINAL_RELAY_AUTH_CODES = /* @__PURE__ */ new Set([
+  "auth.token_expired",
+  "auth.token_revoked",
+  "auth.invalid_token",
+  "auth.proof_required",
+  "auth.proof_mismatch",
+  "auth.proof_invalid",
+  "auth.proof_expired",
+  "auth.grant_required",
+  "auth.grant_expired",
+  "auth.grant_revoked",
+  "auth.invalid_grant",
+  "auth.refresh_invalid",
+  "auth.refresh_rejected",
+  "auth.replay",
+  "auth.account_unavailable",
+  "auth.revoked"
+]);
 var RelayClient = class extends EventEmitter3 {
   #socket = null;
   #heartbeat = null;
@@ -16362,15 +16711,21 @@ var RelayClient = class extends EventEmitter3 {
   #attempt = 0;
   #manualClose = false;
   #token = null;
-  constructor(configStore, logger) {
+  #credential = null;
+  #tokenService;
+  #maxFrameSize = 10 * 1024 * 1024;
+  #forceTokenRefresh = false;
+  constructor(configStore, logger, options = {}) {
     super();
     this.configStore = configStore;
     this.logger = logger;
+    this.#tokenService = options.tokenService || new RelayTokenService(configStore, logger, options);
     this.state = "disconnected";
     this.lastError = null;
     this.lastHeartbeat = null;
     this.connectedAt = null;
     this.connectionId = null;
+    this.features = [];
   }
   status() {
     return {
@@ -16379,23 +16734,30 @@ var RelayClient = class extends EventEmitter3 {
       lastHeartbeat: this.lastHeartbeat,
       connectedAt: this.connectedAt,
       connectionId: this.connectionId,
+      features: [...this.features],
       reconnectAttempt: this.#attempt
     };
   }
-  async connect(token) {
+  async connect(credential) {
     if (["connected", "authenticating", "connecting"].includes(this.state)) return this.status();
     const config2 = this.configStore.get();
+    const spaceId = relaySpaceId(config2.relay);
     if (!config2.relay.url) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Relay \u5730\u5740");
-    if (!config2.relay.roomId) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E\u623F\u95F4 ID");
-    if (!token) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Token");
-    this.#token = token;
+    if (!spaceId) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Space ID");
+    const token = typeof credential === "string" ? credential : credential?.connectToken;
+    if (credential !== void 0 && !token) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Token");
+    if (credential === void 0) this.#credential = null;
+    else if (typeof credential === "string") this.#credential = { connectToken: credential };
+    else if (credential?.connectToken) this.#credential = { ...credential };
     this.#manualClose = false;
     return this.#open();
   }
-  async test(token, timeoutMs = 8e3) {
+  async test(credential, timeoutMs = 8e3) {
     const config2 = this.configStore.get();
-    if (!config2.relay.url || !config2.relay.roomId || !token) {
-      throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Relay \u5730\u5740\u3001\u623F\u95F4 ID \u548C Token");
+    const supplied = typeof credential === "string" ? { connectToken: credential } : credential;
+    const token = await this.#tokenService.usableToken({ credential: supplied });
+    if (!config2.relay.url || !relaySpaceId(config2.relay) || !token) {
+      throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Relay \u5730\u5740\u3001Space ID \u548C Connect Token");
     }
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(config2.relay.url);
@@ -16416,13 +16778,18 @@ var RelayClient = class extends EventEmitter3 {
         socket.close();
         finishReject(new RelayError("RELAY_TIMEOUT", "Relay \u5728\u6D4B\u8BD5\u65F6\u95F4\u5185\u6CA1\u6709\u786E\u8BA4\u8BA4\u8BC1"));
       }, timeoutMs);
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify(this.#hello(config2, token, true)));
+      socket.addEventListener("open", async () => {
+        try {
+          socket.send(JSON.stringify(await this.#hello(config2, token, true)));
+        } catch (error2) {
+          socket.close();
+          finishReject(error2);
+        }
       });
       socket.addEventListener("message", (event) => {
         try {
           const message = JSON.parse(String(event.data));
-          if (message.type === "host.welcome") {
+          if (message.type === "connect.welcome") {
             validateRelayWelcome(message);
             socket.close(1e3, "test complete");
             finishResolve({ ok: true, connectionId: message.connectionId, protocolVersion: message.version });
@@ -16451,22 +16818,58 @@ var RelayClient = class extends EventEmitter3 {
     this.#heartbeat = null;
     if (this.#socket) this.#socket.close(1e3, reason);
     this.#socket = null;
+    this.#credential = null;
+    this.#token = null;
+    this.#forceTokenRefresh = false;
     this.state = "disconnected";
     this.connectedAt = null;
     this.connectionId = null;
+    this.features = [];
     this.emit("status", this.status());
   }
   send(message) {
     if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN || this.state !== "connected") return false;
-    this.#socket.send(JSON.stringify(message));
+    const config2 = this.configStore.get();
+    const frame = wrapRelayFrame(message, config2);
+    if (frame?.to && !this.features.includes("directed-routing")) {
+      const error2 = new RelayError(
+        "DIRECTED_ROUTING_UNAVAILABLE",
+        "\u5F53\u524D Relay \u5957\u9910\u4E0D\u652F\u6301\u5B9A\u5411\u8F6C\u53D1\uFF0C\u654F\u611F\u547D\u4EE4\u672A\u53D1\u9001"
+      );
+      this.lastError = error2.message;
+      this.logger.warn("relay", "Relay \u672A\u63D0\u4F9B\u5B9A\u5411\u8F6C\u53D1\u80FD\u529B\uFF0C\u5DF2\u963B\u6B62\u76EE\u6807\u6D88\u606F", {
+        code: error2.code,
+        target: frame.to
+      });
+      this.emit("status", this.status());
+      return false;
+    }
+    this.#socket.send(JSON.stringify(frame));
     return true;
   }
   async #open() {
+    try {
+      this.#token = await this.#tokenService.usableToken({
+        force: this.#forceTokenRefresh,
+        credential: this.#credential
+      });
+      this.#forceTokenRefresh = false;
+      if (typeof this.configStore.relayCredential === "function") {
+        this.#credential = await this.configStore.relayCredential();
+      }
+    } catch (error2) {
+      this.#handleFailure(error2);
+      if (!this.#manualClose && !isTerminalRelayAuthCode(error2?.code, this.#credential)) {
+        this.#scheduleReconnect();
+      }
+      throw error2;
+    }
     const config2 = this.configStore.get();
+    const spaceId = relaySpaceId(config2.relay);
     this.state = "connecting";
     this.lastError = null;
     this.emit("status", this.status());
-    this.logger.info("relay", "\u6B63\u5728\u8FDE\u63A5 Relay", { url: config2.relay.url, roomId: config2.relay.roomId });
+    this.logger.info("relay", "\u6B63\u5728\u8FDE\u63A5 Relay", { url: config2.relay.url, spaceId });
     return new Promise((resolve, reject) => {
       let settled = false;
       const socket = new WebSocket(config2.relay.url);
@@ -16478,10 +16881,20 @@ var RelayClient = class extends EventEmitter3 {
         }
         socket.close();
       }, 1e4);
-      socket.addEventListener("open", () => {
+      socket.addEventListener("open", async () => {
         this.state = "authenticating";
         this.emit("status", this.status());
-        socket.send(JSON.stringify(this.#hello(config2, this.#token, false)));
+        try {
+          socket.send(JSON.stringify(await this.#hello(config2, this.#token, false)));
+        } catch (error2) {
+          this.#handleFailure(error2);
+          if (!settled) {
+            settled = true;
+            clearTimeout(authenticationTimeout);
+            reject(error2);
+          }
+          socket.close();
+        }
       });
       socket.addEventListener("message", (event) => this.#handleMessage(event, { resolve, reject, settle: () => {
         settled = true;
@@ -16512,19 +16925,27 @@ var RelayClient = class extends EventEmitter3 {
     let message;
     try {
       const raw = String(event.data);
-      if (Buffer.byteLength(raw, "utf8") > 1024 * 1024) {
+      if (Buffer.byteLength(raw, "utf8") > this.#maxFrameSize) {
         this.#socket?.close(1009, "message too large");
-        throw new RelayError("INVALID_MESSAGE", "Relay \u6D88\u606F\u8D85\u8FC7 1 MiB \u9650\u5236");
+        throw new RelayError("INVALID_MESSAGE", "Relay \u6D88\u606F\u8D85\u8FC7 maxFrameSize \u9650\u5236");
       }
       message = JSON.parse(raw);
     } catch (error2) {
       this.logger.warn("relay", "\u5FFD\u7565 Relay \u7684\u65E0\u6548 JSON", { message: error2.message });
       return;
     }
-    if (message.type === "host.welcome") {
+    if (message.type === "connect.welcome") {
       if (this.state !== "authenticating") return;
       try {
         validateRelayWelcome(message);
+        const expectedSpaceId = relaySpaceId(this.configStore.get().relay);
+        const expectedEndpointId = this.configStore.get().relay.deviceId;
+        if (message.spaceId !== expectedSpaceId || message.endpointId !== expectedEndpointId) {
+          throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7684 Space \u6216 Endpoint \u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
+        }
+        if (!Number.isInteger(message.maxFrameSize) || message.maxFrameSize <= 0) {
+          throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7F3A\u5C11\u6709\u6548 maxFrameSize");
+        }
       } catch (error2) {
         clearTimeout(handshake.authenticationTimeout);
         this.#handleFailure(error2);
@@ -16537,6 +16958,8 @@ var RelayClient = class extends EventEmitter3 {
       this.state = "connected";
       this.connectedAt = nowIso();
       this.connectionId = message.connectionId;
+      this.features = Array.isArray(message.features) ? message.features.filter((item) => typeof item === "string") : [];
+      if (Number.isInteger(message.maxFrameSize) && message.maxFrameSize > 0) this.#maxFrameSize = message.maxFrameSize;
       this.#attempt = 0;
       this.lastError = null;
       this.#startHeartbeat();
@@ -16550,6 +16973,10 @@ var RelayClient = class extends EventEmitter3 {
     if (message.type === "relay.error") {
       const authenticating = this.state === "authenticating";
       const error2 = new RelayError(message.code || "RELAY_ERROR", message.message || "Relay \u8FD4\u56DE\u9519\u8BEF");
+      if (error2.code === "auth.token_expired" && this.#credential?.endpointGrant) {
+        this.#forceTokenRefresh = true;
+      }
+      if (isTerminalRelayAuthCode(error2.code, this.#credential)) this.#manualClose = true;
       this.#handleFailure(error2);
       if (authenticating) {
         clearTimeout(handshake.authenticationTimeout);
@@ -16564,18 +16991,48 @@ var RelayClient = class extends EventEmitter3 {
       this.emit("status", this.status());
       return;
     }
-    if (message.type === "codex.command") this.emit("command", message);
+    if (message.type === "stream.message" && message.protocol !== "codex.v1") return;
+    const productMessage = unwrapRelayFrame(message);
+    if (productMessage?.type === "codex.command") this.emit("command", productMessage);
   }
-  #hello(config2, token, test) {
+  async #hello(config2, token, test) {
+    const identity = await this.configStore.endpointIdentity();
+    const spaceId = relaySpaceId(config2.relay);
+    const requestId = randomId("hello");
+    const issuedAt = Date.now();
+    const nonce = crypto5.randomBytes(24).toString("base64url");
+    const canonical = [
+      "relay-connect-v1",
+      PROTOCOL_VERSION,
+      requestId,
+      spaceId,
+      config2.relay.deviceId,
+      "bridge",
+      token,
+      issuedAt,
+      nonce
+    ].join("\n");
+    const privateKey = crypto5.createPrivateKey({
+      key: Buffer.from(identity.privateKey, "base64url"),
+      format: "der",
+      type: "pkcs8"
+    });
     return {
       version: PROTOCOL_VERSION,
-      type: "host.hello",
-      requestId: randomId("hello"),
-      roomId: config2.relay.roomId,
-      deviceId: config2.relay.deviceId,
-      deviceName: config2.relay.deviceName,
+      type: "connect.hello",
+      requestId,
+      spaceId,
+      endpointId: config2.relay.deviceId,
+      endpointType: "bridge",
+      endpointName: config2.relay.deviceName,
       token,
-      timestamp: nowIso(),
+      endpointProof: {
+        algorithm: "Ed25519",
+        publicKey: identity.publicKey,
+        issuedAt,
+        nonce,
+        signature: crypto5.sign(null, Buffer.from(canonical), privateKey).toString("base64url")
+      },
       capabilities: ["threads", "turns", "streaming", "steer", "interrupt", "approvals", "sync-v1"],
       ...test ? { test: true } : {}
     };
@@ -16587,13 +17044,14 @@ var RelayClient = class extends EventEmitter3 {
       this.send({
         version: PROTOCOL_VERSION,
         type: "ping",
-        roomId: this.configStore.get().relay.roomId,
+        spaceId: relaySpaceId(this.configStore.get().relay),
         deviceId: this.configStore.get().relay.deviceId,
         timestamp: nowIso()
       });
     }, seconds * 1e3);
   }
   #handleFailure(error2) {
+    if (isTerminalRelayAuthCode(error2?.code, this.#credential)) this.#manualClose = true;
     this.state = "error";
     this.lastError = error2.message;
     this.logger.error("relay", "Relay \u8FDE\u63A5\u5F02\u5E38", { code: error2.code, message: error2.message });
@@ -16612,6 +17070,10 @@ var RelayClient = class extends EventEmitter3 {
     }, delay);
   }
 };
+function isTerminalRelayAuthCode(code, credential) {
+  if (code === "auth.token_expired" && credential?.endpointGrant) return false;
+  return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
 
 // server/connector-service.js
 var ConnectorService = class extends EventEmitter4 {
@@ -16656,9 +17118,9 @@ var ConnectorService = class extends EventEmitter4 {
   async connect() {
     await this.start();
     const config2 = this.configStore.get();
-    const token = await this.configStore.token();
+    const credential = await this.configStore.relayCredential();
     if (config2.codex.autoStartAppServer) await this.appServer.start();
-    return this.relay.connect(token);
+    return this.relay.connect(credential);
   }
   disconnect() {
     this.relay.disconnect();
@@ -16666,12 +17128,12 @@ var ConnectorService = class extends EventEmitter4 {
   }
   async testConnection() {
     await this.start();
-    return this.relay.test(await this.configStore.token());
+    return this.relay.test(await this.configStore.relayCredential());
   }
-  async updateConfig(patch, token) {
+  async updateConfig(patch, credentialPatch) {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
     if (wasConnected) this.relay.disconnect("configuration changed");
-    const config2 = await this.configStore.update(patch, token);
+    const config2 = await this.configStore.update(patch, credentialPatch);
     this.threadAccess.clear();
     if (wasConnected || config2.relay.autoConnect) await this.connect();
     this.emit("status", await this.status());
@@ -16686,8 +17148,8 @@ var ConnectorService = class extends EventEmitter4 {
       },
       relay: this.relay.status(),
       appServer: this.appServer.status(),
-      room: {
-        roomId: config2.relay.roomId,
+      space: {
+        spaceId: relaySpaceId(config2.relay),
         deviceId: config2.relay.deviceId,
         deviceName: config2.relay.deviceName
       },
@@ -16695,7 +17157,12 @@ var ConnectorService = class extends EventEmitter4 {
         readOnly: config2.readOnly,
         allowedProjects: config2.allowedProjects.length,
         remoteApprovalEnabled: config2.permissions.respondToApprovals,
-        tokenConfigured: config2.relay.tokenConfigured
+        tokenConfigured: config2.relay.tokenConfigured,
+        tokenExpiresAt: config2.relay.tokenExpiresAt,
+        endpointGrantConfigured: config2.relay.endpointGrantConfigured,
+        grantExpiresAt: config2.relay.grantExpiresAt,
+        tokenEndpoint: config2.relay.tokenEndpoint,
+        endpointPublicKey: config2.relay.endpointPublicKey
       },
       protocol: {
         version: 1,
@@ -16714,18 +17181,24 @@ var ConnectorService = class extends EventEmitter4 {
     const config2 = await this.configStore.publicConfig();
     checks.push({
       name: "configuration",
-      ok: Boolean(config2.relay.url && config2.relay.roomId && config2.relay.tokenConfigured),
+      ok: Boolean(config2.relay.url && relaySpaceId(config2.relay) && config2.relay.tokenConfigured),
       details: {
         relayUrlConfigured: Boolean(config2.relay.url),
-        roomConfigured: Boolean(config2.relay.roomId),
-        tokenConfigured: config2.relay.tokenConfigured
+        spaceConfigured: Boolean(relaySpaceId(config2.relay)),
+        tokenConfigured: config2.relay.tokenConfigured,
+        endpointGrantConfigured: config2.relay.endpointGrantConfigured,
+        tokenExpiresAt: config2.relay.tokenExpiresAt,
+        grantExpiresAt: config2.relay.grantExpiresAt,
+        tokenEndpoint: config2.relay.tokenEndpoint
       }
     });
     return { status: await this.status(), checks, logs: this.logger.list(50) };
   }
   async syncAfter(lastSequence) {
     const events = this.eventBuffer.after(lastSequence);
-    if (events !== null && !(Number(lastSequence || 0) === 0 && events.length === 0)) {
+    const requestedSequence = Number(lastSequence || 0);
+    const latestSequence = this.eventBuffer.latestSequence();
+    if (events !== null && requestedSequence <= latestSequence && !(requestedSequence === 0 && events.length === 0)) {
       return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence() };
     }
     await this.appServer.start();
@@ -16741,13 +17214,18 @@ var ConnectorService = class extends EventEmitter4 {
   #wireEvents() {
     this.relay.on("command", async (message) => {
       const response = await this.router.handle(message);
-      this.relay.send(response);
+      if (!this.relay.send(response)) {
+        this.logger.warn("connector", "Relay \u672A\u63A5\u53D7\u5B9A\u5411\u547D\u4EE4\u54CD\u5E94\uFF0C\u6D88\u606F\u672A\u53D1\u9001", {
+          requestId: message?.requestId,
+          targetDeviceId: response?.targetDeviceId
+        });
+      }
     });
     this.relay.on("connected", async () => {
       this.relay.send({
         version: 1,
         type: "host.snapshot",
-        roomId: this.configStore.get().relay.roomId,
+        spaceId: relaySpaceId(this.configStore.get().relay),
         deviceId: this.configStore.get().relay.deviceId,
         timestamp: (/* @__PURE__ */ new Date()).toISOString(),
         status: await this.status()
@@ -16796,10 +17274,10 @@ var ConnectorService = class extends EventEmitter4 {
 };
 
 // server/dashboard-server.js
-import crypto2 from "node:crypto";
-import fs3 from "node:fs/promises";
+import crypto6 from "node:crypto";
+import fs4 from "node:fs/promises";
 import http from "node:http";
-import path4 from "node:path";
+import path5 from "node:path";
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -16809,12 +17287,12 @@ var CONTENT_TYPES = {
 };
 var DashboardServer = class {
   #server = null;
-  #accessKey = crypto2.randomBytes(24).toString("base64url");
+  #accessKey = crypto6.randomBytes(24).toString("base64url");
   #port = null;
   constructor(service2, logger) {
     this.service = service2;
     this.logger = logger;
-    this.uiRoot = path4.join(PLUGIN_ROOT, "ui");
+    this.uiRoot = path5.join(PLUGIN_ROOT, "ui");
   }
   async start() {
     if (this.#server) return this.url();
@@ -16854,13 +17332,13 @@ var DashboardServer = class {
     }
     if (!["GET", "HEAD"].includes(request.method)) return this.#json(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "\u65B9\u6CD5\u4E0D\u5141\u8BB8" } });
     const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-    const file = path4.resolve(this.uiRoot, relative);
-    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path4.sep}`);
+    const file = path5.resolve(this.uiRoot, relative);
+    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path5.sep}`);
     if (!contained) return this.#json(response, 404, { error: { code: "NOT_FOUND", message: "\u8D44\u6E90\u4E0D\u5B58\u5728" } });
     try {
-      const body = await fs3.readFile(file);
+      const body = await fs4.readFile(file);
       response.writeHead(200, {
-        "Content-Type": CONTENT_TYPES[path4.extname(file)] || "application/octet-stream",
+        "Content-Type": CONTENT_TYPES[path5.extname(file)] || "application/octet-stream",
         "Cache-Control": "no-store"
       });
       if (request.method === "HEAD") return response.end();
@@ -16885,7 +17363,13 @@ var DashboardServer = class {
     }
     if (request.method === "PUT" && url.pathname === "/api/config") {
       const body = await this.#body(request);
-      await this.service.updateConfig(body.config || {}, body.token);
+      const credential = body.credential || (body.token !== void 0 || body.endpointGrant !== void 0 || body.grantExpiresAt !== void 0 || body.tokenEndpoint !== void 0 ? {
+        ...body.token !== void 0 ? { connectToken: body.token } : {},
+        ...body.endpointGrant !== void 0 ? { endpointGrant: body.endpointGrant } : {},
+        ...body.grantExpiresAt !== void 0 ? { grantExpiresAt: body.grantExpiresAt } : {},
+        ...body.tokenEndpoint !== void 0 ? { tokenEndpoint: body.tokenEndpoint } : {}
+      } : void 0);
+      await this.service.updateConfig(body.config || {}, credential);
       const config2 = await this.service.configStore.publicConfig({ includeToken: true });
       return this.#json(response, 200, config2);
     }
@@ -16916,7 +17400,7 @@ var DashboardServer = class {
     const supplied = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
     const expected = Buffer.from(this.#accessKey);
     const actual = Buffer.from(supplied);
-    return expected.length === actual.length && crypto2.timingSafeEqual(expected, actual);
+    return expected.length === actual.length && crypto6.timingSafeEqual(expected, actual);
   }
   async #body(request) {
     let size = 0;
@@ -16975,7 +17459,7 @@ var tools = [
   },
   {
     name: "relay_get_status",
-    description: "Get Relay, Connector, App Server, room, and security status without exposing secrets.",
+    description: "Get Relay, Connector, App Server, Space, and security status without exposing secrets.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -16990,7 +17474,7 @@ var tools = [
   },
   {
     name: "relay_test_connection",
-    description: "Open a temporary Relay connection and verify the host.hello/host.welcome authentication handshake.",
+    description: "Open a temporary Relay connection and verify the Protocol v1 connect.hello/connect.welcome authentication handshake.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -17000,7 +17484,7 @@ var tools = [
       type: "object",
       properties: {
         relayUrl: { type: "string", description: "Relay WebSocket URL." },
-        roomId: { type: "string" },
+        spaceId: { type: "string", description: "Relay Space ID." },
         deviceName: { type: "string" },
         autoConnect: { type: "boolean" },
         readOnly: { type: "boolean" },
@@ -17041,10 +17525,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "relay_update_config":
         result = await service.updateConfig({
-          ...args.relayUrl !== void 0 || args.roomId !== void 0 || args.deviceName !== void 0 || args.autoConnect !== void 0 ? {
+          ...args.relayUrl !== void 0 || args.spaceId !== void 0 || args.deviceName !== void 0 || args.autoConnect !== void 0 ? {
             relay: {
               ...args.relayUrl !== void 0 ? { url: args.relayUrl } : {},
-              ...args.roomId !== void 0 ? { roomId: args.roomId } : {},
+              ...args.spaceId !== void 0 ? { spaceId: args.spaceId } : {},
               ...args.deviceName !== void 0 ? { deviceName: args.deviceName } : {},
               ...args.autoConnect !== void 0 ? { autoConnect: args.autoConnect } : {}
             }

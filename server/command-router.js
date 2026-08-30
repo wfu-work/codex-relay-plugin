@@ -53,7 +53,7 @@ export class CommandRouter {
   async #run(config, message, fingerprint) {
     try {
       const result = await this.#execute(message.command, message);
-      const response = commandResult(config, message.requestId, result ?? {});
+      const response = commandResult(config, message.requestId, result ?? {}, message.deviceId);
       this.#remember(message.requestId, fingerprint, response);
       return response;
     } catch (error) {
@@ -68,7 +68,7 @@ export class CommandRouter {
       code: relayError.code,
       message: relayError.message,
     });
-    const response = commandError(config, message?.requestId, relayError);
+    const response = commandError(config, message?.requestId, relayError, message?.deviceId);
     if (message?.requestId && fingerprint && !this.#completed.has(message.requestId)) {
       this.#remember(message.requestId, fingerprint, response);
     }
@@ -182,7 +182,7 @@ export class CommandRouter {
 
 function commandFingerprint(message) {
   return JSON.stringify({
-    roomId: message.roomId,
+    spaceId: message.spaceId,
     deviceId: message.deviceId,
     targetDeviceId: message.targetDeviceId,
     threadId: message.threadId || null,

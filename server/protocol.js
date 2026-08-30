@@ -1,10 +1,11 @@
 import { RelayError } from "./errors.js";
 import { nowIso, randomId } from "./utils.js";
+import { relaySpaceId } from "./config-store.js";
 
 export const PROTOCOL_VERSION = 1;
 
 export function validateRelayWelcome(message) {
-  if (!message || typeof message !== "object" || message.type !== "host.welcome") {
+  if (!message || typeof message !== "object" || message.type !== "connect.welcome") {
     throw new RelayError("INVALID_MESSAGE", "Relay welcome 消息无效");
   }
   if (message.version !== PROTOCOL_VERSION) {
@@ -13,7 +14,42 @@ export function validateRelayWelcome(message) {
   if (!message.connectionId || typeof message.connectionId !== "string") {
     throw new RelayError("INVALID_MESSAGE", "Relay welcome 缺少 connectionId");
   }
+  if (!message.sessionId || !message.spaceId || !message.endpointId) {
+    throw new RelayError("INVALID_MESSAGE", "Protocol v1 welcome 缺少 sessionId、spaceId 或 endpointId");
+  }
+  if (!Number.isSafeInteger(message.maxFrameSize) || message.maxFrameSize <= 0) {
+    throw new RelayError("INVALID_MESSAGE", "Protocol v1 welcome 缺少有效 maxFrameSize");
+  }
   return message;
+}
+
+const PRODUCT_FRAME_TYPES = new Set(["codex.command", "codex.command.result", "codex.event", "host.snapshot"]);
+
+// Relay v1 routes a small, stable envelope and leaves product payloads opaque.
+// The helper keeps the Codex command/event model independent from the transport.
+export function wrapRelayFrame(message, config) {
+  if (!message || typeof message !== "object" || message.type === "stream.message") return message;
+  if (!PRODUCT_FRAME_TYPES.has(message.type)) return message;
+  return {
+    version: PROTOCOL_VERSION,
+    type: "stream.message",
+    messageId: message.messageId || randomId("msg"),
+    streamId: message.streamId || "codex",
+    sequence: Number.isInteger(message.sequence) ? message.sequence : undefined,
+    from: config.relay.deviceId,
+    ...(message.targetDeviceId ? { to: message.targetDeviceId } : {}),
+    protocol: "codex.v1",
+    encrypted: false,
+    payload: message,
+  };
+}
+
+export function unwrapRelayFrame(message) {
+  if (!message || message.type !== "stream.message" || !message.payload || typeof message.payload !== "object") return message;
+  const payload = { ...message.payload };
+  if (message.from) payload.deviceId = message.from;
+  if (message.to) payload.targetDeviceId = message.to;
+  return payload;
 }
 
 export const COMMAND_PERMISSIONS = Object.freeze({
@@ -38,7 +74,7 @@ export function validateRelayCommand(message, config) {
   if (!message.requestId || typeof message.requestId !== "string") throw new RelayError("INVALID_MESSAGE", "缺少 requestId");
   if (!message.deviceId || typeof message.deviceId !== "string") throw new RelayError("INVALID_MESSAGE", "缺少发送端 deviceId");
   if (message.targetDeviceId !== config.relay.deviceId) throw new RelayError("DEVICE_NOT_TARGETED", "命令未发送给本机设备");
-  if (message.roomId !== config.relay.roomId) throw new RelayError("ROOM_NOT_JOINED", "命令房间与本机配置不一致");
+  if (message.spaceId !== relaySpaceId(config.relay)) throw new RelayError("SPACE_NOT_JOINED", "命令 Space 与本机配置不一致");
   const commandType = message.command?.type;
   if (!Object.hasOwn(COMMAND_PERMISSIONS, commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", `不支持的命令：${commandType || "unknown"}`);
@@ -63,7 +99,7 @@ export function eventEnvelope(config, buffer, event, context = {}) {
     type: "codex.event",
     eventId: randomId("evt"),
     deviceId: config.relay.deviceId,
-    roomId: config.relay.roomId,
+    spaceId: relaySpaceId(config.relay),
     sequence: buffer.nextSequence(),
     timestamp: nowIso(),
     ...(context.threadId ? { threadId: context.threadId } : {}),
@@ -72,26 +108,28 @@ export function eventEnvelope(config, buffer, event, context = {}) {
   });
 }
 
-export function commandResult(config, requestId, result) {
+export function commandResult(config, requestId, result, targetDeviceId) {
   return {
     version: PROTOCOL_VERSION,
     type: "codex.command.result",
     requestId,
     deviceId: config.relay.deviceId,
-    roomId: config.relay.roomId,
+    spaceId: relaySpaceId(config.relay),
+    ...(targetDeviceId ? { targetDeviceId } : {}),
     timestamp: nowIso(),
     success: true,
     result,
   };
 }
 
-export function commandError(config, requestId, error) {
+export function commandError(config, requestId, error, targetDeviceId) {
   return {
     version: PROTOCOL_VERSION,
     type: "codex.command.result",
     requestId: requestId || randomId("invalid"),
     deviceId: config.relay.deviceId,
-    roomId: config.relay.roomId,
+    spaceId: relaySpaceId(config.relay),
+    ...(targetDeviceId ? { targetDeviceId } : {}),
     timestamp: nowIso(),
     success: false,
     error: {

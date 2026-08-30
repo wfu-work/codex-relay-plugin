@@ -11,18 +11,18 @@ test("configuration persists with owner-only permissions", async (t) => {
   const store = new ConfigStore({ configDir });
   await store.load();
   const updated = await store.update({
-    relay: { url: "ws://127.0.0.1:8787/ws", roomId: `test-${process.pid}` },
+    relay: { url: "ws://127.0.0.1:8787/v1/connect", spaceId: `test-${process.pid}` },
     allowedProjects: [path.resolve(configDir)],
   });
 
-  assert.equal(updated.relay.roomId, `test-${process.pid}`);
+  assert.equal(updated.relay.spaceId, `test-${process.pid}`);
   assert.equal(updated.relay.tokenConfigured, false);
   const stat = await fs.stat(path.join(configDir, "config.json"));
   assert.equal(stat.mode & 0o777, 0o600);
 
   const reloaded = new ConfigStore({ configDir });
   await reloaded.load();
-  assert.equal(reloaded.get().relay.url, "ws://127.0.0.1:8787/ws");
+  assert.equal(reloaded.get().relay.url, "ws://127.0.0.1:8787/v1/connect");
 });
 
 test("relay token uses the cross-platform file store and is returned to the local dashboard", async (t) => {
@@ -31,7 +31,7 @@ test("relay token uses the cross-platform file store and is returned to the loca
   const store = new ConfigStore({ configDir });
   await store.load();
 
-  const updated = await store.update({ relay: { roomId: "token-room" } }, "relay-token-value");
+  const updated = await store.update({ relay: { spaceId: "token-space" } }, "relay-token-value");
   assert.equal(updated.relay.token, undefined);
   assert.equal(updated.relay.tokenConfigured, true);
 
@@ -41,17 +41,69 @@ test("relay token uses the cross-platform file store and is returned to the loca
   await reloaded.load();
   assert.equal((await reloaded.publicConfig()).relay.token, undefined);
   assert.equal((await reloaded.publicConfig({ includeToken: true })).relay.token, "relay-token-value");
+
+  const switched = await reloaded.update({ relay: { spaceId: "other-space" } });
+  assert.equal(switched.relay.tokenConfigured, false);
+});
+
+test("relay credentials keep grant metadata isolated per Space", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await store.update({ relay: { url: "ws://127.0.0.1:8788/v1/connect", spaceId: "space-a" } }, {
+    connectToken: "token-a",
+    endpointGrant: "grant-a-0123456789",
+    grantExpiresAt: Date.now() + 60_000,
+    tokenEndpoint: "http://127.0.0.1:8788/api/connect-tokens/refresh",
+  });
+  const dashboard = await store.publicConfig({ includeToken: true });
+  assert.equal(dashboard.relay.token, "token-a");
+  assert.equal(dashboard.relay.endpointGrant, "grant-a-0123456789");
+  assert.equal(dashboard.relay.endpointGrantConfigured, true);
+  await store.update({}, { endpointGrant: '', grantExpiresAt: null, tokenEndpoint: '' });
+  assert.equal((await store.relayCredential()).endpointGrant, undefined);
+  assert.equal((await store.relayCredential()).tokenEndpoint, undefined);
+  await store.update({ relay: { spaceId: "space-b" } });
+  assert.equal((await store.relayCredential()), null);
+});
+
+test("relay credential rejects public HTTP refresh endpoints", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-invalid-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await assert.rejects(
+    () => store.update({ relay: { spaceId: "space" } }, {
+      connectToken: "token-a",
+      endpointGrant: "grant-a-0123456789",
+      tokenEndpoint: "http://relay.example.com/api/connect-tokens/refresh",
+    }),
+    /https/,
+  );
 });
 
 test("public relays require TLS and URL credentials are rejected", () => {
   const base = defaultConfig();
-  base.relay.url = "ws://relay.example.com/ws";
-  base.relay.roomId = "room";
+  base.relay.url = "ws://relay.example.com/v1/connect";
+  base.relay.spaceId = "space";
   assert.throws(() => validateConfig(base), /wss:\/\//);
-  assert.doesNotThrow(() => validateConfig({ ...base, relay: { ...base.relay, url: "wss://relay.example.com/ws" } }));
+  assert.doesNotThrow(() => validateConfig({ ...base, relay: { ...base.relay, url: "wss://relay.example.com/v1/connect" } }));
   assert.throws(
-    () => validateConfig({ ...base, relay: { ...base.relay, url: "wss://user:password@relay.example.com/ws" } }),
+    () => validateConfig({ ...base, relay: { ...base.relay, url: "wss://user:password@relay.example.com/v1/connect" } }),
     /用户名或密码/,
+  );
+  assert.throws(
+    () => validateConfig({ ...base, relay: { ...base.relay, url: "wss://relay.example.com/ws" } }),
+    /\/v1\/connect/,
+  );
+  assert.throws(
+    () => validateConfig({ ...base, relay: { ...base.relay, url: "wss://relay.example.com/v1/connect?token=secret" } }),
+    /query 或 hash/,
+  );
+  assert.throws(
+    () => validateConfig({ ...base, relay: { ...base.relay, url: "wss://relay.example.com/v1/connect#token" } }),
+    /query 或 hash/,
   );
 });
 

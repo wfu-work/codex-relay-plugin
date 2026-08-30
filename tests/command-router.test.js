@@ -5,7 +5,7 @@ import { defaultConfig } from "../server/config-store.js";
 
 function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", delayTurn = false } = {}) {
   const config = defaultConfig();
-  config.relay.roomId = "room-1";
+  config.relay.spaceId = "space-1";
   config.relay.deviceId = "host-1";
   config.readOnly = readOnly;
   config.allowedProjects = ["/workspace/allowed"];
@@ -41,7 +41,7 @@ function envelope(command, requestId = "req-1") {
     version: 1,
     type: "codex.command",
     requestId,
-    roomId: "room-1",
+    spaceId: "space-1",
     deviceId: "phone-1",
     targetDeviceId: "host-1",
     timestamp: new Date().toISOString(),

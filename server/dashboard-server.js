@@ -97,7 +97,17 @@ export class DashboardServer {
     }
     if (request.method === "PUT" && url.pathname === "/api/config") {
       const body = await this.#body(request);
-      await this.service.updateConfig(body.config || {}, body.token);
+      const credential = body.credential || (
+        body.token !== undefined || body.endpointGrant !== undefined || body.grantExpiresAt !== undefined || body.tokenEndpoint !== undefined
+          ? {
+              ...(body.token !== undefined ? { connectToken: body.token } : {}),
+              ...(body.endpointGrant !== undefined ? { endpointGrant: body.endpointGrant } : {}),
+              ...(body.grantExpiresAt !== undefined ? { grantExpiresAt: body.grantExpiresAt } : {}),
+              ...(body.tokenEndpoint !== undefined ? { tokenEndpoint: body.tokenEndpoint } : {}),
+            }
+          : undefined
+      );
+      await this.service.updateConfig(body.config || {}, credential);
       const config = await this.service.configStore.publicConfig({ includeToken: true });
       return this.#json(response, 200, config);
     }

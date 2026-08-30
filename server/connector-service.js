@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { AppServerClient } from "./app-server-client.js";
 import { CommandRouter } from "./command-router.js";
 import { ConfigStore } from "./config-store.js";
+import { relaySpaceId } from "./config-store.js";
 import { EventBuffer } from "./event-buffer.js";
 import { Logger } from "./logger.js";
 import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
@@ -54,9 +55,9 @@ export class ConnectorService extends EventEmitter {
   async connect() {
     await this.start();
     const config = this.configStore.get();
-    const token = await this.configStore.token();
+    const credential = await this.configStore.relayCredential();
     if (config.codex.autoStartAppServer) await this.appServer.start();
-    return this.relay.connect(token);
+    return this.relay.connect(credential);
   }
 
   disconnect() {
@@ -66,13 +67,13 @@ export class ConnectorService extends EventEmitter {
 
   async testConnection() {
     await this.start();
-    return this.relay.test(await this.configStore.token());
+    return this.relay.test(await this.configStore.relayCredential());
   }
 
-  async updateConfig(patch, token) {
+  async updateConfig(patch, credentialPatch) {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
     if (wasConnected) this.relay.disconnect("configuration changed");
-    const config = await this.configStore.update(patch, token);
+    const config = await this.configStore.update(patch, credentialPatch);
     this.threadAccess.clear();
     if (wasConnected || config.relay.autoConnect) await this.connect();
     this.emit("status", await this.status());
@@ -88,8 +89,8 @@ export class ConnectorService extends EventEmitter {
       },
       relay: this.relay.status(),
       appServer: this.appServer.status(),
-      room: {
-        roomId: config.relay.roomId,
+      space: {
+        spaceId: relaySpaceId(config.relay),
         deviceId: config.relay.deviceId,
         deviceName: config.relay.deviceName,
       },
@@ -98,6 +99,11 @@ export class ConnectorService extends EventEmitter {
         allowedProjects: config.allowedProjects.length,
         remoteApprovalEnabled: config.permissions.respondToApprovals,
         tokenConfigured: config.relay.tokenConfigured,
+        tokenExpiresAt: config.relay.tokenExpiresAt,
+        endpointGrantConfigured: config.relay.endpointGrantConfigured,
+        grantExpiresAt: config.relay.grantExpiresAt,
+        tokenEndpoint: config.relay.tokenEndpoint,
+        endpointPublicKey: config.relay.endpointPublicKey,
       },
       protocol: {
         version: 1,
@@ -117,11 +123,15 @@ export class ConnectorService extends EventEmitter {
     const config = await this.configStore.publicConfig();
     checks.push({
       name: "configuration",
-      ok: Boolean(config.relay.url && config.relay.roomId && config.relay.tokenConfigured),
+      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && config.relay.tokenConfigured),
       details: {
         relayUrlConfigured: Boolean(config.relay.url),
-        roomConfigured: Boolean(config.relay.roomId),
+        spaceConfigured: Boolean(relaySpaceId(config.relay)),
         tokenConfigured: config.relay.tokenConfigured,
+        endpointGrantConfigured: config.relay.endpointGrantConfigured,
+        tokenExpiresAt: config.relay.tokenExpiresAt,
+        grantExpiresAt: config.relay.grantExpiresAt,
+        tokenEndpoint: config.relay.tokenEndpoint,
       },
     });
     return { status: await this.status(), checks, logs: this.logger.list(50) };
@@ -129,7 +139,18 @@ export class ConnectorService extends EventEmitter {
 
   async syncAfter(lastSequence) {
     const events = this.eventBuffer.after(lastSequence);
-    if (events !== null && !(Number(lastSequence || 0) === 0 && events.length === 0)) {
+    const requestedSequence = Number(lastSequence || 0);
+    const latestSequence = this.eventBuffer.latestSequence();
+    // EventBuffer is process-local. If the connector restarted, a mobile
+    // client may present a sequence from the previous process; an empty
+    // incremental response would leave it with stale or no session state.
+    // Fall back to a fresh snapshot whenever the requested cursor is ahead of
+    // the current journal, or when there is no journal to replay.
+    if (
+      events !== null
+      && requestedSequence <= latestSequence
+      && !(requestedSequence === 0 && events.length === 0)
+    ) {
       return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence() };
     }
     await this.appServer.start();
@@ -146,13 +167,18 @@ export class ConnectorService extends EventEmitter {
   #wireEvents() {
     this.relay.on("command", async (message) => {
       const response = await this.router.handle(message);
-      this.relay.send(response);
+      if (!this.relay.send(response)) {
+        this.logger.warn("connector", "Relay 未接受定向命令响应，消息未发送", {
+          requestId: message?.requestId,
+          targetDeviceId: response?.targetDeviceId,
+        });
+      }
     });
     this.relay.on("connected", async () => {
       this.relay.send({
         version: 1,
         type: "host.snapshot",
-        roomId: this.configStore.get().relay.roomId,
+        spaceId: relaySpaceId(this.configStore.get().relay),
         deviceId: this.configStore.get().relay.deviceId,
         timestamp: new Date().toISOString(),
         status: await this.status(),

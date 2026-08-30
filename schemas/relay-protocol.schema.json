@@ -1,156 +1,103 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://codex-relay.local/schemas/protocol-v1.json",
-  "title": "Codex Relay Protocol v1",
-  "description": "Messages exchanged between a Codex host connector, Relay, and remote client.",
+  "$id": "https://relay-protocol.dev/schemas/v1.json",
+  "title": "Relay Protocol v1",
+  "description": "Transport-only Relay v1 frames. Product messages stay opaque in stream.message.payload.",
   "oneOf": [
-    { "$ref": "#/$defs/hostHello" },
-    { "$ref": "#/$defs/hostWelcome" },
-    { "$ref": "#/$defs/hostSnapshot" },
-    { "$ref": "#/$defs/command" },
-    { "$ref": "#/$defs/event" },
-    { "$ref": "#/$defs/result" },
-    { "$ref": "#/$defs/ping" },
-    { "$ref": "#/$defs/pong" },
-    { "$ref": "#/$defs/relayError" }
+    { "$ref": "#/$defs/connectHello" },
+    { "$ref": "#/$defs/connectWelcome" },
+    { "$ref": "#/$defs/envelope" },
+    { "$ref": "#/$defs/error" }
   ],
   "$defs": {
-    "base": {
+    "connectHello": {
       "type": "object",
-      "required": ["version", "type", "roomId", "deviceId", "timestamp"],
+      "required": ["version", "type", "requestId", "spaceId", "endpointId", "endpointType", "token", "endpointProof"],
       "properties": {
         "version": { "const": 1 },
-        "type": { "type": "string" },
-        "roomId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "deviceId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "threadId": { "type": "string", "minLength": 1 },
-        "turnId": { "type": "string", "minLength": 1 },
-        "timestamp": { "type": "string", "format": "date-time" }
-      }
+        "type": { "const": "connect.hello" },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "spaceId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "endpointId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "endpointType": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "endpointName": { "type": "string", "maxLength": 128 },
+        "token": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "endpointProof": { "$ref": "#/$defs/endpointProof" },
+        "capabilities": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 64 },
+        "metadata": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 512 } },
+        "resume": { "$ref": "#/$defs/resume" }
+      },
+      "additionalProperties": true
     },
-    "hostHello": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        {
-          "type": "object",
-          "required": ["requestId", "deviceName", "token", "capabilities"],
-          "properties": {
-            "type": { "const": "host.hello" },
-            "requestId": { "type": "string", "minLength": 1 },
-            "deviceName": { "type": "string", "maxLength": 128 },
-            "token": { "type": "string", "minLength": 1 },
-            "capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-            "test": { "type": "boolean" }
-          }
-        }
-      ]
-    },
-    "hostWelcome": {
+    "connectWelcome": {
       "type": "object",
-      "required": ["version", "type", "connectionId"],
+      "required": ["version", "type", "connectionId", "sessionId", "spaceId", "endpointId", "maxFrameSize"],
       "properties": {
         "version": { "const": 1 },
-        "type": { "const": "host.welcome" },
-        "connectionId": { "type": "string", "minLength": 1 }
-      }
+        "type": { "const": "connect.welcome" },
+        "requestId": { "type": "string", "maxLength": 256 },
+        "connectionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "spaceId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "endpointId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "maxFrameSize": { "type": "integer", "minimum": 1 },
+        "features": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 64 }
+      },
+      "additionalProperties": true
     },
-    "hostSnapshot": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        { "type": "object", "required": ["status"], "properties": { "type": { "const": "host.snapshot" }, "status": { "type": "object" } } }
-      ]
-    },
-    "command": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        {
-          "type": "object",
-          "required": ["requestId", "targetDeviceId", "command"],
-          "properties": {
-            "type": { "const": "codex.command" },
-            "requestId": { "type": "string", "minLength": 1 },
-            "targetDeviceId": { "type": "string", "minLength": 1, "maxLength": 128 },
-            "command": { "$ref": "#/$defs/commandPayload" }
-          }
-        }
-      ]
-    },
-    "commandPayload": {
+    "resume": {
       "type": "object",
-      "required": ["type"],
+      "required": ["sessionId", "lastAck"],
       "properties": {
-        "type": {
-          "enum": [
-            "ping", "host.get_status", "sync.request", "thread.list", "thread.read", "thread.create",
-            "thread.resume", "thread.select", "turn.start", "turn.steer", "turn.interrupt", "approval.respond"
-          ]
-        },
-        "threadId": { "type": "string", "minLength": 1 },
-        "turnId": { "type": "string", "minLength": 1 },
-        "approvalId": { "type": "string", "minLength": 1 },
-        "text": { "type": "string", "minLength": 1 },
-        "cwd": { "type": "string", "minLength": 1 },
-        "cursor": { "type": ["string", "null"] },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
-        "lastSequence": { "type": "integer", "minimum": 0 },
-        "decision": { "enum": ["accept", "acceptForSession", "decline", "cancel"] }
-      }
+        "sessionId": { "type": "string", "maxLength": 256 },
+        "lastAck": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
     },
-    "event": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        {
-          "type": "object",
-          "required": ["eventId", "sequence", "event"],
-          "properties": {
-            "type": { "const": "codex.event" },
-            "eventId": { "type": "string", "minLength": 1 },
-            "sequence": { "type": "integer", "minimum": 1 },
-            "event": { "type": "object", "required": ["type"] }
-          }
-        }
-      ]
+    "endpointProof": {
+      "type": "object",
+      "required": ["algorithm", "publicKey", "issuedAt", "nonce", "signature"],
+      "properties": {
+        "algorithm": { "const": "Ed25519" },
+        "publicKey": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "issuedAt": { "type": "integer", "minimum": 1 },
+        "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22,86}$" },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      },
+      "additionalProperties": false
     },
-    "result": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        {
-          "type": "object",
-          "required": ["requestId", "success"],
-          "properties": {
-            "type": { "const": "codex.command.result" },
-            "requestId": { "type": "string", "minLength": 1 },
-            "success": { "type": "boolean" },
-            "result": {},
-            "error": {
-              "type": "object",
-              "required": ["code", "message"],
-              "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "details": {} }
-            }
-          }
-        }
-      ]
-    },
-    "ping": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        { "type": "object", "properties": { "type": { "const": "ping" } } }
-      ]
-    },
-    "pong": {
+    "envelope": {
       "type": "object",
       "required": ["version", "type"],
-      "properties": { "version": { "const": 1 }, "type": { "const": "pong" }, "timestamp": { "type": "string", "format": "date-time" } }
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "enum": ["stream.open", "stream.message", "stream.ack", "stream.close", "ping", "pong"] },
+        "messageId": { "type": "string", "maxLength": 256 },
+        "requestId": { "type": "string", "maxLength": 256 },
+        "correlationId": { "type": "string", "maxLength": 256 },
+        "streamId": { "type": "string", "maxLength": 256 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "from": { "type": "string", "maxLength": 256 },
+        "to": { "type": "string", "maxLength": 256 },
+        "protocol": { "type": "string", "maxLength": 128 },
+        "encrypted": { "type": "boolean" },
+        "payload": {},
+        "ack": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "maxLength": 2048 }
+      },
+      "additionalProperties": true
     },
-    "relayError": {
+    "error": {
       "type": "object",
       "required": ["version", "type", "code", "message"],
       "properties": {
         "version": { "const": 1 },
         "type": { "const": "relay.error" },
-        "code": { "type": "string" },
-        "message": { "type": "string" }
-      }
+        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "details": {}
+      },
+      "additionalProperties": true
     }
   }
 }

@@ -18,9 +18,13 @@ export const relayState = reactive({
   status: null,
   form: {
     relayUrl: '',
-    roomId: '',
+    spaceId: '',
     deviceName: '',
     token: '',
+    endpointGrant: '',
+    grantExpiresAt: null,
+    tokenEndpoint: '',
+    endpointPublicKey: '',
     autoConnect: false,
     heartbeatSeconds: 20,
     reconnectMaxSeconds: 30,
@@ -80,7 +84,7 @@ export const securityLabel = computed(() => {
   return '受限控制';
 });
 export const securityType = computed(() => securityLabel.value === '远程审批已启用' ? 'warning' : 'success');
-export const configReady = computed(() => Boolean(relayState.form.relayUrl && relayState.form.roomId && relayState.status?.security?.tokenConfigured));
+export const configReady = computed(() => Boolean(relayState.form.relayUrl && relayState.form.spaceId && relayState.status?.security?.tokenConfigured));
 
 function setTheme(value) {
   relayState.themeMode = value;
@@ -109,9 +113,13 @@ async function api(path, options = {}) {
 function applyConfig(config) {
   relayState.applyingConfig = true;
   relayState.form.relayUrl = config.relay?.url || '';
-  relayState.form.roomId = config.relay?.roomId || '';
+  relayState.form.spaceId = config.relay?.spaceId || '';
   relayState.form.deviceName = config.relay?.deviceName || '';
   relayState.form.token = config.relay?.token || '';
+  relayState.form.endpointGrant = config.relay?.endpointGrant || '';
+  relayState.form.grantExpiresAt = config.relay?.grantExpiresAt || null;
+  relayState.form.tokenEndpoint = config.relay?.tokenEndpoint || '';
+  relayState.form.endpointPublicKey = config.relay?.endpointPublicKey || '';
   relayState.form.autoConnect = Boolean(config.relay?.autoConnect);
   relayState.form.heartbeatSeconds = config.relay?.heartbeatSeconds ?? 20;
   relayState.form.reconnectMaxSeconds = config.relay?.reconnectMaxSeconds ?? 30;
@@ -132,7 +140,7 @@ function collectConfig() {
   return {
     relay: {
       url: relayState.form.relayUrl.trim(),
-      roomId: relayState.form.roomId.trim(),
+      spaceId: relayState.form.spaceId.trim(),
       deviceName: relayState.form.deviceName.trim(),
       autoConnect: relayState.form.autoConnect,
       heartbeatSeconds: Number(relayState.form.heartbeatSeconds),
@@ -171,15 +179,23 @@ async function refreshLogs(silent = false) {
 }
 
 async function saveConfig() {
-  if (!relayState.form.relayUrl || !relayState.form.roomId) {
-    message.warning('请填写 Relay 地址和房间 ID');
+  if (!relayState.form.relayUrl || !relayState.form.spaceId) {
+    message.warning('请填写 Relay 地址和 Space ID');
     return false;
   }
   relayState.loading.save = true;
   try {
     const updated = await api('/api/config', {
       method: 'PUT',
-      body: JSON.stringify({ config: collectConfig(), token: relayState.form.token || undefined }),
+      body: JSON.stringify({
+        config: collectConfig(),
+        credential: {
+          ...(relayState.form.token ? { connectToken: relayState.form.token.trim() } : {}),
+          endpointGrant: relayState.form.endpointGrant.trim(),
+          grantExpiresAt: relayState.form.grantExpiresAt ? Number(relayState.form.grantExpiresAt) : null,
+          tokenEndpoint: relayState.form.tokenEndpoint.trim(),
+        },
+      }),
     });
     applyConfig(updated);
     await refreshStatus(true);

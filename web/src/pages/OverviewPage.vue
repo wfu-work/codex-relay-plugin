@@ -20,7 +20,7 @@ const {
       <div class="hero-copy">
         <div class="eyebrow"><span class="eyebrow-dot"></span>HOST ↔ RELAY BRIDGE</div>
         <h1>把 Codex 带到<br /><span>你在的地方。</span></h1>
-        <p>连接本机 Codex 与你的 Relay 房间。会话事件实时同步，远程写操作始终受本机权限策略保护。</p>
+        <p>连接本机 Codex 与你的 Relay Space。会话事件实时同步，远程写操作始终受本机权限策略保护。</p>
         <div class="hero-actions">
           <a-button type="primary" size="large" :loading="state.loading.connect" :disabled="['connected', 'connecting', 'authenticating'].includes(relayStateValue)" @click="runConnection('connect', 'Relay 已连接')"><ApiOutlined />连接 Relay</a-button>
           <a-button size="large" :loading="state.loading.test" @click="runConnection('test', 'Relay 握手和认证通过')">测试连接</a-button>
@@ -42,8 +42,8 @@ const {
     </section>
 
     <section class="metric-strip" aria-label="运行指标">
-      <div><span>房间</span><strong>{{ state.status?.room?.roomId || '未配置' }}</strong><small>{{ state.status?.room?.deviceName || '设备名称待设置' }}</small></div>
-      <div><span>设备</span><strong>{{ state.status?.room?.deviceName || '—' }}</strong><small>{{ state.status?.room?.deviceId || 'Device ID 待生成' }}</small></div>
+      <div><span>Space</span><strong>{{ state.status?.space?.spaceId || '未配置' }}</strong><small>{{ state.status?.space?.deviceName || '设备名称待设置' }}</small></div>
+      <div><span>设备</span><strong>{{ state.status?.space?.deviceName || '—' }}</strong><small>{{ state.status?.space?.deviceId || 'Device ID 待生成' }}</small></div>
       <div><span>事件序号</span><strong>{{ state.status?.protocol?.latestSequence ?? 0 }}</strong><small>最近心跳 {{ shortTime(state.status?.relay?.lastHeartbeat) }}</small></div>
       <div><span>凭据</span><strong>{{ configReady ? '已就绪' : '待配置' }}</strong><small>{{ state.status?.security?.tokenConfigured ? 'Token 已安全保存' : '尚未保存 Token' }}</small></div>
     </section>

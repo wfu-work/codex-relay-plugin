@@ -18,7 +18,7 @@ const tools = [
   },
   {
     name: "relay_get_status",
-    description: "Get Relay, Connector, App Server, room, and security status without exposing secrets.",
+    description: "Get Relay, Connector, App Server, Space, and security status without exposing secrets.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -33,7 +33,7 @@ const tools = [
   },
   {
     name: "relay_test_connection",
-    description: "Open a temporary Relay connection and verify the host.hello/host.welcome authentication handshake.",
+    description: "Open a temporary Relay connection and verify the Protocol v1 connect.hello/connect.welcome authentication handshake.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -43,7 +43,7 @@ const tools = [
       type: "object",
       properties: {
         relayUrl: { type: "string", description: "Relay WebSocket URL." },
-        roomId: { type: "string" },
+        spaceId: { type: "string", description: "Relay Space ID." },
         deviceName: { type: "string" },
         autoConnect: { type: "boolean" },
         readOnly: { type: "boolean" },
@@ -85,11 +85,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "relay_update_config":
         result = await service.updateConfig({
-          ...(args.relayUrl !== undefined || args.roomId !== undefined || args.deviceName !== undefined || args.autoConnect !== undefined
+          ...(args.relayUrl !== undefined || args.spaceId !== undefined || args.deviceName !== undefined || args.autoConnect !== undefined
             ? {
                 relay: {
                   ...(args.relayUrl !== undefined ? { url: args.relayUrl } : {}),
-                  ...(args.roomId !== undefined ? { roomId: args.roomId } : {}),
+                  ...(args.spaceId !== undefined ? { spaceId: args.spaceId } : {}),
                   ...(args.deviceName !== undefined ? { deviceName: args.deviceName } : {}),
                   ...(args.autoConnect !== undefined ? { autoConnect: args.autoConnect } : {}),
                 },

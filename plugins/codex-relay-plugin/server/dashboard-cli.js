@@ -95,7 +95,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       clientInfo: {
         name: "codex-relay-plugin",
         title: "Codex Relay Plugin",
-        version: "0.1.0"
+        version: "1.0.0"
       },
       capabilities: { experimentalApi: true }
     }, 15e3);

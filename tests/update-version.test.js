@@ -20,29 +20,29 @@ test("preserves the semantic version and replaces old build metadata", () => {
 });
 
 test("adds a cachebuster when the manifest has no build metadata", () => {
-  assert.equal(createReleaseVersion("0.1.0", "20260831010203"), "0.1.0+codex.20260831010203");
+  assert.equal(createReleaseVersion("1.0.0", "20260831010203"), "1.0.0+codex.20260831010203");
 });
 
 test("advances repeated publishes in the same second", () => {
   assert.equal(
-    createReleaseVersion("0.1.0+codex.20260831010203", "20260831010203"),
-    "0.1.0+codex.20260831010204",
+    createReleaseVersion("1.0.0+codex.20260831010203", "20260831010203"),
+    "1.0.0+codex.20260831010204",
   );
 });
 
 test("updates only the manifest version and keeps valid JSON", () => {
-  const source = '{\n  "name": "codex-relay-plugin",\n  "version": "0.1.0+codex.old",\n  "description": "\\u6d4b\\u8bd5"\n}\n';
+  const source = '{\n  "name": "codex-relay-plugin",\n  "version": "1.0.0+codex.old",\n  "description": "\\u6d4b\\u8bd5"\n}\n';
   const result = updateManifestSource(source, "20260831010203");
 
-  assert.equal(result.nextVersion, "0.1.0+codex.20260831010203");
-  assert.match(result.source, /"version": "0\.1\.0\+codex\.20260831010203"/);
+  assert.equal(result.nextVersion, "1.0.0+codex.20260831010203");
+  assert.match(result.source, /"version": "1\.0\.0\+codex\.20260831010203"/);
   assert.match(result.source, /"description": "\\u6d4b\\u8bd5"/);
   assert.doesNotThrow(() => JSON.parse(result.source));
 });
 
 test("rejects malformed timestamps", () => {
   assert.throws(
-    () => createReleaseVersion("0.1.0", "20260831999999"),
+    () => createReleaseVersion("1.0.0", "20260831999999"),
     /不是有效的 UTC 时间/,
   );
 });

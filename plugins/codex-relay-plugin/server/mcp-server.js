@@ -15578,7 +15578,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       clientInfo: {
         name: "codex-relay-plugin",
         title: "Codex Relay Plugin",
-        version: "0.1.0"
+        version: "1.0.0"
       },
       capabilities: { experimentalApi: true }
     }, 15e3);
@@ -17448,7 +17448,7 @@ async function stopRuntime() {
 // server/mcp-server.js
 var { service, dashboard } = await getRuntime();
 var server = new Server(
-  { name: "codex-relay-plugin", version: "0.1.0" },
+  { name: "codex-relay-plugin", version: "1.0.0" },
   { capabilities: { tools: {} } }
 );
 var tools = [

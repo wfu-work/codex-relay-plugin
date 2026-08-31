@@ -168,7 +168,7 @@ make push MESSAGE="release: describe the change"
 
 正式发布使用 `make publish`：它会先把 `.codex-plugin/plugin.json` 的版本更新为
 `<基础版本>+codex.<UTC 时间戳>`，再执行同样的构建、提交和推送流程。基础版本（例如
-`0.1.0`）会保留，因此每次发布不必手动递增 `0.1.1`；但完整版本字符串会变化，Codex
+`1.0.0`）会保留，因此每次发布不必手动递增 `1.0.1`；但完整版本字符串会变化，Codex
 才能识别为新的插件缓存。`make push` 不会自动改版本，适合只推送开发中的提交。
 
 ```bash

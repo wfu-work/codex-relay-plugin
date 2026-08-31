@@ -1,29 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="paper" x1="210" y1="128" x2="814" y2="896" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#eef3ff"/>
+    <linearGradient id="mark" x1="232" y1="164" x2="808" y2="872" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9b96ff"/>
+      <stop offset=".46" stop-color="#6675ff"/>
+      <stop offset="1" stop-color="#3547ee"/>
     </linearGradient>
-    <linearGradient id="bubble" x1="312" y1="280" x2="700" y2="724" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#b8b5ff"/>
-      <stop offset=".42" stop-color="#6fa7ff"/>
-      <stop offset="1" stop-color="#3448f4"/>
+    <linearGradient id="highlight" x1="512" y1="150" x2="512" y2="404" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".08"/>
     </linearGradient>
-    <radialGradient id="shine" cx="42%" cy="28%" r="58%">
-      <stop offset="0" stop-color="#ffffff" stop-opacity=".72"/>
-      <stop offset=".56" stop-color="#ffffff" stop-opacity=".16"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="bubbleShadow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#2746db" flood-opacity=".42"/>
+    <filter id="markShadow" x="-16%" y="-16%" width="132%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="28" flood-color="#293bd6" flood-opacity=".3"/>
     </filter>
+    <clipPath id="markClip">
+      <rect x="144" y="132" width="736" height="760" rx="232"/>
+    </clipPath>
   </defs>
 
-  <rect width="1024" height="1024" rx="230" fill="url(#paper)"/>
-  <g filter="url(#bubbleShadow)" transform="translate(512 512) scale(1.32) translate(-512 -512)">
-    <rect x="230" y="222" width="592" height="562" rx="188" fill="url(#bubble)"/>
-    <ellipse cx="526" cy="292" rx="226" ry="98" fill="#ffffff" fill-opacity=".2"/>
-    <path d="M366 444 466 546 366 648" fill="none" stroke="#edf6ff" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M552 660h166" fill="none" stroke="#edf6ff" stroke-width="52" stroke-linecap="round"/>
+  <g filter="url(#markShadow)">
+    <rect x="144" y="132" width="736" height="760" rx="232" fill="url(#mark)"/>
+    <ellipse cx="512" cy="190" rx="302" ry="164" fill="url(#highlight)" clip-path="url(#markClip)"/>
+    <path d="M330 406 448 524 330 642" fill="none" stroke="#f4f7ff" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M558 654h172" fill="none" stroke="#f4f7ff" stroke-width="58" stroke-linecap="round"/>
   </g>
 </svg>

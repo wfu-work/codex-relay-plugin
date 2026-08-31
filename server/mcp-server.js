@@ -6,7 +6,7 @@ import { getRuntime, stopRuntime } from "./runtime.js";
 
 const { service, dashboard } = await getRuntime();
 const server = new Server(
-  { name: "codex-relay-plugin", version: "0.1.0" },
+  { name: "codex-relay-plugin", version: "1.0.0" },
   { capabilities: { tools: {} } },
 );
 

@@ -1,6 +1,6 @@
 {
   "name": "codex-relay-plugin",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Local Codex-to-relay connector packaged as a Codex plugin.",

@@ -44,6 +44,7 @@ const tools = [
       properties: {
         relayUrl: { type: "string", description: "Relay WebSocket URL." },
         spaceId: { type: "string", description: "Relay Space ID." },
+        endpointId: { type: "string", description: "Relay Endpoint ID bound to the Connect Token." },
         deviceName: { type: "string" },
         autoConnect: { type: "boolean" },
         readOnly: { type: "boolean" },
@@ -85,11 +86,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "relay_update_config":
         result = await service.updateConfig({
-          ...(args.relayUrl !== undefined || args.spaceId !== undefined || args.deviceName !== undefined || args.autoConnect !== undefined
+          ...(args.relayUrl !== undefined || args.spaceId !== undefined || args.endpointId !== undefined || args.deviceName !== undefined || args.autoConnect !== undefined
             ? {
                 relay: {
                   ...(args.relayUrl !== undefined ? { url: args.relayUrl } : {}),
                   ...(args.spaceId !== undefined ? { spaceId: args.spaceId } : {}),
+                  ...(args.endpointId !== undefined ? { endpointId: args.endpointId } : {}),
                   ...(args.deviceName !== undefined ? { deviceName: args.deviceName } : {}),
                   ...(args.autoConnect !== undefined ? { autoConnect: args.autoConnect } : {}),
                 },

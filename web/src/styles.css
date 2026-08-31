@@ -237,7 +237,7 @@ button, input, textarea { font: inherit; }
 .signal-foot span { display: flex; align-items: center; gap: 6px; letter-spacing: .03em; }
 .metric-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -268,7 +268,7 @@ button, input, textarea { font: inherit; }
 .surface-card .ant-input-prefix { margin-right: 8px; color: var(--ink-faint); }
 .setup-state-tag { align-self: start; margin: 4px 0 0; border: 0; padding: 5px 9px; font-size: var(--text-small); }
 .setup-state-tag .anticon { margin-right: 4px; }
-.setup-card, .setup-summary-card { max-width: 880px; }
+.setup-card, .setup-summary-card { max-width: none; }
 .setup-card .ant-card-body, .setup-summary-card .ant-card-body { padding: clamp(22px, 4vw, 38px); }
 .setup-intro { max-width: 670px; }
 .setup-kicker { color: var(--brand); font: var(--text-caption)/1.3 var(--font-code); letter-spacing: .09em; text-transform: uppercase; }
@@ -303,7 +303,7 @@ button, input, textarea { font: inherit; }
 .masked-value { font-family: var(--font-code); letter-spacing: .04em; }
 .setup-summary-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 23px; }
 .setup-summary-actions .ant-btn-primary { background: var(--brand); box-shadow: none; }
-.compact-guidance { max-width: 880px; margin-top: 35px; }
+.compact-guidance { max-width: none; margin-top: 35px; }
 .connection-alert { display: flex; align-items: flex-start; gap: 10px; max-width: 620px; margin-top: 25px; padding: 13px 15px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--danger) 8%, var(--page-bg-raised)); }
 .connection-alert > .anticon { flex: 0 0 auto; margin-top: 2px; color: var(--danger); font-size: 16px; }
 .connection-alert strong, .connection-alert span { display: block; }
@@ -392,7 +392,7 @@ button, input, textarea { font: inherit; }
   .hero-section { grid-template-columns: 1fr; }
   .hero-signal { max-width: 520px; }
   .metric-strip { grid-template-columns: repeat(2, 1fr); }
-  .metric-strip > div:nth-child(2) { border-right: 0; }
+  .metric-strip > div:nth-child(2n) { border-right: 0; }
   .metric-strip > div:nth-child(n+3) { border-top: 1px solid var(--line); }
   .metric-strip > div:first-child { padding-left: 22px; }
 }

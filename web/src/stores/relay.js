@@ -19,6 +19,7 @@ export const relayState = reactive({
   form: {
     relayUrl: '',
     spaceId: '',
+    endpointId: '',
     deviceName: '',
     token: '',
     endpointGrant: '',
@@ -84,7 +85,12 @@ export const securityLabel = computed(() => {
   return '受限控制';
 });
 export const securityType = computed(() => securityLabel.value === '远程审批已启用' ? 'warning' : 'success');
-export const configReady = computed(() => Boolean(relayState.form.relayUrl && relayState.form.spaceId && relayState.status?.security?.tokenConfigured));
+export const configReady = computed(() => Boolean(
+  relayState.form.relayUrl.trim()
+  && relayState.form.spaceId.trim()
+  && relayState.form.endpointId.trim()
+  && relayState.status?.security?.tokenConfigured,
+));
 
 function describeRelayError(errorOrMessage) {
   const code = typeof errorOrMessage === 'object' ? errorOrMessage?.code : '';
@@ -92,10 +98,10 @@ function describeRelayError(errorOrMessage) {
   const message = String(messageText || '').trim();
   const normalized = message.toLowerCase();
   if (code === 'auth.invalid_token' || normalized.includes('invalid connect token') || normalized.includes('无效 connect token')) {
-    return '连接令牌无效或已失效。请回到 Relay 控制台重新签发，并确认 Space ID 与签发时一致。';
+    return '连接令牌无效或已失效。请确认空间 ID 和接入端 ID 与签发时一致，再回到 Relay 控制台重新签发。';
   }
   if (code === 'auth.token_expired' || normalized.includes('token expired') || normalized.includes('令牌已过期')) {
-    return '连接令牌已过期。请从 Relay 控制台重新复制最新令牌；如果已配置自动续期，请同时填写 Endpoint Grant。';
+    return '连接令牌已过期。请从 Relay 控制台重新复制最新令牌；如果已配置自动续期，请同时填写接入端授权凭证。';
   }
   if (code === 'auth.proof_mismatch' || normalized.includes('proof mismatch')) {
     return '连接令牌绑定了另一台设备。请在当前设备重新签发令牌，不要沿用旧设备的令牌。';
@@ -104,7 +110,7 @@ function describeRelayError(errorOrMessage) {
     return '暂时连不到 Relay。请检查 Relay 地址、网络和服务是否已启动，再重新测试连接。';
   }
   if (code === 'CONFIG_INCOMPLETE' || normalized.includes('尚未配置')) {
-    return '还缺少连接信息。请填写 Relay 地址、Space ID 和 Connect Token。';
+    return '还缺少连接信息。请填写 Relay 地址、空间 ID、接入端 ID 和连接令牌。';
   }
   return message || '连接失败，请运行诊断查看具体原因。';
 }
@@ -143,6 +149,7 @@ function applyConfig(config) {
   relayState.applyingConfig = true;
   relayState.form.relayUrl = config.relay?.url || '';
   relayState.form.spaceId = config.relay?.spaceId || '';
+  relayState.form.endpointId = config.relay?.endpointId || '';
   relayState.form.deviceName = config.relay?.deviceName || '';
   relayState.form.token = config.relay?.token || '';
   relayState.form.endpointGrant = config.relay?.endpointGrant || '';
@@ -170,6 +177,7 @@ function collectConfig() {
     relay: {
       url: relayState.form.relayUrl.trim(),
       spaceId: relayState.form.spaceId.trim(),
+      endpointId: relayState.form.endpointId.trim(),
       deviceName: relayState.form.deviceName.trim(),
       autoConnect: relayState.form.autoConnect,
       heartbeatSeconds: Number(relayState.form.heartbeatSeconds),
@@ -208,8 +216,8 @@ async function refreshLogs(silent = false) {
 }
 
 async function saveConfig() {
-  if (!relayState.form.relayUrl || !relayState.form.spaceId) {
-    message.warning('请填写 Relay 地址和 Space ID');
+  if (!relayState.form.relayUrl.trim() || !relayState.form.spaceId.trim() || !relayState.form.endpointId.trim()) {
+    message.warning('请填写 Relay 地址、空间 ID 和接入端 ID');
     return false;
   }
   relayState.loading.save = true;

@@ -20,6 +20,7 @@ export function defaultConfig() {
     relay: {
       url: "",
       spaceId: "",
+      endpointId: "",
       deviceId: randomId("host"),
       deviceName: os.hostname(),
       autoConnect: false,
@@ -54,7 +55,7 @@ export class ConfigStore {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    this.config = mergeConfig(defaultConfig(), saved);
+    this.config = mergeConfig(defaultConfig(), migrateSavedConfig(saved));
     validateConfig(this.config);
     return this.config;
   }
@@ -171,6 +172,22 @@ export function relaySpaceId(relay) {
   return String(relay?.spaceId || "");
 }
 
+export function relayEndpointId(relay) {
+  return String(relay?.endpointId || "");
+}
+
+function migrateSavedConfig(saved) {
+  if (!saved || typeof saved !== "object" || !saved.relay || typeof saved.relay !== "object") return saved;
+  if (Object.hasOwn(saved.relay, "endpointId")) return saved;
+
+  // Older versions used deviceId for both identities. Preserve a manually
+  // assigned Relay-looking ID as a useful migration hint, but do not turn the
+  // generated local host ID into a false Endpoint ID.
+  const legacyDeviceId = typeof saved.relay.deviceId === "string" ? saved.relay.deviceId : "";
+  const endpointId = legacyDeviceId && !legacyDeviceId.startsWith("host_") ? legacyDeviceId : "";
+  return { ...saved, relay: { ...saved.relay, endpointId } };
+}
+
 export function validateConfig(config) {
   if (!config || typeof config !== "object" || config.version !== 1) throw new Error("配置版本无效");
   if (!config.relay || typeof config.relay !== "object") throw new Error("Relay 配置无效");
@@ -188,7 +205,10 @@ export function validateConfig(config) {
   if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
     throw new Error("Space ID 只能包含字母、数字、点、下划线、冒号和连字符");
   }
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("设备 ID 无效");
+  const endpointId = relayEndpointId(config.relay);
+  if (typeof config.relay.endpointId !== "string") throw new Error("Relay Endpoint ID 无效");
+  if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID 无效");
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("本机路由 ID 无效");
   const heartbeat = Number(config.relay.heartbeatSeconds);
   if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
     throw new Error("心跳间隔必须在 5 到 300 秒之间");

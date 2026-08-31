@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { RelayError } from "./errors.js";
 import { nowIso, randomId } from "./utils.js";
 import { PROTOCOL_VERSION, unwrapRelayFrame, validateRelayWelcome, wrapRelayFrame } from "./protocol.js";
-import { relaySpaceId } from "./config-store.js";
+import { relayEndpointId, relaySpaceId } from "./config-store.js";
 import { RelayTokenService } from "./relay-token-service.js";
 
 const TERMINAL_RELAY_AUTH_CODES = new Set([
@@ -68,6 +68,7 @@ export class RelayClient extends EventEmitter {
     const spaceId = relaySpaceId(config.relay);
     if (!config.relay.url) throw new RelayError("CONFIG_INCOMPLETE", "尚未配置 Relay 地址");
     if (!spaceId) throw new RelayError("CONFIG_INCOMPLETE", "尚未配置 Space ID");
+    if (!relayEndpointId(config.relay)) throw new RelayError("CONFIG_INCOMPLETE", "尚未配置 Relay Endpoint ID");
     const token = typeof credential === "string" ? credential : credential?.connectToken;
     if (credential !== undefined && !token) throw new RelayError("AUTH_FAILED", "尚未配置 Relay Token");
     if (credential === undefined) this.#credential = null;
@@ -80,10 +81,11 @@ export class RelayClient extends EventEmitter {
   async test(credential, timeoutMs = 8_000) {
     const config = this.configStore.get();
     const supplied = typeof credential === "string" ? { connectToken: credential } : credential;
-    const token = await this.#tokenService.usableToken({ credential: supplied });
-    if (!config.relay.url || !relaySpaceId(config.relay) || !token) {
-      throw new RelayError("CONFIG_INCOMPLETE", "请先填写 Relay 地址、Space ID 和 Connect Token");
+    if (!config.relay.url || !relaySpaceId(config.relay) || !relayEndpointId(config.relay)) {
+      throw new RelayError("CONFIG_INCOMPLETE", "请先填写 Relay 地址、Space ID 和 Relay Endpoint ID");
     }
+    const token = await this.#tokenService.usableToken({ credential: supplied });
+    if (!token) throw new RelayError("CONFIG_INCOMPLETE", "请先填写 Connect Token");
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(config.relay.url);
       let settled = false;
@@ -116,6 +118,7 @@ export class RelayClient extends EventEmitter {
           const message = JSON.parse(String(event.data));
           if (message.type === "connect.welcome") {
             validateRelayWelcome(message);
+            validateWelcomeIdentity(message, config);
             socket.close(1000, "test complete");
             finishResolve({ ok: true, connectionId: message.connectionId, protocolVersion: message.version });
           } else if (message.type === "relay.error") {
@@ -265,11 +268,7 @@ export class RelayClient extends EventEmitter {
       if (this.state !== "authenticating") return;
       try {
         validateRelayWelcome(message);
-        const expectedSpaceId = relaySpaceId(this.configStore.get().relay);
-        const expectedEndpointId = this.configStore.get().relay.deviceId;
-        if (message.spaceId !== expectedSpaceId || message.endpointId !== expectedEndpointId) {
-          throw new RelayError("INVALID_MESSAGE", "Relay welcome 的 Space 或 Endpoint 与本机配置不一致");
-        }
+        validateWelcomeIdentity(message, this.configStore.get());
         if (!Number.isInteger(message.maxFrameSize) || message.maxFrameSize <= 0) {
           throw new RelayError("INVALID_MESSAGE", "Relay welcome 缺少有效 maxFrameSize");
         }
@@ -329,6 +328,7 @@ export class RelayClient extends EventEmitter {
   async #hello(config, token, test) {
     const identity = await this.configStore.endpointIdentity();
     const spaceId = relaySpaceId(config.relay);
+    const endpointId = relayEndpointId(config.relay);
     const requestId = randomId("hello");
     const issuedAt = Date.now();
     const nonce = crypto.randomBytes(24).toString("base64url");
@@ -337,7 +337,7 @@ export class RelayClient extends EventEmitter {
       PROTOCOL_VERSION,
       requestId,
       spaceId,
-      config.relay.deviceId,
+      endpointId,
       "bridge",
       token,
       issuedAt,
@@ -353,7 +353,7 @@ export class RelayClient extends EventEmitter {
       type: "connect.hello",
       requestId,
       spaceId,
-      endpointId: config.relay.deviceId,
+      endpointId,
       endpointType: "bridge",
       endpointName: config.relay.deviceName,
       token,
@@ -414,4 +414,12 @@ function isTerminalRelayAuthCode(code, credential) {
   // normal reconnect path to run in that one case.
   if (code === "auth.token_expired" && credential?.endpointGrant) return false;
   return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
+
+function validateWelcomeIdentity(message, config) {
+  const expectedSpaceId = relaySpaceId(config.relay);
+  const expectedEndpointId = relayEndpointId(config.relay);
+  if (message.spaceId !== expectedSpaceId || message.endpointId !== expectedEndpointId) {
+    throw new RelayError("INVALID_MESSAGE", "Relay welcome 的 Space 或 Endpoint 与本机配置不一致");
+  }
 }

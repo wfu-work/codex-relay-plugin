@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { AppServerClient } from "./app-server-client.js";
 import { CommandRouter } from "./command-router.js";
 import { ConfigStore } from "./config-store.js";
-import { relaySpaceId } from "./config-store.js";
+import { relayEndpointId, relaySpaceId } from "./config-store.js";
 import { EventBuffer } from "./event-buffer.js";
 import { Logger } from "./logger.js";
 import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
@@ -91,6 +91,8 @@ export class ConnectorService extends EventEmitter {
       appServer: this.appServer.status(),
       space: {
         spaceId: relaySpaceId(config.relay),
+        endpointId: relayEndpointId(config.relay),
+        endpointType: "bridge",
         deviceId: config.relay.deviceId,
         deviceName: config.relay.deviceName,
       },
@@ -123,10 +125,12 @@ export class ConnectorService extends EventEmitter {
     const config = await this.configStore.publicConfig();
     checks.push({
       name: "configuration",
-      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && config.relay.tokenConfigured),
+      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && relayEndpointId(config.relay) && config.relay.tokenConfigured),
       details: {
         relayUrlConfigured: Boolean(config.relay.url),
         spaceConfigured: Boolean(relaySpaceId(config.relay)),
+        endpointConfigured: Boolean(relayEndpointId(config.relay)),
+        endpointId: relayEndpointId(config.relay),
         tokenConfigured: config.relay.tokenConfigured,
         endpointGrantConfigured: config.relay.endpointGrantConfigured,
         tokenExpiresAt: config.relay.tokenExpiresAt,

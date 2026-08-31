@@ -483,6 +483,7 @@ function defaultConfig() {
     relay: {
       url: "",
       spaceId: "",
+      endpointId: "",
       deviceId: randomId("host"),
       deviceName: os.hostname(),
       autoConnect: false,
@@ -515,7 +516,7 @@ var ConfigStore = class {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    this.config = mergeConfig(defaultConfig(), saved);
+    this.config = mergeConfig(defaultConfig(), migrateSavedConfig(saved));
     validateConfig(this.config);
     return this.config;
   }
@@ -619,6 +620,16 @@ function mergeConfig(base, patch) {
 function relaySpaceId(relay) {
   return String(relay?.spaceId || "");
 }
+function relayEndpointId(relay) {
+  return String(relay?.endpointId || "");
+}
+function migrateSavedConfig(saved) {
+  if (!saved || typeof saved !== "object" || !saved.relay || typeof saved.relay !== "object") return saved;
+  if (Object.hasOwn(saved.relay, "endpointId")) return saved;
+  const legacyDeviceId = typeof saved.relay.deviceId === "string" ? saved.relay.deviceId : "";
+  const endpointId = legacyDeviceId && !legacyDeviceId.startsWith("host_") ? legacyDeviceId : "";
+  return { ...saved, relay: { ...saved.relay, endpointId } };
+}
 function validateConfig(config) {
   if (!config || typeof config !== "object" || config.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
   if (!config.relay || typeof config.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
@@ -636,7 +647,10 @@ function validateConfig(config) {
   if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
     throw new Error("Space ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
   }
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("\u8BBE\u5907 ID \u65E0\u6548");
+  const endpointId = relayEndpointId(config.relay);
+  if (typeof config.relay.endpointId !== "string") throw new Error("Relay Endpoint ID \u65E0\u6548");
+  if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID \u65E0\u6548");
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("\u672C\u673A\u8DEF\u7531 ID \u65E0\u6548");
   const heartbeat = Number(config.relay.heartbeatSeconds);
   if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
     throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
@@ -1261,6 +1275,7 @@ var RelayClient = class extends EventEmitter3 {
     const spaceId = relaySpaceId(config.relay);
     if (!config.relay.url) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Relay \u5730\u5740");
     if (!spaceId) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Space ID");
+    if (!relayEndpointId(config.relay)) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Relay Endpoint ID");
     const token = typeof credential === "string" ? credential : credential?.connectToken;
     if (credential !== void 0 && !token) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Token");
     if (credential === void 0) this.#credential = null;
@@ -1272,10 +1287,11 @@ var RelayClient = class extends EventEmitter3 {
   async test(credential, timeoutMs = 8e3) {
     const config = this.configStore.get();
     const supplied = typeof credential === "string" ? { connectToken: credential } : credential;
-    const token = await this.#tokenService.usableToken({ credential: supplied });
-    if (!config.relay.url || !relaySpaceId(config.relay) || !token) {
-      throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Relay \u5730\u5740\u3001Space ID \u548C Connect Token");
+    if (!config.relay.url || !relaySpaceId(config.relay) || !relayEndpointId(config.relay)) {
+      throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Relay \u5730\u5740\u3001Space ID \u548C Relay Endpoint ID");
     }
+    const token = await this.#tokenService.usableToken({ credential: supplied });
+    if (!token) throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Connect Token");
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(config.relay.url);
       let settled = false;
@@ -1308,6 +1324,7 @@ var RelayClient = class extends EventEmitter3 {
           const message = JSON.parse(String(event.data));
           if (message.type === "connect.welcome") {
             validateRelayWelcome(message);
+            validateWelcomeIdentity(message, config);
             socket.close(1e3, "test complete");
             finishResolve({ ok: true, connectionId: message.connectionId, protocolVersion: message.version });
           } else if (message.type === "relay.error") {
@@ -1455,11 +1472,7 @@ var RelayClient = class extends EventEmitter3 {
       if (this.state !== "authenticating") return;
       try {
         validateRelayWelcome(message);
-        const expectedSpaceId = relaySpaceId(this.configStore.get().relay);
-        const expectedEndpointId = this.configStore.get().relay.deviceId;
-        if (message.spaceId !== expectedSpaceId || message.endpointId !== expectedEndpointId) {
-          throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7684 Space \u6216 Endpoint \u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
-        }
+        validateWelcomeIdentity(message, this.configStore.get());
         if (!Number.isInteger(message.maxFrameSize) || message.maxFrameSize <= 0) {
           throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7F3A\u5C11\u6709\u6548 maxFrameSize");
         }
@@ -1515,6 +1528,7 @@ var RelayClient = class extends EventEmitter3 {
   async #hello(config, token, test) {
     const identity = await this.configStore.endpointIdentity();
     const spaceId = relaySpaceId(config.relay);
+    const endpointId = relayEndpointId(config.relay);
     const requestId = randomId("hello");
     const issuedAt = Date.now();
     const nonce = crypto5.randomBytes(24).toString("base64url");
@@ -1523,7 +1537,7 @@ var RelayClient = class extends EventEmitter3 {
       PROTOCOL_VERSION,
       requestId,
       spaceId,
-      config.relay.deviceId,
+      endpointId,
       "bridge",
       token,
       issuedAt,
@@ -1539,7 +1553,7 @@ var RelayClient = class extends EventEmitter3 {
       type: "connect.hello",
       requestId,
       spaceId,
-      endpointId: config.relay.deviceId,
+      endpointId,
       endpointType: "bridge",
       endpointName: config.relay.deviceName,
       token,
@@ -1590,6 +1604,13 @@ var RelayClient = class extends EventEmitter3 {
 function isTerminalRelayAuthCode(code, credential) {
   if (code === "auth.token_expired" && credential?.endpointGrant) return false;
   return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
+function validateWelcomeIdentity(message, config) {
+  const expectedSpaceId = relaySpaceId(config.relay);
+  const expectedEndpointId = relayEndpointId(config.relay);
+  if (message.spaceId !== expectedSpaceId || message.endpointId !== expectedEndpointId) {
+    throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7684 Space \u6216 Endpoint \u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
+  }
 }
 
 // server/connector-service.js
@@ -1667,6 +1688,8 @@ var ConnectorService = class extends EventEmitter4 {
       appServer: this.appServer.status(),
       space: {
         spaceId: relaySpaceId(config.relay),
+        endpointId: relayEndpointId(config.relay),
+        endpointType: "bridge",
         deviceId: config.relay.deviceId,
         deviceName: config.relay.deviceName
       },
@@ -1698,10 +1721,12 @@ var ConnectorService = class extends EventEmitter4 {
     const config = await this.configStore.publicConfig();
     checks.push({
       name: "configuration",
-      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && config.relay.tokenConfigured),
+      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && relayEndpointId(config.relay) && config.relay.tokenConfigured),
       details: {
         relayUrlConfigured: Boolean(config.relay.url),
         spaceConfigured: Boolean(relaySpaceId(config.relay)),
+        endpointConfigured: Boolean(relayEndpointId(config.relay)),
+        endpointId: relayEndpointId(config.relay),
         tokenConfigured: config.relay.tokenConfigured,
         endpointGrantConfigured: config.relay.endpointGrantConfigured,
         tokenExpiresAt: config.relay.tokenExpiresAt,

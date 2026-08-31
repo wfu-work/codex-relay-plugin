@@ -190,6 +190,12 @@ codex plugin add codex-relay-plugin@codex-relay
 - `config.json`：非敏感配置；Unix 权限 `0600`
 - `secrets.json`：按 Space 保存 Connect Token、Endpoint Grant、过期时间和刷新地址；Unix 权限 `0600`
 
+连接配置中的两个 ID 具有不同职责：`relay.endpointId` 是 Relay 控制台登记的接入端 ID，必须与
+Connect Token 签发时绑定的 Endpoint 完全一致；`relay.deviceId` 是本机消息路由 ID，由插件自动生成，
+用于 `from`、`targetDeviceId` 和事件路由。不要用本机 `deviceId` 代替 Endpoint ID。旧版本没有
+`endpointId` 字段时，插件会保留本机路由 ID；如果旧 ID 不是自动生成的 `host_...` 形式，会将它作为
+Endpoint ID 的初始填写值，仍应在连接控制台核对。
+
 环境变量：
 
 - `CODEX_RELAY_CONFIG_DIR`：覆盖配置目录，适合测试

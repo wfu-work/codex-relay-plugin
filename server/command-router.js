@@ -83,6 +83,8 @@ export class CommandRouter {
     }
     await this.appServer.start();
     switch (command.type) {
+      case "model.list":
+        return this.appServer.listModels(command);
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
@@ -116,6 +118,8 @@ export class CommandRouter {
           threadId,
           text: requireString(command.text, "text"),
           cwd: this.#allowedCwd(command.cwd),
+          model: optionalString(command.model),
+          effort: optionalString(command.effort),
         });
       }
       case "turn.steer": {
@@ -200,4 +204,9 @@ function stableValue(value) {
 function requireString(value, name) {
   if (typeof value !== "string" || !value.trim()) throw new RelayError("INVALID_MESSAGE", `缺少 ${name}`);
   return value;
+}
+
+function optionalString(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || undefined;
 }

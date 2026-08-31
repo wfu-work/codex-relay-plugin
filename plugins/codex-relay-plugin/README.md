@@ -220,6 +220,8 @@ payload。Relay 收到 `ping` 后返回 `pong`，单条消息上限由
 Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 或 hash；Token 只放在
 首帧。插件会读取 `connect.welcome.features`，当服务端未公布 `directed-routing` 时，
 插件会阻止需要定向路由的命令发送并提示当前套餐不支持该能力，避免把敏感命令广播到整个 Space。
+“测试连接”使用一次性握手，不会创建在线 Session 或占用 Connect Token 的连接名额；
+正式连接、测试、断开和自动重连在插件内互斥，手动断开会等待 WebSocket 关闭后再报告已断开。
 
 通用字段和校验规则位于同级的 [`relay-protocol`](../relay-protocol/README.md) 工程；
 本目录下的 [`schemas/relay-protocol.schema.json`](./schemas/relay-protocol.schema.json)
@@ -249,7 +251,11 @@ Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 
     "targetDeviceId": "cli_host_b2",
     "threadId": "thread-id",
     "timestamp": "2026-08-20T08:00:00.000Z",
-    "command": { "type": "turn.start", "text": "继续实现并运行测试" }
+    "command": {
+      "type": "turn.start",
+      "text": "继续实现并运行测试",
+      "model": "gpt-5.5"
+    }
   }
 }
 ```
@@ -261,12 +267,13 @@ Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 
 | 命令 | 关键字段 | 权限 |
 |---|---|---|
 | `host.get_status` | — | `readThreads` |
+| `model.list` | `cursor?`, `limit?`, `includeHidden?` | `readThreads` |
 | `sync.request` | `lastSequence?` | `readThreads` |
 | `thread.list` | `cursor?`, `limit?` | `readThreads` |
 | `thread.read` | `threadId` | `readThreads` |
 | `thread.create` | `cwd?` | `createThreads` |
 | `thread.resume` / `thread.select` | `threadId` | `readThreads` |
-| `turn.start` | `threadId`, `text`, `cwd?` | `sendMessages` |
+| `turn.start` | `threadId`, `text`, `cwd?`, `model?`, `effort?` | `sendMessages` |
 | `turn.steer` | `threadId`, `turnId`, `text` | `steerTurns` |
 | `turn.interrupt` | `threadId`, `turnId` | `interruptTurns` |
 | `approval.respond` | `approvalId`, `decision` | `respondToApprovals` |

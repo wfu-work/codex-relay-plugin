@@ -156,3 +156,74 @@ test("rejects a welcome for a different Relay Endpoint ID during a connection te
 
   await assert.rejects(() => client.test("connect-token-test"), { code: "INVALID_MESSAGE" });
 });
+
+test("deduplicates concurrent connects and waits for manual disconnect", async (t) => {
+  const previousWebSocket = globalThis.WebSocket;
+  let socketCount = 0;
+  class FakeWebSocket {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 0;
+    #listeners = new Map();
+
+    constructor() {
+      socketCount += 1;
+      queueMicrotask(() => this.#emit("open", {}));
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.#listeners.get(type) || [];
+      listeners.push(listener);
+      this.#listeners.set(type, listeners);
+    }
+
+    send(payload) {
+      const hello = JSON.parse(payload);
+      queueMicrotask(() => {
+        this.readyState = FakeWebSocket.OPEN;
+        this.#emit("message", {
+          data: JSON.stringify({
+            version: 1,
+            type: "connect.welcome",
+            requestId: hello.requestId,
+            connectionId: "connection-deduplicated",
+            sessionId: "session-deduplicated",
+            spaceId: hello.spaceId,
+            endpointId: hello.endpointId,
+            maxFrameSize: 1024 * 1024,
+          }),
+        });
+      });
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED;
+      this.#emit("close", { code: 1000 });
+    }
+
+    #emit(type, event) {
+      for (const listener of this.#listeners.get(type) || []) listener(event);
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  t.after(() => {
+    globalThis.WebSocket = previousWebSocket;
+  });
+
+  const pair = generateKeyPairSync("ed25519");
+  const publicKey = Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).subarray(-32).toString("base64url");
+  const privateKey = Buffer.from(pair.privateKey.export({ format: "der", type: "pkcs8" })).toString("base64url");
+  const config = defaultConfig();
+  config.relay.url = "ws://127.0.0.1:8788/v1/connect";
+  config.relay.spaceId = "space-test";
+  config.relay.endpointId = "cli-endpoint-test";
+  const store = { get: () => structuredClone(config), endpointIdentity: async () => ({ publicKey, privateKey }) };
+  const client = new RelayClient(store, { info() {}, warn() {}, error() {} });
+
+  await Promise.all([client.connect("connect-token-test"), client.connect("connect-token-test")]);
+  assert.equal(socketCount, 1);
+  const result = await client.test("connect-token-test");
+  assert.equal(result.reused, true);
+  await client.disconnect("test complete");
+  assert.equal(client.status().state, "disconnected");
+});

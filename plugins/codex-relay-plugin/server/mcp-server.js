@@ -8967,13 +8967,13 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject3 = isObject;
   const catchall = def.catchall;
   let value;
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject3(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -9100,7 +9100,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return (payload, ctx) => fn(shape, payload, ctx);
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject3 = isObject;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -9109,7 +9109,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject3(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -15514,6 +15514,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   #serverRequests = /* @__PURE__ */ new Map();
   #nextId = 1;
   #starting = null;
+  #paginatedThreads = null;
   static APPROVAL_METHODS = /* @__PURE__ */ new Set([
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval"
@@ -15556,6 +15557,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     const config2 = this.configStore.get();
     this.state = "starting";
     this.lastError = null;
+    this.#paginatedThreads = null;
     await this.checkAvailability();
     this.logger.info("app-server", "\u6B63\u5728\u542F\u52A8 Codex App Server", {
       executable: config2.codex.executable
@@ -15593,6 +15595,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     const child = this.#process;
     this.#process = null;
     this.state = "stopped";
+    this.#paginatedThreads = null;
     child.kill("SIGTERM");
     for (const pending of this.#requests.values()) pending.reject(new RelayError("APP_SERVER_UNAVAILABLE", "App Server \u5DF2\u505C\u6B62"));
     this.#requests.clear();
@@ -15633,8 +15636,73 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       ...params.cwd ? { cwd: params.cwd } : {}
     });
   }
+  listModels(params = {}) {
+    return this.request("model/list", {
+      cursor: params.cursor ?? null,
+      limit: Math.min(Number(params.limit || 100), 100),
+      includeHidden: params.includeHidden === true
+    });
+  }
   readThread(threadId) {
-    return this.request("thread/read", { threadId, includeTurns: true });
+    if (this.#paginatedThreads === true) return this.#readPaginatedThread(threadId);
+    return this.request("thread/read", { threadId, includeTurns: true }).catch(async (error2) => {
+      if (!isPaginatedThreadReadError(error2)) throw error2;
+      this.#paginatedThreads = true;
+      return this.#readPaginatedThread(threadId);
+    });
+  }
+  async #readPaginatedThread(threadId) {
+    const metadata = await this.request("thread/read", { threadId });
+    const turns = await this.#readAllThreadTurns(threadId);
+    const metadataMap = isObject2(metadata) ? metadata : {};
+    const thread = isObject2(metadataMap.thread) ? metadataMap.thread : metadataMap;
+    const hydrated = { ...thread, turns };
+    return isObject2(metadataMap.thread) ? { ...metadataMap, thread: hydrated } : hydrated;
+  }
+  async #readAllThreadTurns(threadId) {
+    const turns = [];
+    let cursor = null;
+    for (let page = 0; page < 1e3; page += 1) {
+      const response = await this.request("thread/turns/list", {
+        threadId,
+        cursor,
+        limit: 100,
+        sortDirection: "asc",
+        itemsView: "full"
+      });
+      const data = Array.isArray(response?.data) ? response.data : [];
+      for (const turn of data) {
+        if (!isObject2(turn)) continue;
+        const items = turn.itemsView === "full" && Array.isArray(turn.items) ? turn.items : await this.#readAllThreadItems(threadId, turn.id);
+        turns.push({ ...turn, items });
+      }
+      const nextCursor = typeof response?.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = nextCursor;
+    }
+    return turns;
+  }
+  async #readAllThreadItems(threadId, turnId) {
+    if (typeof turnId !== "string" || !turnId) return [];
+    const items = [];
+    let cursor = null;
+    for (let page = 0; page < 1e3; page += 1) {
+      const response = await this.request("thread/items/list", {
+        threadId,
+        turnId,
+        cursor,
+        limit: 100,
+        sortDirection: "asc"
+      });
+      const data = Array.isArray(response?.data) ? response.data : [];
+      for (const entry of data) {
+        if (isObject2(entry?.item)) items.push(entry.item);
+      }
+      const nextCursor = typeof response?.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = nextCursor;
+    }
+    return items;
   }
   createThread({ cwd } = {}) {
     return this.request("thread/start", { ...cwd ? { cwd } : {} });
@@ -15642,11 +15710,13 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   resumeThread(threadId) {
     return this.request("thread/resume", { threadId });
   }
-  startTurn({ threadId, text, cwd }) {
+  startTurn({ threadId, text, cwd, model, effort }) {
     return this.request("turn/start", {
       threadId,
       input: [{ type: "text", text }],
-      ...cwd ? { cwd } : {}
+      ...cwd ? { cwd } : {},
+      ...model ? { model } : {},
+      ...effort ? { effort } : {}
     });
   }
   steerTurn({ threadId, turnId, text }) {
@@ -15719,6 +15789,12 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     this.emit("status", this.status());
   }
 };
+function isObject2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isPaginatedThreadReadError(error2) {
+  return error2?.code === "APP_SERVER_ERROR" && typeof error2?.message === "string" && error2.message.includes("paginated threads do not support thread/read(includeTurns=true)");
+}
 
 // server/utils.js
 import crypto from "node:crypto";
@@ -16214,6 +16290,7 @@ function unwrapRelayFrame(message) {
 }
 var COMMAND_PERMISSIONS = Object.freeze({
   "host.get_status": "readThreads",
+  "model.list": "readThreads",
   "thread.list": "readThreads",
   "thread.read": "readThreads",
   "thread.create": "createThreads",
@@ -16243,7 +16320,7 @@ function validateRelayCommand(message, config2) {
     throw new RelayError("MESSAGE_EXPIRED", "\u547D\u4EE4\u65F6\u95F4\u6233\u65E0\u6548\u6216\u5DF2\u8FC7\u671F");
   }
   const permission = COMMAND_PERMISSIONS[commandType];
-  if (config2.readOnly && !["host.get_status", "thread.list", "thread.read", "sync.request", "ping"].includes(commandType)) {
+  if (config2.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "sync.request", "ping"].includes(commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", "\u63D2\u4EF6\u5F53\u524D\u5904\u4E8E\u53EA\u8BFB\u6A21\u5F0F");
   }
   if (permission && !config2.permissions[permission]) {
@@ -16401,6 +16478,8 @@ var CommandRouter = class {
     }
     await this.appServer.start();
     switch (command.type) {
+      case "model.list":
+        return this.appServer.listModels(command);
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
@@ -16433,7 +16512,9 @@ var CommandRouter = class {
         return this.appServer.startTurn({
           threadId,
           text: requireString(command.text, "text"),
-          cwd: this.#allowedCwd(command.cwd)
+          cwd: this.#allowedCwd(command.cwd),
+          model: optionalString(command.model),
+          effort: optionalString(command.effort)
         });
       }
       case "turn.steer": {
@@ -16511,6 +16592,10 @@ function stableValue(value) {
 function requireString(value, name) {
   if (typeof value !== "string" || !value.trim()) throw new RelayError("INVALID_MESSAGE", `\u7F3A\u5C11 ${name}`);
   return value;
+}
+function optionalString(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || void 0;
 }
 
 // server/event-buffer.js
@@ -16719,12 +16804,17 @@ var TERMINAL_RELAY_AUTH_CODES = /* @__PURE__ */ new Set([
   "auth.refresh_rejected",
   "auth.replay",
   "auth.account_unavailable",
-  "auth.revoked"
+  "auth.space_unavailable",
+  "auth.endpoint_type_mismatch",
+  "auth.revoked",
+  "handshake.invalid"
 ]);
 var RelayClient = class extends EventEmitter3 {
   #socket = null;
   #heartbeat = null;
   #reconnectTimer = null;
+  #connectPromise = null;
+  #socketGeneration = 0;
   #attempt = 0;
   #manualClose = false;
   #token = null;
@@ -16756,7 +16846,8 @@ var RelayClient = class extends EventEmitter3 {
     };
   }
   async connect(credential) {
-    if (["connected", "authenticating", "connecting"].includes(this.state)) return this.status();
+    if (this.#connectPromise) return this.#connectPromise;
+    if (["connected", "authenticating", "connecting", "disconnecting"].includes(this.state)) return this.status();
     const config2 = this.configStore.get();
     const spaceId = relaySpaceId(config2.relay);
     if (!config2.relay.url) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Relay \u5730\u5740");
@@ -16768,9 +16859,22 @@ var RelayClient = class extends EventEmitter3 {
     else if (typeof credential === "string") this.#credential = { connectToken: credential };
     else if (credential?.connectToken) this.#credential = { ...credential };
     this.#manualClose = false;
-    return this.#open();
+    clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = null;
+    return this.#beginOpen();
   }
   async test(credential, timeoutMs = 8e3) {
+    if (this.state === "connected") {
+      return {
+        ok: true,
+        connectionId: this.connectionId,
+        protocolVersion: PROTOCOL_VERSION,
+        reused: true
+      };
+    }
+    if (["connecting", "authenticating", "reconnecting", "disconnecting"].includes(this.state)) {
+      throw new RelayError("RELAY_BUSY", "Relay \u6B63\u5728\u8FDE\u63A5\u6216\u65AD\u5F00\uFF0C\u8BF7\u7B49\u5F85\u5F53\u524D\u64CD\u4F5C\u5B8C\u6210");
+    }
     const config2 = this.configStore.get();
     const supplied = typeof credential === "string" ? { connectToken: credential } : credential;
     if (!config2.relay.url || !relaySpaceId(config2.relay) || !relayEndpointId(config2.relay)) {
@@ -16830,22 +16934,33 @@ var RelayClient = class extends EventEmitter3 {
       });
     });
   }
-  disconnect(reason = "manual disconnect") {
+  async disconnect(reason = "manual disconnect") {
     this.#manualClose = true;
     clearTimeout(this.#reconnectTimer);
     clearInterval(this.#heartbeat);
     this.#reconnectTimer = null;
     this.#heartbeat = null;
-    if (this.#socket) this.#socket.close(1e3, reason);
-    this.#socket = null;
+    const socket = this.#socket;
+    const opening = this.#connectPromise;
     this.#credential = null;
     this.#token = null;
     this.#forceTokenRefresh = false;
-    this.state = "disconnected";
+    const shouldWait = Boolean(opening) || Boolean(socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING));
+    this.state = shouldWait ? "disconnecting" : "disconnected";
     this.connectedAt = null;
     this.connectionId = null;
     this.features = [];
     this.emit("status", this.status());
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      await closeSocket(socket, reason);
+    }
+    if (opening) await opening.catch(() => {
+    });
+    this.#socketGeneration += 1;
+    this.#socket = null;
+    this.state = "disconnected";
+    this.emit("status", this.status());
+    return this.status();
   }
   send(message) {
     if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN || this.state !== "connected") return false;
@@ -16867,6 +16982,16 @@ var RelayClient = class extends EventEmitter3 {
     this.#socket.send(JSON.stringify(frame));
     return true;
   }
+  #beginOpen() {
+    if (this.#connectPromise) return this.#connectPromise;
+    const promise = this.#open();
+    this.#connectPromise = promise;
+    const clear = () => {
+      if (this.#connectPromise === promise) this.#connectPromise = null;
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
   async #open() {
     try {
       this.#token = await this.#tokenService.usableToken({
@@ -16878,36 +17003,53 @@ var RelayClient = class extends EventEmitter3 {
         this.#credential = await this.configStore.relayCredential();
       }
     } catch (error2) {
+      if (this.#manualClose) throw error2;
       this.#handleFailure(error2);
-      if (!this.#manualClose && !isTerminalRelayAuthCode(error2?.code, this.#credential)) {
+      if (!this.#manualClose && !isTerminalRelayFailure(error2, this.#credential)) {
         this.#scheduleReconnect();
       }
       throw error2;
     }
+    if (this.#manualClose) return this.status();
     const config2 = this.configStore.get();
     const spaceId = relaySpaceId(config2.relay);
     this.state = "connecting";
     this.lastError = null;
     this.emit("status", this.status());
     this.logger.info("relay", "\u6B63\u5728\u8FDE\u63A5 Relay", { url: config2.relay.url, spaceId });
+    const generation = ++this.#socketGeneration;
     return new Promise((resolve, reject) => {
       let settled = false;
+      let established = false;
+      let failureReported = false;
+      let failureCode = null;
       const socket = new WebSocket(config2.relay.url);
       this.#socket = socket;
+      const isCurrent = () => this.#socket === socket && this.#socketGeneration === generation;
+      const reportFailure = (error2) => {
+        if (failureReported || !isCurrent()) return;
+        failureReported = true;
+        failureCode = error2?.code || "RELAY_UNAVAILABLE";
+        if (this.#manualClose) return;
+        this.#handleFailure(error2);
+      };
       const authenticationTimeout = setTimeout(() => {
+        const error2 = new RelayError("RELAY_TIMEOUT", "Relay \u8BA4\u8BC1\u8D85\u65F6");
+        reportFailure(error2);
         if (!settled) {
           settled = true;
-          reject(new RelayError("RELAY_TIMEOUT", "Relay \u8BA4\u8BC1\u8D85\u65F6"));
+          reject(error2);
         }
         socket.close();
       }, 1e4);
       socket.addEventListener("open", async () => {
+        if (!isCurrent()) return;
         this.state = "authenticating";
         this.emit("status", this.status());
         try {
           socket.send(JSON.stringify(await this.#hello(config2, this.#token, false)));
         } catch (error2) {
-          this.#handleFailure(error2);
+          reportFailure(error2);
           if (!settled) {
             settled = true;
             clearTimeout(authenticationTimeout);
@@ -16916,12 +17058,23 @@ var RelayClient = class extends EventEmitter3 {
           socket.close();
         }
       });
-      socket.addEventListener("message", (event) => this.#handleMessage(event, { resolve, reject, settle: () => {
-        settled = true;
-      }, authenticationTimeout }));
+      socket.addEventListener("message", (event) => this.#handleMessage(event, {
+        resolve,
+        reject,
+        settle: () => {
+          settled = true;
+        },
+        authenticationTimeout,
+        socket,
+        isCurrent,
+        reportFailure,
+        markEstablished: () => {
+          established = true;
+        }
+      }));
       socket.addEventListener("error", () => {
         const error2 = new RelayError("RELAY_UNAVAILABLE", "Relay WebSocket \u8FDE\u63A5\u5931\u8D25");
-        this.#handleFailure(error2);
+        reportFailure(error2);
         if (!settled) {
           settled = true;
           clearTimeout(authenticationTimeout);
@@ -16929,24 +17082,31 @@ var RelayClient = class extends EventEmitter3 {
         }
       });
       socket.addEventListener("close", (event) => {
+        if (!isCurrent()) return;
         clearTimeout(authenticationTimeout);
         clearInterval(this.#heartbeat);
         this.#heartbeat = null;
-        this.#socket = null;
         if (!settled) {
           settled = true;
-          reject(new RelayError("RELAY_UNAVAILABLE", `Relay \u5728\u8BA4\u8BC1\u524D\u65AD\u5F00\uFF1A${event.code}`));
+          const error2 = new RelayError("RELAY_UNAVAILABLE", `Relay \u5728\u8BA4\u8BC1\u524D\u65AD\u5F00\uFF1A${event.code}`);
+          reportFailure(error2);
+          reject(error2);
         }
-        if (!this.#manualClose) this.#scheduleReconnect();
+        if (established && !failureReported && !this.#manualClose) {
+          reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF1A${event.code}`));
+        }
+        this.#socket = null;
+        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) this.#scheduleReconnect();
       });
     });
   }
   #handleMessage(event, handshake) {
+    if (handshake.isCurrent && !handshake.isCurrent()) return;
     let message;
     try {
       const raw = String(event.data);
       if (Buffer.byteLength(raw, "utf8") > this.#maxFrameSize) {
-        this.#socket?.close(1009, "message too large");
+        handshake.socket?.close(1009, "message too large");
         throw new RelayError("INVALID_MESSAGE", "Relay \u6D88\u606F\u8D85\u8FC7 maxFrameSize \u9650\u5236");
       }
       message = JSON.parse(raw);
@@ -16955,7 +17115,7 @@ var RelayClient = class extends EventEmitter3 {
       return;
     }
     if (message.type === "connect.welcome") {
-      if (this.state !== "authenticating") return;
+      if (this.state !== "authenticating" || handshake.isCurrent && !handshake.isCurrent()) return;
       try {
         validateRelayWelcome(message);
         validateWelcomeIdentity(message, this.configStore.get());
@@ -16964,14 +17124,15 @@ var RelayClient = class extends EventEmitter3 {
         }
       } catch (error2) {
         clearTimeout(handshake.authenticationTimeout);
-        this.#handleFailure(error2);
+        handshake.reportFailure?.(error2);
         handshake.settle();
         handshake.reject(error2);
-        this.#socket?.close(1002, "invalid welcome");
+        handshake.socket?.close(1002, "invalid welcome");
         return;
       }
       clearTimeout(handshake.authenticationTimeout);
       this.state = "connected";
+      handshake.markEstablished?.();
       this.connectedAt = nowIso();
       this.connectionId = message.connectionId;
       this.features = Array.isArray(message.features) ? message.features.filter((item) => typeof item === "string") : [];
@@ -16992,13 +17153,14 @@ var RelayClient = class extends EventEmitter3 {
       if (error2.code === "auth.token_expired" && this.#credential?.endpointGrant) {
         this.#forceTokenRefresh = true;
       }
-      if (isTerminalRelayAuthCode(error2.code, this.#credential)) this.#manualClose = true;
-      this.#handleFailure(error2);
+      handshake.reportFailure?.(error2);
       if (authenticating) {
         clearTimeout(handshake.authenticationTimeout);
         handshake.settle();
         handshake.reject(error2);
-        this.#socket?.close();
+        handshake.socket?.close();
+      } else {
+        handshake.socket?.close();
       }
       return;
     }
@@ -17068,28 +17230,51 @@ var RelayClient = class extends EventEmitter3 {
     }, seconds * 1e3);
   }
   #handleFailure(error2) {
-    if (isTerminalRelayAuthCode(error2?.code, this.#credential)) this.#manualClose = true;
+    if (isTerminalRelayFailure(error2, this.#credential)) this.#manualClose = true;
     this.state = "error";
     this.lastError = error2.message;
     this.logger.error("relay", "Relay \u8FDE\u63A5\u5F02\u5E38", { code: error2.code, message: error2.message });
     this.emit("status", this.status());
   }
   #scheduleReconnect() {
+    if (this.#manualClose || this.#reconnectTimer) return;
     const max = this.configStore.get().relay.reconnectMaxSeconds;
     this.#attempt += 1;
     const delay = Math.min(max, 2 ** Math.min(this.#attempt, 8)) * 1e3 + Math.floor(Math.random() * 500);
     this.state = "reconnecting";
     this.emit("status", this.status());
     this.logger.warn("relay", "Relay \u5DF2\u65AD\u5F00\uFF0C\u8BA1\u5212\u91CD\u8FDE", { attempt: this.#attempt, delayMs: delay });
-    clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = setTimeout(() => {
-      this.#open().catch((error2) => this.#handleFailure(error2));
+      this.#reconnectTimer = null;
+      if (this.#manualClose) return;
+      this.#beginOpen().catch(() => {
+      });
     }, delay);
   }
 };
-function isTerminalRelayAuthCode(code, credential) {
+function isTerminalRelayFailure(error2, credential) {
+  const code = typeof error2 === "string" ? error2 : error2?.code;
+  if (code === "connection.rejected") return true;
   if (code === "auth.token_expired" && credential?.endpointGrant) return false;
   return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
+function closeSocket(socket, reason) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, 3e3);
+    try {
+      socket.addEventListener("close", finish, { once: true });
+      socket.close(1e3, reason);
+    } catch {
+      finish();
+    }
+  });
 }
 function validateWelcomeIdentity(message, config2) {
   const expectedSpaceId = relaySpaceId(config2.relay);
@@ -17110,6 +17295,8 @@ var ConnectorService = class extends EventEmitter4 {
     this.eventBuffer = new EventBuffer(options.eventBufferSize || 1e3);
     this.dashboard = null;
     this.startedAt = null;
+    this.starting = null;
+    this.autoConnectStarted = false;
     this.eventQueue = Promise.resolve();
     this.threadAccess = /* @__PURE__ */ new Map();
     this.router = new CommandRouter({
@@ -17122,10 +17309,20 @@ var ConnectorService = class extends EventEmitter4 {
   }
   async start() {
     if (this.startedAt) return this.status();
-    await this.configStore.load();
-    this.startedAt = (/* @__PURE__ */ new Date()).toISOString();
-    this.logger.info("connector", "Codex Relay Connector \u5DF2\u542F\u52A8");
-    if (this.configStore.get().relay.autoConnect) {
+    if (!this.starting) {
+      this.starting = (async () => {
+        await this.configStore.load();
+        this.startedAt = (/* @__PURE__ */ new Date()).toISOString();
+        this.logger.info("connector", "Codex Relay Connector \u5DF2\u542F\u52A8");
+      })();
+    }
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+    if (this.configStore.get().relay.autoConnect && !this.autoConnectStarted) {
+      this.autoConnectStarted = true;
       this.connect().catch((error2) => this.logger.error("connector", "\u81EA\u52A8\u8FDE\u63A5\u5931\u8D25", { message: error2.message }));
     }
     return this.status();
@@ -17134,10 +17331,11 @@ var ConnectorService = class extends EventEmitter4 {
     this.dashboard = dashboard2;
   }
   async stop() {
-    this.relay.disconnect("connector stopped");
+    await this.relay.disconnect("connector stopped");
     await this.appServer.stop();
     await this.dashboard?.stop();
     this.startedAt = null;
+    this.autoConnectStarted = false;
   }
   async connect() {
     await this.start();
@@ -17146,8 +17344,8 @@ var ConnectorService = class extends EventEmitter4 {
     if (config2.codex.autoStartAppServer) await this.appServer.start();
     return this.relay.connect(credential);
   }
-  disconnect() {
-    this.relay.disconnect();
+  async disconnect() {
+    await this.relay.disconnect();
     return this.status();
   }
   async testConnection() {
@@ -17156,7 +17354,7 @@ var ConnectorService = class extends EventEmitter4 {
   }
   async updateConfig(patch, credentialPatch) {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
-    if (wasConnected) this.relay.disconnect("configuration changed");
+    if (wasConnected) await this.relay.disconnect("configuration changed");
     const config2 = await this.configStore.update(patch, credentialPatch);
     this.threadAccess.clear();
     if (wasConnected || config2.relay.autoConnect) await this.connect();

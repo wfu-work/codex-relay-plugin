@@ -9,6 +9,7 @@ const {
   relayStatusType,
   appServerLabel,
   configReady,
+  connectionBusy,
   relayErrorHint,
   shortTime,
   runConnection,
@@ -23,9 +24,9 @@ const {
         <h1>把 Codex 带到<br /><span>你在的地方。</span></h1>
         <p>连接本机 Codex 与你的 Relay 连接空间。会话事件实时同步，远程写操作始终受本机权限策略保护。</p>
         <div class="hero-actions">
-          <a-button type="primary" size="large" :loading="state.loading.connect" :disabled="['connected', 'connecting', 'authenticating'].includes(relayStateValue)" @click="runConnection('connect', 'Relay 已连接')"><ApiOutlined />连接 Relay</a-button>
-          <a-button size="large" :loading="state.loading.test" @click="runConnection('test', 'Relay 握手和认证通过')">测试连接</a-button>
-          <a-button type="text" size="large" :disabled="relayStateValue === 'disconnected'" :loading="state.loading.disconnect" @click="runConnection('disconnect', 'Relay 已断开')">断开</a-button>
+          <a-button type="primary" size="large" :loading="state.loading.connect" :disabled="connectionBusy || ['connected', 'connecting', 'authenticating', 'disconnecting'].includes(relayStateValue)" @click="runConnection('connect', 'Relay 已连接')"><ApiOutlined />连接 Relay</a-button>
+          <a-button size="large" :loading="state.loading.test" :disabled="connectionBusy || ['connecting', 'authenticating', 'reconnecting', 'disconnecting'].includes(relayStateValue)" @click="runConnection('test', 'Relay 握手和认证通过')">测试连接</a-button>
+          <a-button type="text" size="large" :disabled="connectionBusy || relayStateValue === 'disconnected'" :loading="state.loading.disconnect" @click="runConnection('disconnect', 'Relay 已断开')">断开</a-button>
         </div>
         <div v-if="relayStateValue === 'error' && relayErrorHint" class="connection-alert" role="alert">
           <ExclamationCircleFilled />

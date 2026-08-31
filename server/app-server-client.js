@@ -12,6 +12,7 @@ export class AppServerClient extends EventEmitter {
   #serverRequests = new Map();
   #nextId = 1;
   #starting = null;
+  #paginatedThreads = null;
 
   static APPROVAL_METHODS = new Set([
     "item/commandExecution/requestApproval",
@@ -60,6 +61,7 @@ export class AppServerClient extends EventEmitter {
     const config = this.configStore.get();
     this.state = "starting";
     this.lastError = null;
+    this.#paginatedThreads = null;
     await this.checkAvailability();
     this.logger.info("app-server", "正在启动 Codex App Server", {
       executable: config.codex.executable,
@@ -98,6 +100,7 @@ export class AppServerClient extends EventEmitter {
     const child = this.#process;
     this.#process = null;
     this.state = "stopped";
+    this.#paginatedThreads = null;
     child.kill("SIGTERM");
     for (const pending of this.#requests.values()) pending.reject(new RelayError("APP_SERVER_UNAVAILABLE", "App Server 已停止"));
     this.#requests.clear();
@@ -142,8 +145,86 @@ export class AppServerClient extends EventEmitter {
     });
   }
 
+  listModels(params = {}) {
+    return this.request("model/list", {
+      cursor: params.cursor ?? null,
+      limit: Math.min(Number(params.limit || 100), 100),
+      includeHidden: params.includeHidden === true,
+    });
+  }
+
   readThread(threadId) {
-    return this.request("thread/read", { threadId, includeTurns: true });
+    if (this.#paginatedThreads === true) return this.#readPaginatedThread(threadId);
+    return this.request("thread/read", { threadId, includeTurns: true }).catch(async (error) => {
+      if (!isPaginatedThreadReadError(error)) throw error;
+      this.#paginatedThreads = true;
+      return this.#readPaginatedThread(threadId);
+    });
+  }
+
+  async #readPaginatedThread(threadId) {
+    // The paginated history contract keeps metadata on thread/read and moves
+    // turns/items to dedicated list methods. Keep the connector response in
+    // the legacy { thread: { turns } } shape so Relay clients remain stable.
+    const metadata = await this.request("thread/read", { threadId });
+    const turns = await this.#readAllThreadTurns(threadId);
+    const metadataMap = isObject(metadata) ? metadata : {};
+    const thread = isObject(metadataMap.thread) ? metadataMap.thread : metadataMap;
+    const hydrated = { ...thread, turns };
+    return isObject(metadataMap.thread) ? { ...metadataMap, thread: hydrated } : hydrated;
+  }
+
+  async #readAllThreadTurns(threadId) {
+    const turns = [];
+    let cursor = null;
+    for (let page = 0; page < 1000; page += 1) {
+      const response = await this.request("thread/turns/list", {
+        threadId,
+        cursor,
+        limit: 100,
+        sortDirection: "asc",
+        itemsView: "full",
+      });
+      const data = Array.isArray(response?.data) ? response.data : [];
+      for (const turn of data) {
+        if (!isObject(turn)) continue;
+        const items = turn.itemsView === "full" && Array.isArray(turn.items)
+          ? turn.items
+          : await this.#readAllThreadItems(threadId, turn.id);
+        turns.push({ ...turn, items });
+      }
+      const nextCursor = typeof response?.nextCursor === "string" && response.nextCursor
+        ? response.nextCursor
+        : null;
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = nextCursor;
+    }
+    return turns;
+  }
+
+  async #readAllThreadItems(threadId, turnId) {
+    if (typeof turnId !== "string" || !turnId) return [];
+    const items = [];
+    let cursor = null;
+    for (let page = 0; page < 1000; page += 1) {
+      const response = await this.request("thread/items/list", {
+        threadId,
+        turnId,
+        cursor,
+        limit: 100,
+        sortDirection: "asc",
+      });
+      const data = Array.isArray(response?.data) ? response.data : [];
+      for (const entry of data) {
+        if (isObject(entry?.item)) items.push(entry.item);
+      }
+      const nextCursor = typeof response?.nextCursor === "string" && response.nextCursor
+        ? response.nextCursor
+        : null;
+      if (!nextCursor || nextCursor === cursor) break;
+      cursor = nextCursor;
+    }
+    return items;
   }
 
   createThread({ cwd } = {}) {
@@ -154,11 +235,13 @@ export class AppServerClient extends EventEmitter {
     return this.request("thread/resume", { threadId });
   }
 
-  startTurn({ threadId, text, cwd }) {
+  startTurn({ threadId, text, cwd, model, effort }) {
     return this.request("turn/start", {
       threadId,
       input: [{ type: "text", text }],
       ...(cwd ? { cwd } : {}),
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
     });
   }
 
@@ -235,4 +318,14 @@ export class AppServerClient extends EventEmitter {
     this.#requests.clear();
     this.emit("status", this.status());
   }
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPaginatedThreadReadError(error) {
+  return error?.code === "APP_SERVER_ERROR" &&
+    typeof error?.message === "string" &&
+    error.message.includes("paginated threads do not support thread/read(includeTurns=true)");
 }

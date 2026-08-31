@@ -13,6 +13,12 @@ function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", delayT
   const calls = [];
   const appServer = {
     start: async () => calls.push(["start"]),
+    listModels: async (params) => (calls.push(["listModels", params]), {
+      data: [
+        { model: "remote-model", displayName: "Remote Model", isDefault: true },
+      ],
+      nextCursor: null,
+    }),
     listThreads: async (params) => (calls.push(["listThreads", params]), {
       data: [
         { id: "thread-allowed", cwd: "/workspace/allowed/nested" },
@@ -58,14 +64,36 @@ test("thread listing is constrained by the project whitelist", async () => {
   assert.deepEqual(response.result.data.map((thread) => thread.id), ["thread-allowed"]);
 });
 
+test("model listing is forwarded to the App Server and allowed in read-only mode", async () => {
+  const { calls, router } = setup({ readOnly: true });
+  const response = await router.handle(envelope({ type: "model.list", includeHidden: false, limit: 100 }));
+  assert.equal(response.success, true);
+  assert.deepEqual(response.result.data, [
+    { model: "remote-model", displayName: "Remote Model", isDefault: true },
+  ]);
+  assert.deepEqual(calls.find(([name]) => name === "listModels")[1], {
+    type: "model.list",
+    includeHidden: false,
+    limit: 100,
+  });
+});
+
 test("turn start verifies thread cwd and is idempotent by request id", async () => {
   const { calls, router } = setup();
-  const message = envelope({ type: "turn.start", threadId: "thread-1", text: "continue" });
+  const message = envelope({
+    type: "turn.start",
+    threadId: "thread-1",
+    text: "continue",
+    model: "remote-model",
+    effort: "high",
+  });
   const first = await router.handle(message);
   const second = await router.handle(message);
   assert.equal(first.success, true);
   assert.deepEqual(second, first);
   assert.equal(calls.filter(([name]) => name === "startTurn").length, 1);
+  assert.equal(calls.find(([name]) => name === "startTurn")[1].model, "remote-model");
+  assert.equal(calls.find(([name]) => name === "startTurn")[1].effort, "high");
 });
 
 test("concurrent duplicate deliveries share one in-flight execution", async () => {

@@ -18,10 +18,12 @@ import { useRelay } from '../stores/relay.js';
 const {
   state,
   configReady,
+  relayStateValue,
   api,
   applyConfig,
   saveConfig,
   runConnection,
+  connectionBusy,
 } = useRelay();
 
 const showEditor = ref(false);
@@ -85,8 +87,8 @@ async function cancelEditing() {
         <div><span>连接令牌</span><strong class="masked-value">•••• {{ tokenTail }}</strong><em>已安全保存</em></div>
       </div>
       <div class="setup-summary-actions">
-        <a-button type="primary" :loading="state.loading.test" @click="runConnection('test', '连接测试通过')"><WifiOutlined />测试连接</a-button>
-        <a-button @click="showEditor = true"><EditOutlined />修改连接信息</a-button>
+        <a-button type="primary" :loading="state.loading.test" :disabled="connectionBusy || ['connecting', 'authenticating', 'reconnecting', 'disconnecting'].includes(relayStateValue)" @click="runConnection('test', '连接测试通过')"><WifiOutlined />测试连接</a-button>
+        <a-button :disabled="connectionBusy" @click="showEditor = true"><EditOutlined />修改连接信息</a-button>
       </div>
     </a-card>
 
@@ -182,9 +184,9 @@ async function cancelEditing() {
         <div class="form-footer setup-form-footer">
           <span><LockOutlined /> 凭据只保存在本机安全存储</span>
           <div class="setup-form-actions">
-            <a-button v-if="configReady" aria-label="取消编辑" @click="cancelEditing">取消</a-button>
-            <a-button html-type="button" :loading="state.loading.save" @click="saveConfig">仅保存</a-button>
-            <a-button html-type="submit" type="primary" :loading="state.loading.save || state.loading.test"><WifiOutlined />保存并测试连接</a-button>
+            <a-button v-if="configReady" aria-label="取消编辑" :disabled="connectionBusy" @click="cancelEditing">取消</a-button>
+            <a-button html-type="button" :loading="state.loading.save" :disabled="connectionBusy" @click="saveConfig">仅保存</a-button>
+            <a-button html-type="submit" type="primary" :loading="state.loading.save || state.loading.test" :disabled="connectionBusy"><WifiOutlined />保存并测试连接</a-button>
           </div>
         </div>
       </a-form>

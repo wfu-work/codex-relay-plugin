@@ -29,6 +29,12 @@ test("validates a targeted, current command", () => {
   assert.equal(validateRelayCommand(message, config), message);
 });
 
+test("allows model discovery while Relay is read-only", () => {
+  const { config, message } = fixture({ type: "model.list" });
+  config.readOnly = true;
+  assert.equal(validateRelayCommand(message, config), message);
+});
+
 test("rejects commands targeted to another endpoint", () => {
   const { config, message } = fixture();
   message.targetDeviceId = "endpoint-2";

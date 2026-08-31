@@ -15,6 +15,11 @@ lines.on("line", (line) => {
   let result = {};
   if (message.method === "initialize") result = { userAgent: "fake-codex" };
   if (message.method === "thread/list") result = { data: [] };
+  if (message.method === "model/list") result = {
+    data: [{ model: "remote-model", displayName: "Remote Model", isDefault: true }],
+    nextCursor: null,
+  };
+  if (message.method === "turn/start") result = { received: message.params };
   if (message.method === "turn/steer") result = { received: message.params };
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`);
 });

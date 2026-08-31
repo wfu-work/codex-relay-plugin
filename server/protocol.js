@@ -57,6 +57,7 @@ export function unwrapRelayFrame(message) {
 
 export const COMMAND_PERMISSIONS = Object.freeze({
   "host.get_status": "readThreads",
+  "model.list": "readThreads",
   "thread.list": "readThreads",
   "thread.read": "readThreads",
   "thread.create": "createThreads",
@@ -87,7 +88,7 @@ export function validateRelayCommand(message, config) {
     throw new RelayError("MESSAGE_EXPIRED", "命令时间戳无效或已过期");
   }
   const permission = COMMAND_PERMISSIONS[commandType];
-  if (config.readOnly && !["host.get_status", "thread.list", "thread.read", "sync.request", "ping"].includes(commandType)) {
+  if (config.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "sync.request", "ping"].includes(commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", "插件当前处于只读模式");
   }
   if (permission && !config.permissions[permission]) {

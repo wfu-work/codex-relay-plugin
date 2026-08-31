@@ -66,6 +66,7 @@ export const relayLabel = computed(() => ({
   connecting: '正在连接',
   authenticating: '正在认证',
   reconnecting: '等待重连',
+  disconnecting: '正在断开',
   disconnected: '未连接',
   error: '连接异常',
 }[relayStateValue.value] || relayStateValue.value));
@@ -76,6 +77,7 @@ export const relayStatusType = computed(() => ({
   connecting: 'processing',
   authenticating: 'processing',
   reconnecting: 'warning',
+  disconnecting: 'processing',
   error: 'error',
 }[relayStateValue.value] || 'default'));
 export const appServerLabel = computed(() => relayState.status?.appServer?.state || '—');
@@ -106,6 +108,21 @@ function describeRelayError(errorOrMessage) {
   if (code === 'auth.proof_mismatch' || normalized.includes('proof mismatch')) {
     return '连接令牌绑定了另一台设备。请在当前设备重新签发令牌，不要沿用旧设备的令牌。';
   }
+  if (code === 'connection.rejected' && (normalized.includes('token connection limit') || normalized.includes('连接令牌'))) {
+    return 'Relay 已有连接占用当前令牌。请到 Relay 控制台踢出旧连接，或确认没有重复运行多个插件进程后再连接。';
+  }
+  if (normalized.includes('space connection limit') || normalized.includes('空间连接数')) {
+    return '当前连接空间已达到连接上限。请在 Relay 控制台关闭无用连接，或提高该空间的连接配额。';
+  }
+  if (normalized.includes('account connection limit') || normalized.includes('账号连接数')) {
+    return '当前账号已达到连接上限。请关闭其他设备上的 Relay 连接后再试。';
+  }
+  if (code === 'connection.rejected') {
+    return 'Relay 拒绝了连接，请查看 Relay 控制台中的连接限制和凭据状态。';
+  }
+  if (code === 'RELAY_BUSY' || normalized.includes('正在连接或断开')) {
+    return 'Relay 正在处理上一次连接操作，请稍候再试。';
+  }
   if (code === 'RELAY_UNAVAILABLE' || normalized.includes('websocket 连接失败') || normalized.includes('无法连接 relay')) {
     return '暂时连不到 Relay。请检查 Relay 地址、网络和服务是否已启动，再重新测试连接。';
   }
@@ -116,6 +133,7 @@ function describeRelayError(errorOrMessage) {
 }
 
 export const relayErrorHint = computed(() => describeRelayError(relayState.status?.relay?.lastError));
+export const connectionBusy = computed(() => Object.values(relayState.loading).some(Boolean));
 
 function setTheme(value) {
   relayState.themeMode = value;
@@ -216,6 +234,10 @@ async function refreshLogs(silent = false) {
 }
 
 async function saveConfig() {
+  if (connectionBusy.value) {
+    message.info('Relay 正在处理上一次连接操作，请稍候再试。');
+    return false;
+  }
   if (!relayState.form.relayUrl.trim() || !relayState.form.spaceId.trim() || !relayState.form.endpointId.trim()) {
     message.warning('请填写 Relay 地址、空间 ID 和接入端 ID');
     return false;
@@ -247,6 +269,10 @@ async function saveConfig() {
 }
 
 async function runConnection(action, successText) {
+  if (connectionBusy.value) {
+    message.info('Relay 正在处理上一次连接操作，请稍候再试。');
+    return false;
+  }
   relayState.loading[action] = true;
   try {
     await api('/api/connection/' + action, { method: 'POST' });
@@ -335,6 +361,7 @@ export function useRelay() {
     relayStateValue,
     relayLabel,
     relayStatusType,
+    connectionBusy,
     appServerLabel,
     securityLabel,
     securityType,

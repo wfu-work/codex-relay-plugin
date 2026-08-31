@@ -19,6 +19,8 @@ export class ConnectorService extends EventEmitter {
     this.eventBuffer = new EventBuffer(options.eventBufferSize || 1000);
     this.dashboard = null;
     this.startedAt = null;
+    this.starting = null;
+    this.autoConnectStarted = false;
     this.eventQueue = Promise.resolve();
     this.threadAccess = new Map();
     this.router = new CommandRouter({
@@ -32,10 +34,20 @@ export class ConnectorService extends EventEmitter {
 
   async start() {
     if (this.startedAt) return this.status();
-    await this.configStore.load();
-    this.startedAt = new Date().toISOString();
-    this.logger.info("connector", "Codex Relay Connector 已启动");
-    if (this.configStore.get().relay.autoConnect) {
+    if (!this.starting) {
+      this.starting = (async () => {
+        await this.configStore.load();
+        this.startedAt = new Date().toISOString();
+        this.logger.info("connector", "Codex Relay Connector 已启动");
+      })();
+    }
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+    if (this.configStore.get().relay.autoConnect && !this.autoConnectStarted) {
+      this.autoConnectStarted = true;
       this.connect().catch((error) => this.logger.error("connector", "自动连接失败", { message: error.message }));
     }
     return this.status();
@@ -46,10 +58,11 @@ export class ConnectorService extends EventEmitter {
   }
 
   async stop() {
-    this.relay.disconnect("connector stopped");
+    await this.relay.disconnect("connector stopped");
     await this.appServer.stop();
     await this.dashboard?.stop();
     this.startedAt = null;
+    this.autoConnectStarted = false;
   }
 
   async connect() {
@@ -60,8 +73,8 @@ export class ConnectorService extends EventEmitter {
     return this.relay.connect(credential);
   }
 
-  disconnect() {
-    this.relay.disconnect();
+  async disconnect() {
+    await this.relay.disconnect();
     return this.status();
   }
 
@@ -72,7 +85,7 @@ export class ConnectorService extends EventEmitter {
 
   async updateConfig(patch, credentialPatch) {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
-    if (wasConnected) this.relay.disconnect("configuration changed");
+    if (wasConnected) await this.relay.disconnect("configuration changed");
     const config = await this.configStore.update(patch, credentialPatch);
     this.threadAccess.clear();
     if (wasConnected || config.relay.autoConnect) await this.connect();

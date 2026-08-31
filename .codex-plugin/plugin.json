@@ -1,6 +1,6 @@
 {
   "name": "codex-relay-plugin",
-  "version": "1.0.0+codex.20260831153140",
+  "version": "1.0.0+codex.20260831222317",
   "description": "\u901a\u8fc7\u53d7\u63a7 Relay \u5b89\u5168\u8fde\u63a5\u672c\u673a Codex \u4f1a\u8bdd\u4e0e\u8fdc\u7a0b\u8bbe\u5907\u3002",
   "author": {
     "name": "Codex Relay Project"

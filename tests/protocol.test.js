@@ -7,6 +7,7 @@ import { commandResult, eventEnvelope, normalizeCodexNotification, validateRelay
 function fixture(command = { type: "thread.list" }) {
   const config = defaultConfig();
   config.relay.spaceId = "space-1";
+  config.relay.endpointId = "endpoint-1";
   config.relay.deviceId = "host-1";
   return {
     config,
@@ -16,7 +17,7 @@ function fixture(command = { type: "thread.list" }) {
       requestId: "req-1",
       spaceId: "space-1",
       deviceId: "phone-1",
-      targetDeviceId: "host-1",
+      targetDeviceId: "endpoint-1",
       timestamp: new Date().toISOString(),
       command,
     },
@@ -28,9 +29,9 @@ test("validates a targeted, current command", () => {
   assert.equal(validateRelayCommand(message, config), message);
 });
 
-test("rejects commands targeted to another host", () => {
+test("rejects commands targeted to another endpoint", () => {
   const { config, message } = fixture();
-  message.targetDeviceId = "host-2";
+  message.targetDeviceId = "endpoint-2";
   assert.throws(() => validateRelayCommand(message, config), { code: "DEVICE_NOT_TARGETED" });
 });
 
@@ -78,11 +79,11 @@ test("wraps product messages in the transport envelope and unwraps them", () => 
   const wrapped = wrapRelayFrame(message, config);
   assert.equal(wrapped.type, "stream.message");
   assert.equal(wrapped.streamId, "codex");
-  assert.equal(wrapped.to, "host-1");
+  assert.equal(wrapped.to, "endpoint-1");
   const unwrapped = unwrapRelayFrame(wrapped);
   assert.equal(unwrapped.type, "codex.command");
-  assert.equal(unwrapped.deviceId, "host-1");
-  assert.equal(unwrapped.targetDeviceId, "host-1");
+  assert.equal(unwrapped.deviceId, "endpoint-1");
+  assert.equal(unwrapped.targetDeviceId, "endpoint-1");
 });
 
 test("routes command results back to the requesting endpoint", () => {

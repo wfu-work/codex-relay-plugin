@@ -50,7 +50,6 @@ const {
     <section class="metric-strip" aria-label="运行指标">
       <div><span>连接空间</span><strong>{{ state.status?.space?.spaceId || '未配置' }}</strong><small>{{ state.status?.space?.deviceName || '设备名称待设置' }}</small></div>
       <div><span>接入端 ID</span><strong>{{ state.status?.space?.endpointId || '未配置' }}</strong><small>{{ state.status?.space?.endpointType || 'bridge' }} / 网关</small></div>
-      <div><span>本机路由 ID</span><strong>{{ state.status?.space?.deviceId || '待生成' }}</strong><small>远程消息定向使用</small></div>
       <div><span>事件序号</span><strong>{{ state.status?.protocol?.latestSequence ?? 0 }}</strong><small>最近心跳 {{ shortTime(state.status?.relay?.lastHeartbeat) }}</small></div>
       <div><span>连接凭据</span><strong>{{ configReady ? '已就绪' : '待配置' }}</strong><small>{{ state.status?.security?.tokenConfigured ? '连接令牌已安全保存' : '尚未保存连接令牌' }}</small></div>
     </section>

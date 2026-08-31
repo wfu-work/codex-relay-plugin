@@ -208,7 +208,7 @@ export function validateConfig(config) {
   const endpointId = relayEndpointId(config.relay);
   if (typeof config.relay.endpointId !== "string") throw new Error("Relay Endpoint ID 无效");
   if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID 无效");
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("本机路由 ID 无效");
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("内部主机身份 ID 无效");
   const heartbeat = Number(config.relay.heartbeatSeconds);
   if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
     throw new Error("心跳间隔必须在 5 到 300 秒之间");

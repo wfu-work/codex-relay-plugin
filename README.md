@@ -190,11 +190,11 @@ codex plugin add codex-relay-plugin@codex-relay
 - `config.json`：非敏感配置；Unix 权限 `0600`
 - `secrets.json`：按 Space 保存 Connect Token、Endpoint Grant、过期时间和刷新地址；Unix 权限 `0600`
 
-连接配置中的两个 ID 具有不同职责：`relay.endpointId` 是 Relay 控制台登记的接入端 ID，必须与
-Connect Token 签发时绑定的 Endpoint 完全一致；`relay.deviceId` 是本机消息路由 ID，由插件自动生成，
-用于 `from`、`targetDeviceId` 和事件路由。不要用本机 `deviceId` 代替 Endpoint ID。旧版本没有
-`endpointId` 字段时，插件会保留本机路由 ID；如果旧 ID 不是自动生成的 `host_...` 形式，会将它作为
-Endpoint ID 的初始填写值，仍应在连接控制台核对。
+连接配置中的两个 ID 仍有不同职责：`relay.endpointId` 是 Relay 控制台登记的接入端 ID，必须与
+Connect Token 签发时绑定的 Endpoint 完全一致，同时也是 Relay 定向转发使用的目标 ID。`relay.deviceId`
+是插件保留的内部主机身份，用于事件元数据和兼容旧数据，不需要在配置台填写，也不能作为手机端的
+`targetDeviceId`。旧版本没有 `endpointId` 字段时，插件会保留原有的本机身份并尝试迁移为 Endpoint ID
+提示值；升级后仍应在连接控制台核对 Endpoint ID。
 
 环境变量：
 
@@ -228,7 +228,8 @@ Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 
 ## 手机端发送命令
 
 手机端应通过 `stream.message` 发送命令；业务 payload 仍必须带唯一 `requestId`、发送端
-`deviceId`、目标主机 `targetDeviceId`、Space 和 5 分钟内的时间戳：
+`deviceId`、目标主机 Endpoint ID（`targetDeviceId`）、Space 和 5 分钟内的时间戳。`targetDeviceId`
+必须填写插件的 `relay.endpointId`，而不是插件内部生成的 `relay.deviceId`：
 
 ```json
 {
@@ -238,14 +239,14 @@ Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 
   "streamId": "codex",
   "sequence": 1,
   "from": "phone_a1",
-  "to": "host_b2",
+  "to": "cli_host_b2",
   "protocol": "codex.v1",
   "payload": {
     "type": "codex.command",
     "requestId": "phone-request-42",
     "spaceId": "studio-mac",
     "deviceId": "phone_a1",
-    "targetDeviceId": "host_b2",
+    "targetDeviceId": "cli_host_b2",
     "threadId": "thread-id",
     "timestamp": "2026-08-20T08:00:00.000Z",
     "command": { "type": "turn.start", "text": "继续实现并运行测试" }
@@ -281,7 +282,7 @@ Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 
 ## Relay 服务必须负责
 
 1. 使用恒时比较或等价安全方式验证 Connect Token 和 Endpoint proof，认证后把连接绑定到 `spaceId + endpointId`。
-2. 只把命令路由给 `targetDeviceId`；不要把手机命令广播到 Space 内所有 Endpoint。
+2. 只把命令路由给 Endpoint ID 对应的 `targetDeviceId`；不要把手机命令广播到 Space 内所有 Endpoint。
 3. 限制消息大小、连接数、认证尝试和每设备命令速率。
 4. 使用 WSS，禁止在日志、错误消息或监控标签中记录 Token 和完整会话内容。
 5. 为手机连接提供等价鉴权；不要因为已知 Space ID 就允许加入 Space。

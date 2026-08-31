@@ -1,6 +1,6 @@
 import { RelayError } from "./errors.js";
 import { nowIso, randomId } from "./utils.js";
-import { relaySpaceId } from "./config-store.js";
+import { relayEndpointId, relaySpaceId } from "./config-store.js";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -36,7 +36,10 @@ export function wrapRelayFrame(message, config) {
     messageId: message.messageId || randomId("msg"),
     streamId: message.streamId || "codex",
     sequence: Number.isInteger(message.sequence) ? message.sequence : undefined,
-    from: config.relay.deviceId,
+    // Relay's directed-routing key is the authenticated Endpoint ID. The
+    // legacy host deviceId remains product metadata, but must not be used as
+    // the transport-level source/target identity.
+    from: relayEndpointId(config.relay),
     ...(message.targetDeviceId ? { to: message.targetDeviceId } : {}),
     protocol: "codex.v1",
     encrypted: false,
@@ -73,7 +76,7 @@ export function validateRelayCommand(message, config) {
   if (message.type !== "codex.command") throw new RelayError("INVALID_MESSAGE", "消息类型必须是 codex.command");
   if (!message.requestId || typeof message.requestId !== "string") throw new RelayError("INVALID_MESSAGE", "缺少 requestId");
   if (!message.deviceId || typeof message.deviceId !== "string") throw new RelayError("INVALID_MESSAGE", "缺少发送端 deviceId");
-  if (message.targetDeviceId !== config.relay.deviceId) throw new RelayError("DEVICE_NOT_TARGETED", "命令未发送给本机设备");
+  if (message.targetDeviceId !== relayEndpointId(config.relay)) throw new RelayError("DEVICE_NOT_TARGETED", "命令未发送给本机接入端");
   if (message.spaceId !== relaySpaceId(config.relay)) throw new RelayError("SPACE_NOT_JOINED", "命令 Space 与本机配置不一致");
   const commandType = message.command?.type;
   if (!Object.hasOwn(COMMAND_PERMISSIONS, commandType)) {

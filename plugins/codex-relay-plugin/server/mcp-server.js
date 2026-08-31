@@ -16133,7 +16133,7 @@ function validateConfig(config2) {
   const endpointId = relayEndpointId(config2.relay);
   if (typeof config2.relay.endpointId !== "string") throw new Error("Relay Endpoint ID \u65E0\u6548");
   if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID \u65E0\u6548");
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.deviceId || "")) throw new Error("\u672C\u673A\u8DEF\u7531 ID \u65E0\u6548");
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.deviceId || "")) throw new Error("\u5185\u90E8\u4E3B\u673A\u8EAB\u4EFD ID \u65E0\u6548");
   const heartbeat = Number(config2.relay.heartbeatSeconds);
   if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
     throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
@@ -16195,7 +16195,10 @@ function wrapRelayFrame(message, config2) {
     messageId: message.messageId || randomId("msg"),
     streamId: message.streamId || "codex",
     sequence: Number.isInteger(message.sequence) ? message.sequence : void 0,
-    from: config2.relay.deviceId,
+    // Relay's directed-routing key is the authenticated Endpoint ID. The
+    // legacy host deviceId remains product metadata, but must not be used as
+    // the transport-level source/target identity.
+    from: relayEndpointId(config2.relay),
     ...message.targetDeviceId ? { to: message.targetDeviceId } : {},
     protocol: "codex.v1",
     encrypted: false,
@@ -16229,7 +16232,7 @@ function validateRelayCommand(message, config2) {
   if (message.type !== "codex.command") throw new RelayError("INVALID_MESSAGE", "\u6D88\u606F\u7C7B\u578B\u5FC5\u987B\u662F codex.command");
   if (!message.requestId || typeof message.requestId !== "string") throw new RelayError("INVALID_MESSAGE", "\u7F3A\u5C11 requestId");
   if (!message.deviceId || typeof message.deviceId !== "string") throw new RelayError("INVALID_MESSAGE", "\u7F3A\u5C11\u53D1\u9001\u7AEF deviceId");
-  if (message.targetDeviceId !== config2.relay.deviceId) throw new RelayError("DEVICE_NOT_TARGETED", "\u547D\u4EE4\u672A\u53D1\u9001\u7ED9\u672C\u673A\u8BBE\u5907");
+  if (message.targetDeviceId !== relayEndpointId(config2.relay)) throw new RelayError("DEVICE_NOT_TARGETED", "\u547D\u4EE4\u672A\u53D1\u9001\u7ED9\u672C\u673A\u63A5\u5165\u7AEF");
   if (message.spaceId !== relaySpaceId(config2.relay)) throw new RelayError("SPACE_NOT_JOINED", "\u547D\u4EE4 Space \u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
   const commandType = message.command?.type;
   if (!Object.hasOwn(COMMAND_PERMISSIONS, commandType)) {

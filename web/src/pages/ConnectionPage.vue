@@ -80,9 +80,8 @@ async function cancelEditing() {
       <div class="connection-summary-grid">
         <div><span>Relay 地址</span><strong>{{ state.form.relayUrl }}</strong></div>
         <div><span>连接空间</span><strong>{{ state.form.spaceId }}</strong></div>
-        <div><span>接入端 ID</span><strong>{{ state.form.endpointId }}</strong><em>与连接令牌绑定</em></div>
+        <div><span>接入端 ID</span><strong>{{ state.form.endpointId }}</strong><em>连接令牌与远程路由均使用此 ID</em></div>
         <div><span>设备</span><strong>{{ state.form.deviceName || '未命名设备' }}</strong></div>
-        <div><span>本机路由 ID</span><strong>{{ state.status?.space?.deviceId || '启动后生成' }}</strong><em>远程消息路由</em></div>
         <div><span>连接令牌</span><strong class="masked-value">•••• {{ tokenTail }}</strong><em>已安全保存</em></div>
       </div>
       <div class="setup-summary-actions">
@@ -107,7 +106,7 @@ async function cancelEditing() {
       <a-alert class="setup-tip" type="info" show-icon>
         <template #icon><InfoCircleOutlined /></template>
         <template #message>从 Relay 控制台复制同一次签发的信息</template>
-        <template #description>空间 ID、接入端 ID 和连接令牌必须来自同一次签发。接入端 ID 不是设备名称，也不是本机路由 ID；看到“连接令牌无效”时，请核对这三项后重新签发。</template>
+        <template #description>空间 ID、接入端 ID 和连接令牌必须来自同一次签发。手机端的 targetDeviceId 应填写这里的接入端 ID；本机路由标识由插件内部维护，无需配置。</template>
       </a-alert>
 
       <a-form layout="vertical" :model="state.form" @finish="saveAndTest">
@@ -135,22 +134,12 @@ async function cancelEditing() {
           </a-col>
         </a-row>
 
-        <a-row :gutter="[20, 2]">
-          <a-col :xs="24" :sm="12">
-            <a-form-item label="设备名称">
-              <a-input v-model:value="state.form.deviceName" placeholder="例如：我的 Mac" maxlength="128">
-                <template #prefix><MobileOutlined /></template>
-              </a-input>
-              <div class="field-help">可选，只用于远程界面识别设备。</div>
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :sm="12">
-            <a-form-item label="本机路由 ID">
-              <a-input :value="state.status?.space?.deviceId || '启动后生成'" readonly />
-              <div class="field-help">只用于本机消息路由，不需要与接入端 ID 相同，也不能用它签发连接令牌。</div>
-            </a-form-item>
-          </a-col>
-        </a-row>
+        <a-form-item label="设备名称">
+          <a-input v-model:value="state.form.deviceName" placeholder="例如：我的 Mac" maxlength="128">
+            <template #prefix><MobileOutlined /></template>
+          </a-input>
+          <div class="field-help">可选，只用于远程界面识别设备。</div>
+        </a-form-item>
 
         <a-form-item label="接入端类型">
           <a-input value="bridge / 网关" readonly />

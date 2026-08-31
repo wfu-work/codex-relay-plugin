@@ -14,6 +14,7 @@
     "ui:build": "vite build",
     "ui:watch": "vite build --watch",
     "build": "npm run ui:build && node scripts/build.mjs",
+    "release:version": "node scripts/update-version.mjs",
     "clean": "node scripts/clean.mjs",
     "validate:build": "node scripts/validate-build.mjs",
     "smoke:build": "node scripts/smoke-build.mjs",

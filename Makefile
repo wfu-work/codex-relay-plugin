@@ -5,7 +5,7 @@ REMOTE ?= origin
 INIT_BRANCH ?= main
 MESSAGE ?= build: publish Codex Relay plugin
 
-.PHONY: help deps dev check test build validate preview clean git-init ensure-standalone push publish
+.PHONY: help deps dev check test build validate preview clean git-init ensure-standalone bump-version push publish
 
 help:
 	@echo "Codex Relay Plugin"
@@ -17,6 +17,7 @@ help:
 	@echo "  make clean                       清理生产构建目录"
 	@echo "  make git-init REPO_URL=<url>     初始化独立 Git 仓库并配置远程"
 	@echo "  make push [BRANCH=main]          构建、提交并推送到远程仓库"
+	@echo "  make publish [BRANCH=main]       更新时间戳版本、构建、提交并推送"
 
 deps:
 	npm install --no-audit --no-fund
@@ -67,6 +68,9 @@ ensure-standalone:
 	fi; \
 	git -C "$(PROJECT_ROOT)" remote get-url "$(REMOTE)" >/dev/null 2>&1 || { echo "未配置远程 $(REMOTE)。请先执行 make git-init REPO_URL=<url>"; exit 1; }
 
+bump-version:
+	@VERSION_TIMESTAMP="$(VERSION_TIMESTAMP)" node "$(PROJECT_ROOT)/scripts/update-version.mjs"
+
 push: ensure-standalone build
 	git -C "$(PROJECT_ROOT)" add -A
 	@if git -C "$(PROJECT_ROOT)" diff --cached --quiet; then \
@@ -80,4 +84,6 @@ push: ensure-standalone build
 	git check-ref-format --branch "$$branch" >/dev/null || exit 1; \
 	git -C "$(PROJECT_ROOT)" push -u "$(REMOTE)" "HEAD:refs/heads/$$branch"
 
-publish: push
+publish: ensure-standalone
+	@$(MAKE) --no-print-directory bump-version
+	@$(MAKE) --no-print-directory push

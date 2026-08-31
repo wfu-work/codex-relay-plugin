@@ -166,6 +166,23 @@ make push MESSAGE="release: describe the change"
 
 `make push` 会先运行测试和生产构建，提交当前独立 Git 仓库的全部变更，再推送当前分支。可通过 `REMOTE=upstream` 或 `BRANCH=main` 覆盖目标；如果是在其他父仓库中使用本目录，请先用 `make git-init REPO_URL=<url>` 初始化独立仓库。
 
+正式发布使用 `make publish`：它会先把 `.codex-plugin/plugin.json` 的版本更新为
+`<基础版本>+codex.<UTC 时间戳>`，再执行同样的构建、提交和推送流程。基础版本（例如
+`0.1.0`）会保留，因此每次发布不必手动递增 `0.1.1`；但完整版本字符串会变化，Codex
+才能识别为新的插件缓存。`make push` 不会自动改版本，适合只推送开发中的提交。
+
+```bash
+make publish MESSAGE="release: describe the change"
+```
+
+如需在测试或自动化中固定时间戳，可传入 `VERSION_TIMESTAMP=YYYYMMDDHHMMSS`；省略时使用
+当前 UTC 时间。发布后，在已安装插件的机器上仍需刷新 marketplace 并重新安装插件：
+
+```bash
+codex plugin marketplace upgrade codex-relay
+codex plugin add codex-relay-plugin@codex-relay
+```
+
 ## 配置位置
 
 默认目录为 `~/.codex-relay-plugin/`：

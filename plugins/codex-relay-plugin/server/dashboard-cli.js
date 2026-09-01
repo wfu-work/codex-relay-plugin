@@ -1147,6 +1147,97 @@ var EventBuffer = class {
   }
 };
 
+// server/instance-lock.js
+import fs4 from "node:fs/promises";
+import path5 from "node:path";
+var LOCK_WRITE_GRACE_MS = 5e3;
+var InstanceLock = class {
+  #file = null;
+  #handle = null;
+  #acquirePromise = null;
+  constructor(configDir, name = "connector.lock") {
+    this.#file = path5.join(configDir, name);
+  }
+  async acquire() {
+    if (this.#handle) return;
+    if (this.#acquirePromise) return this.#acquirePromise;
+    this.#acquirePromise = this.#acquire();
+    try {
+      await this.#acquirePromise;
+    } finally {
+      this.#acquirePromise = null;
+    }
+  }
+  async #acquire() {
+    await fs4.mkdir(path5.dirname(this.#file), { recursive: true, mode: 448 });
+    for (; ; ) {
+      try {
+        this.#handle = await fs4.open(this.#file, "wx", 384);
+        await this.#handle.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: (/* @__PURE__ */ new Date()).toISOString() })}
+`);
+        return;
+      } catch (error) {
+        if (this.#handle) {
+          await this.#handle.close().catch(() => {
+          });
+          this.#handle = null;
+        }
+        if (error.code !== "EEXIST") throw error;
+        if (await this.#removeIfStale()) continue;
+        const active = new Error("\u540C\u4E00\u914D\u7F6E\u76EE\u5F55\u5DF2\u6709 Codex Relay Connector \u5728\u8FD0\u884C");
+        active.code = "RELAY_INSTANCE_ALREADY_RUNNING";
+        throw active;
+      }
+    }
+  }
+  async release() {
+    const handle = this.#handle;
+    if (!handle) return;
+    this.#handle = null;
+    await handle.close().catch(() => {
+    });
+    await fs4.unlink(this.#file).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+  async #removeIfStale() {
+    let record;
+    try {
+      record = JSON.parse(await fs4.readFile(this.#file, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") return true;
+      try {
+        const stat = await fs4.stat(this.#file);
+        if (Date.now() - stat.mtimeMs < LOCK_WRITE_GRACE_MS) return false;
+      } catch (statError) {
+        if (statError.code === "ENOENT") return true;
+        return false;
+      }
+      await fs4.unlink(this.#file).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+      return true;
+    }
+    const pid = Number(record?.pid);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      await fs4.unlink(this.#file).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      return true;
+    }
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      if (error.code !== "ESRCH") return false;
+      await fs4.unlink(this.#file).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+      return true;
+    }
+  }
+};
+
 // server/logger.js
 import { EventEmitter as EventEmitter2 } from "node:events";
 var Logger = class extends EventEmitter2 {
@@ -1324,7 +1415,8 @@ var TERMINAL_RELAY_AUTH_CODES = /* @__PURE__ */ new Set([
   "auth.space_unavailable",
   "auth.endpoint_type_mismatch",
   "auth.revoked",
-  "handshake.invalid"
+  "handshake.invalid",
+  "connection.kicked"
 ]);
 var RelayClient = class extends EventEmitter3 {
   #socket = null;
@@ -1613,7 +1705,11 @@ var RelayClient = class extends EventEmitter3 {
           reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF1A${event.code}`));
         }
         this.#socket = null;
-        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) this.#scheduleReconnect();
+        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
+          this.#scheduleReconnect();
+        } else {
+          this.emit("disconnected", { code: failureCode || event.code });
+        }
       });
     });
   }
@@ -1807,6 +1903,7 @@ var ConnectorService = class extends EventEmitter4 {
     super();
     this.logger = options.logger || new Logger();
     this.configStore = options.configStore || new ConfigStore({ configDir: options.configDir, logger: this.logger });
+    this.instanceLock = options.instanceLock || null;
     this.appServer = options.appServer || new AppServerClient(this.configStore, this.logger);
     this.relay = options.relay || new RelayClient(this.configStore, this.logger);
     this.eventBuffer = new EventBuffer(options.eventBufferSize || 1e3);
@@ -1829,6 +1926,7 @@ var ConnectorService = class extends EventEmitter4 {
     if (!this.starting) {
       this.starting = (async () => {
         await this.configStore.load();
+        this.instanceLock ||= new InstanceLock(this.configStore.configDir);
         this.startedAt = (/* @__PURE__ */ new Date()).toISOString();
         this.logger.info("connector", "Codex Relay Connector \u5DF2\u542F\u52A8");
       })();
@@ -1848,7 +1946,7 @@ var ConnectorService = class extends EventEmitter4 {
     this.dashboard = dashboard2;
   }
   async stop() {
-    await this.relay.disconnect("connector stopped");
+    await this.disconnect("connector stopped");
     await this.appServer.stop();
     await this.dashboard?.stop();
     this.startedAt = null;
@@ -1858,11 +1956,18 @@ var ConnectorService = class extends EventEmitter4 {
     await this.start();
     const config = this.configStore.get();
     const credential = await this.configStore.relayCredential();
-    if (config.codex.autoStartAppServer) await this.appServer.start();
-    return this.relay.connect(credential);
+    await this.instanceLock.acquire();
+    try {
+      if (config.codex.autoStartAppServer) await this.appServer.start();
+      return await this.relay.connect(credential);
+    } catch (error) {
+      if (this.relay.state !== "reconnecting") await this.instanceLock.release();
+      throw error;
+    }
   }
-  async disconnect() {
-    await this.relay.disconnect();
+  async disconnect(reason = "manual disconnect") {
+    await this.relay.disconnect(reason);
+    await this.instanceLock?.release();
     return this.status();
   }
   async testConnection() {
@@ -1871,7 +1976,7 @@ var ConnectorService = class extends EventEmitter4 {
   }
   async updateConfig(patch, credentialPatch) {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
-    if (wasConnected) await this.relay.disconnect("configuration changed");
+    if (wasConnected) await this.disconnect("configuration changed");
     const config = await this.configStore.update(patch, credentialPatch);
     this.threadAccess.clear();
     if (wasConnected || config.relay.autoConnect) await this.connect();
@@ -1975,6 +2080,11 @@ var ConnectorService = class extends EventEmitter4 {
       });
     });
     this.relay.on("status", (status) => this.emit("status", status));
+    this.relay.on("disconnected", () => {
+      this.instanceLock?.release().catch((error) => {
+        this.logger.warn("connector", "\u91CA\u653E Connector \u5B9E\u4F8B\u9501\u5931\u8D25", { message: error.message });
+      });
+    });
     this.appServer.on("status", (status) => this.emit("status", status));
     this.appServer.on("notification", (method, params) => {
       const event = normalizeCodexNotification(method, params);
@@ -2018,9 +2128,9 @@ var ConnectorService = class extends EventEmitter4 {
 
 // server/dashboard-server.js
 import crypto6 from "node:crypto";
-import fs4 from "node:fs/promises";
+import fs5 from "node:fs/promises";
 import http from "node:http";
-import path5 from "node:path";
+import path6 from "node:path";
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -2035,7 +2145,7 @@ var DashboardServer = class {
   constructor(service, logger) {
     this.service = service;
     this.logger = logger;
-    this.uiRoot = path5.join(PLUGIN_ROOT, "ui");
+    this.uiRoot = path6.join(PLUGIN_ROOT, "ui");
   }
   async start() {
     if (this.#server) return this.url();
@@ -2075,13 +2185,13 @@ var DashboardServer = class {
     }
     if (!["GET", "HEAD"].includes(request.method)) return this.#json(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "\u65B9\u6CD5\u4E0D\u5141\u8BB8" } });
     const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-    const file = path5.resolve(this.uiRoot, relative);
-    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path5.sep}`);
+    const file = path6.resolve(this.uiRoot, relative);
+    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path6.sep}`);
     if (!contained) return this.#json(response, 404, { error: { code: "NOT_FOUND", message: "\u8D44\u6E90\u4E0D\u5B58\u5728" } });
     try {
-      const body = await fs4.readFile(file);
+      const body = await fs5.readFile(file);
       response.writeHead(200, {
-        "Content-Type": CONTENT_TYPES[path5.extname(file)] || "application/octet-stream",
+        "Content-Type": CONTENT_TYPES[path6.extname(file)] || "application/octet-stream",
         "Cache-Control": "no-store"
       });
       if (request.method === "HEAD") return response.end();

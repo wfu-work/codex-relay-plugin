@@ -4,6 +4,7 @@ import { CommandRouter } from "./command-router.js";
 import { ConfigStore } from "./config-store.js";
 import { relayEndpointId, relaySpaceId } from "./config-store.js";
 import { EventBuffer } from "./event-buffer.js";
+import { InstanceLock } from "./instance-lock.js";
 import { Logger } from "./logger.js";
 import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
 import { RelayClient } from "./relay-client.js";
@@ -14,6 +15,7 @@ export class ConnectorService extends EventEmitter {
     super();
     this.logger = options.logger || new Logger();
     this.configStore = options.configStore || new ConfigStore({ configDir: options.configDir, logger: this.logger });
+    this.instanceLock = options.instanceLock || null;
     this.appServer = options.appServer || new AppServerClient(this.configStore, this.logger);
     this.relay = options.relay || new RelayClient(this.configStore, this.logger);
     this.eventBuffer = new EventBuffer(options.eventBufferSize || 1000);
@@ -37,6 +39,7 @@ export class ConnectorService extends EventEmitter {
     if (!this.starting) {
       this.starting = (async () => {
         await this.configStore.load();
+        this.instanceLock ||= new InstanceLock(this.configStore.configDir);
         this.startedAt = new Date().toISOString();
         this.logger.info("connector", "Codex Relay Connector 已启动");
       })();
@@ -58,7 +61,7 @@ export class ConnectorService extends EventEmitter {
   }
 
   async stop() {
-    await this.relay.disconnect("connector stopped");
+    await this.disconnect("connector stopped");
     await this.appServer.stop();
     await this.dashboard?.stop();
     this.startedAt = null;
@@ -69,12 +72,22 @@ export class ConnectorService extends EventEmitter {
     await this.start();
     const config = this.configStore.get();
     const credential = await this.configStore.relayCredential();
-    if (config.codex.autoStartAppServer) await this.appServer.start();
-    return this.relay.connect(credential);
+    await this.instanceLock.acquire();
+    try {
+      if (config.codex.autoStartAppServer) await this.appServer.start();
+      return await this.relay.connect(credential);
+    } catch (error) {
+      // A transient socket failure schedules an internal reconnect, so retain
+      // the lock for the connector that owns that retry loop. Configuration or
+      // terminal authentication errors leave the client idle and release it.
+      if (this.relay.state !== "reconnecting") await this.instanceLock.release();
+      throw error;
+    }
   }
 
-  async disconnect() {
-    await this.relay.disconnect();
+  async disconnect(reason = "manual disconnect") {
+    await this.relay.disconnect(reason);
+    await this.instanceLock?.release();
     return this.status();
   }
 
@@ -85,7 +98,7 @@ export class ConnectorService extends EventEmitter {
 
   async updateConfig(patch, credentialPatch) {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
-    if (wasConnected) await this.relay.disconnect("configuration changed");
+    if (wasConnected) await this.disconnect("configuration changed");
     const config = await this.configStore.update(patch, credentialPatch);
     this.threadAccess.clear();
     if (wasConnected || config.relay.autoConnect) await this.connect();
@@ -202,6 +215,11 @@ export class ConnectorService extends EventEmitter {
       });
     });
     this.relay.on("status", (status) => this.emit("status", status));
+    this.relay.on("disconnected", () => {
+      this.instanceLock?.release().catch((error) => {
+        this.logger.warn("connector", "释放 Connector 实例锁失败", { message: error.message });
+      });
+    });
     this.appServer.on("status", (status) => this.emit("status", status));
     this.appServer.on("notification", (method, params) => {
       const event = normalizeCodexNotification(method, params);

@@ -26,6 +26,7 @@ const TERMINAL_RELAY_AUTH_CODES = new Set([
   "auth.endpoint_type_mismatch",
   "auth.revoked",
   "handshake.invalid",
+  "connection.kicked",
 ]);
 
 export class RelayClient extends EventEmitter {
@@ -318,7 +319,11 @@ export class RelayClient extends EventEmitter {
           reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay 连接已断开：${event.code}`));
         }
         this.#socket = null;
-        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) this.#scheduleReconnect();
+        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
+          this.#scheduleReconnect();
+        } else {
+          this.emit("disconnected", { code: failureCode || event.code });
+        }
       });
     });
   }

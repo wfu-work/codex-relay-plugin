@@ -16,6 +16,7 @@
 - Token 存入用户目录下的本地 `secrets.json`（Unix 使用 `0600` 权限），并在本机配置台回显
 - Codex App Server stdio 客户端：会话列表/读取/创建/恢复、发送/调整/中断 turn、审批响应
 - App Server 通知实时转换为 Relay 事件，并提供 1000 条内存重放缓冲
+- 图片事件采用“缩略图 + 短期受控资源 URL”：原图通过认证数据通道上传到 Relay，移动端点击预览时再按过期时间读取
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
 - 公网 Relay 强制 `wss://`；`ws://` 仅允许 `localhost` / 回环地址
 - 本地控制台只监听 `127.0.0.1`，API 使用随机 Bearer key，key 只放在 URL fragment 中
@@ -29,7 +30,7 @@ Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server
                                      └── 127.0.0.1 随机端口配置台
 ```
 
-Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息。
+Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息；图片资源由 Relay 内存短期托管，不落盘。
 
 ## 安装（GitHub，推荐）
 
@@ -213,8 +214,9 @@ Protocol v1 的连接地址为 `wss://<relay-host>/v1/connect`。连接后，插
 `connect.hello`，其中包含 `version`、`spaceId`、`endpointId`、`endpointType`、短期
 Token、完整的 Ed25519 `endpointProof` 和 capabilities。Endpoint proof 绑定本机公钥、
 时间戳、随机 nonce 与 Connect Token；Relay 验证 proof 后返回 `connect.welcome`；认证失败返回
-`relay.error`。业务命令和事件都放在 `stream.message.payload` 中，Relay 不解析
-payload。Relay 收到 `ping` 后返回 `pong`，单条消息上限由
+`relay.error`。业务命令和事件都放在 `stream.message.payload` 中，Relay 保持业务 payload
+不透明；唯一例外是 `codex.resource.v1` 上传帧，Relay 会校验图片 MIME/大小并返回短期资源 URL。
+Relay 收到 `ping` 后返回 `pong`，单条消息上限由
 `connect.welcome.maxFrameSize` 宣布。
 
 Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 或 hash；Token 只放在
@@ -226,6 +228,27 @@ Relay URL 只能包含协议、主机和 `/v1/connect` 路径，不能带 query 
 通用字段和校验规则位于同级的 [`relay-protocol`](../relay-protocol/README.md) 工程；
 本目录下的 [`schemas/relay-protocol.schema.json`](./schemas/relay-protocol.schema.json)
 只描述 Relay transport frame，Codex 业务 payload 保持不透明并由产品适配层定义。
+
+## 图片资源协议
+
+插件发现 Codex 事件中的 `data:image/...;base64,...` 或允许目录下的本地图片路径后，会先发送一条
+`protocol: "codex.resource.v1"` 的 `stream.message`：
+
+```json
+{
+  "type": "codex.resource.put",
+  "requestId": "resource-42",
+  "mime": "image/png",
+  "data": "<base64>",
+  "ttlSeconds": 600
+}
+```
+
+Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 64 MiB，并在内存中保存最多 10 分钟。上传成功后
+向同一连接返回 `codex.resource.ready`，其中包含 `resourceUrl` 和 `expiresAt`。事件只携带
+`thumbnailDataUrl`、`resourceUrl`、`expiresAt`，不再把主机文件路径或长期文件 URL 发给手机端。
+部署在反向代理后时，建议配置 `relay.resource-base-url: https://relay.example.com`，否则 Relay
+会根据 WebSocket 的 `Host` 与 `X-Forwarded-Proto` 自动生成地址。
 
 ## 手机端发送命令
 

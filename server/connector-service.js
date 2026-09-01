@@ -8,6 +8,7 @@ import { InstanceLock } from "./instance-lock.js";
 import { Logger } from "./logger.js";
 import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
 import { RelayClient } from "./relay-client.js";
+import { prepareEventImages } from "./resource-images.js";
 import { filterThreadList, safeProjectPath } from "./utils.js";
 
 export class ConnectorService extends EventEmitter {
@@ -167,6 +168,23 @@ export class ConnectorService extends EventEmitter {
     return { status: await this.status(), checks, logs: this.logger.list(50) };
   }
 
+  async prepareResourceImages(value) {
+    const config = this.configStore.get();
+    return prepareEventImages(value, async ({ mime, bytes }) => {
+      try {
+        return await this.relay.uploadResource({ mime, data: bytes });
+      } catch (error) {
+        this.logger.warn("resource", "图片资源上传失败，保留内联回退", { message: error.message });
+        return null;
+      }
+    }, new WeakSet(), {
+      allowedRoots: [
+        ...(Array.isArray(config.allowedProjects) ? config.allowedProjects : []),
+        config.codex?.defaultWorkingDirectory,
+      ],
+    });
+  }
+
   async syncAfter(lastSequence) {
     const events = this.eventBuffer.after(lastSequence);
     const requestedSequence = Number(lastSequence || 0);
@@ -238,7 +256,8 @@ export class ConnectorService extends EventEmitter {
   async #forwardEvent(event, params = {}) {
     if (!(await this.#isEventAllowed(params))) return;
     const config = this.configStore.get();
-    const envelope = eventEnvelope(config, this.eventBuffer, event, extractContext(params));
+    const preparedEvent = await this.prepareResourceImages(event);
+    const envelope = eventEnvelope(config, this.eventBuffer, preparedEvent, extractContext(params));
     this.relay.send(envelope);
     this.emit("event", envelope);
   }

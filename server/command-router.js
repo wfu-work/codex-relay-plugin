@@ -90,7 +90,9 @@ export class CommandRouter {
       case "thread.read": {
         const result = await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId"));
         this.#assertThreadResultAllowed(result);
-        return result;
+        return this.service.prepareResourceImages
+          ? this.service.prepareResourceImages(result)
+          : result;
       }
       case "thread.create": {
         const cwd = this.#allowedCwd(command.cwd, true);

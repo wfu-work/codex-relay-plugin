@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path7) {
-      let input = path7;
+    function removeDotSegments(path8) {
+      let input = path8;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path7, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path7 && path7 !== "/" ? path7 : void 0;
+        const [path8, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6898,12 +6898,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs6, exportName) {
+    function addFormats(ajv, list, fs7, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs6[f]);
+        ajv.addFormat(f, fs7[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7152,10 +7152,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path7) {
-  if (!path7)
+function getElementAtPath(obj, path8) {
+  if (!path8)
     return obj;
-  return path7.reduce((acc, key) => acc?.[key], obj);
+  return path8.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7564,11 +7564,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path7, issues) {
+function prefixIssues(path8, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path7);
+    iss.path.unshift(path8);
     return iss;
   });
 }
@@ -7715,16 +7715,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path7 = []) => {
+  const processError = (error3, path8 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path8, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -16485,7 +16485,7 @@ var CommandRouter = class {
       case "thread.read": {
         const result = await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId"));
         this.#assertThreadResultAllowed(result);
-        return result;
+        return this.service.prepareResourceImages ? this.service.prepareResourceImages(result) : result;
       }
       case "thread.create": {
         const cwd = this.#allowedCwd(command.cwd, true);
@@ -16914,6 +16914,7 @@ var RelayClient = class extends EventEmitter3 {
   #tokenService;
   #maxFrameSize = 10 * 1024 * 1024;
   #forceTokenRefresh = false;
+  #resourceRequests = /* @__PURE__ */ new Map();
   constructor(configStore, logger, options = {}) {
     super();
     this.configStore = configStore;
@@ -17037,6 +17038,10 @@ var RelayClient = class extends EventEmitter3 {
     this.#credential = null;
     this.#token = null;
     this.#forceTokenRefresh = false;
+    for (const pending of this.#resourceRequests.values()) {
+      pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00"));
+    }
+    this.#resourceRequests.clear();
     const shouldWait = Boolean(opening) || Boolean(socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING));
     this.state = shouldWait ? "disconnecting" : "disconnected";
     this.connectedAt = null;
@@ -17073,6 +17078,62 @@ var RelayClient = class extends EventEmitter3 {
     }
     this.#socket.send(JSON.stringify(frame));
     return true;
+  }
+  /** Upload an image over the authenticated data channel and receive a
+   * short-lived capability URL from Relay. */
+  uploadResource({ mime, data, ttlSeconds } = {}) {
+    if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN || this.state !== "connected") {
+      return Promise.reject(new RelayError("RELAY_UNAVAILABLE", "Relay \u5C1A\u672A\u8FDE\u63A5\uFF0C\u65E0\u6CD5\u4E0A\u4F20\u56FE\u7247"));
+    }
+    if (!this.features.includes("resources-v1")) {
+      return Promise.reject(new RelayError("RESOURCE_UNSUPPORTED", "\u5F53\u524D Relay \u4E0D\u652F\u6301\u53D7\u63A7\u56FE\u7247\u8D44\u6E90"));
+    }
+    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
+    const frameBudget = Math.max(0, this.#maxFrameSize - 1024);
+    const maxByFrame = Math.floor(frameBudget * 3 / 4);
+    if (!bytes.length || bytes.length > Math.min(6 * 1024 * 1024, maxByFrame)) {
+      return Promise.reject(new RelayError("RESOURCE_TOO_LARGE", "\u56FE\u7247\u8D85\u8FC7 6 MiB \u9650\u5236"));
+    }
+    const requestId = randomId("resource");
+    const frame = {
+      version: PROTOCOL_VERSION,
+      type: "stream.message",
+      messageId: randomId("resource-msg"),
+      streamId: "resources",
+      from: relayEndpointId(this.configStore.get().relay),
+      protocol: "codex.resource.v1",
+      encrypted: false,
+      payload: {
+        type: "codex.resource.put",
+        requestId,
+        mime: typeof mime === "string" ? mime : "",
+        data: bytes.toString("base64"),
+        ...Number.isInteger(ttlSeconds) ? { ttlSeconds } : {}
+      }
+    };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#resourceRequests.delete(requestId);
+        reject(new RelayError("RESOURCE_TIMEOUT", "Relay \u56FE\u7247\u8D44\u6E90\u4E0A\u4F20\u8D85\u65F6"));
+      }, 15e3);
+      this.#resourceRequests.set(requestId, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error2) => {
+          clearTimeout(timer);
+          reject(error2);
+        }
+      });
+      try {
+        this.#socket.send(JSON.stringify(frame));
+      } catch (error2) {
+        this.#resourceRequests.delete(requestId);
+        clearTimeout(timer);
+        reject(error2);
+      }
+    });
   }
   #beginOpen() {
     if (this.#connectPromise) return this.#connectPromise;
@@ -17188,6 +17249,12 @@ var RelayClient = class extends EventEmitter3 {
           reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF1A${event.code}`));
         }
         this.#socket = null;
+        if (this.#resourceRequests.size) {
+          for (const pending of this.#resourceRequests.values()) {
+            pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00"));
+          }
+          this.#resourceRequests.clear();
+        }
         if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
           this.#scheduleReconnect();
         } else {
@@ -17265,6 +17332,17 @@ var RelayClient = class extends EventEmitter3 {
       this.emit("status", this.status());
       return;
     }
+    if (message.type === "stream.message" && message.protocol === "codex.resource.v1") {
+      const resourceMessage = unwrapRelayFrame(message);
+      if (resourceMessage?.type === "codex.resource.ready" && resourceMessage.requestId) {
+        const pending = this.#resourceRequests.get(resourceMessage.requestId);
+        if (pending) {
+          this.#resourceRequests.delete(resourceMessage.requestId);
+          pending.resolve(resourceMessage);
+        }
+      }
+      return;
+    }
     if (message.type === "stream.message" && message.protocol !== "codex.v1") return;
     const productMessage = unwrapRelayFrame(message);
     if (productMessage?.type === "codex.command") this.emit("command", productMessage);
@@ -17308,7 +17386,7 @@ var RelayClient = class extends EventEmitter3 {
         nonce,
         signature: crypto5.sign(null, Buffer.from(canonical), privateKey).toString("base64url")
       },
-      capabilities: ["threads", "turns", "streaming", "steer", "interrupt", "approvals", "sync-v1"],
+      capabilities: ["threads", "turns", "streaming", "steer", "interrupt", "approvals", "sync-v1", "resources-v1"],
       ...test ? { test: true } : {}
     };
   }
@@ -17378,6 +17456,157 @@ function validateWelcomeIdentity(message, config2) {
   if (message.spaceId !== expectedSpaceId || message.endpointId !== expectedEndpointId) {
     throw new RelayError("INVALID_MESSAGE", "Relay welcome \u7684 Space \u6216 Endpoint \u4E0E\u672C\u673A\u914D\u7F6E\u4E0D\u4E00\u81F4");
   }
+}
+
+// server/resource-images.js
+import { execFile as execFile2 } from "node:child_process";
+import fs5 from "node:fs/promises";
+import os2 from "node:os";
+import path6 from "node:path";
+import { promisify as promisify2 } from "node:util";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+var INLINE_THUMBNAIL_BYTES = 256 * 1024;
+var execFileAsync2 = promisify2(execFile2);
+function parseImageDataUrl(value) {
+  if (typeof value !== "string") return null;
+  const match = /^data:(image\/[a-z0-9.+-]+)(?:;charset=[^;]+)?;base64,([a-z0-9+/=_-]+)$/i.exec(value.trim());
+  if (!match) return null;
+  let bytes;
+  try {
+    bytes = Buffer.from(match[2].replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  } catch {
+    return null;
+  }
+  if (!bytes.length || bytes.length > MAX_IMAGE_BYTES) return null;
+  return { mime: match[1].toLowerCase(), bytes };
+}
+function imageDataUrl(mime, bytes) {
+  return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
+}
+function imageMimeForPath(filePath) {
+  const extension = path6.extname(filePath).toLowerCase();
+  return {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif"
+  }[extension] || "";
+}
+function localPathFromValue(value) {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  if (!candidate) return null;
+  if (candidate.startsWith("file://")) {
+    try {
+      return fileURLToPath2(candidate);
+    } catch {
+      return null;
+    }
+  }
+  return path6.isAbsolute(candidate) ? candidate : null;
+}
+async function parseLocalImage(value, declaredMime, allowedRoots) {
+  const candidate = localPathFromValue(value);
+  if (!candidate) return null;
+  const roots = await Promise.all([os2.tmpdir(), ...allowedRoots || []].filter((root) => typeof root === "string" && path6.isAbsolute(root)).map(async (root) => {
+    try {
+      return await fs5.realpath(root);
+    } catch {
+      return path6.resolve(root);
+    }
+  }));
+  let realPath;
+  try {
+    realPath = await fs5.realpath(candidate);
+  } catch {
+    return null;
+  }
+  if (!roots.some((root) => realPath === root || realPath.startsWith(`${root}${path6.sep}`))) return null;
+  const mime = typeof declaredMime === "string" && declaredMime.toLowerCase().startsWith("image/") ? declaredMime.toLowerCase() : imageMimeForPath(realPath);
+  if (!mime) return null;
+  try {
+    const stat = await fs5.stat(realPath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES) return null;
+    return { mime, bytes: await fs5.readFile(realPath) };
+  } catch {
+    return null;
+  }
+}
+function thumbnailDataUrl(mime, bytes) {
+  return bytes.length <= INLINE_THUMBNAIL_BYTES ? imageDataUrl(mime, bytes) : "";
+}
+async function createThumbnailDataUrl(mime, bytes) {
+  const inline = thumbnailDataUrl(mime, bytes);
+  if (inline || process.platform !== "darwin") return inline;
+  const directory = await fs5.mkdtemp(path6.join(os2.tmpdir(), "recodex-thumb-"));
+  const extension = mime.split("/", 2)[1]?.replace(/[^a-z0-9]/gi, "") || "img";
+  const input = path6.join(directory, `source.${extension}`);
+  const output = path6.join(directory, "thumbnail.jpg");
+  try {
+    await fs5.writeFile(input, bytes, { mode: 384 });
+    await execFileAsync2("sips", ["--resampleWidth", "640", "--setProperty", "format", "jpeg", input, "--out", output], { timeout: 5e3 });
+    const thumbnail = await fs5.readFile(output);
+    return thumbnail.length <= INLINE_THUMBNAIL_BYTES ? imageDataUrl("image/jpeg", thumbnail) : "";
+  } catch {
+    return "";
+  } finally {
+    await fs5.rm(directory, { recursive: true, force: true }).catch(() => {
+    });
+  }
+}
+async function prepareEventImages(value, upload, seen = /* @__PURE__ */ new WeakSet(), options = {}) {
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((entry) => prepareEventImages(entry, upload, seen, options)));
+  }
+  if (!value || typeof value !== "object" || Buffer.isBuffer(value)) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    result[key] = await prepareEventImages(entry, upload, seen, options);
+  }
+  const sourceKeys = ["dataUrl", "data_url", "imageUrl", "image_url", "url", "path", "filePath", "file_path", "localPath", "local_path", "data"];
+  let sourceKey = null;
+  let source = null;
+  for (const key of sourceKeys) {
+    const parsed = parseImageDataUrl(value[key]) || await parseLocalImage(
+      value[key],
+      value.mime || value.mimeType || value.mediaType,
+      options.allowedRoots
+    );
+    if (parsed) {
+      sourceKey = key;
+      source = parsed;
+      break;
+    }
+  }
+  if (!source) return result;
+  const existingThumbnail = parseImageDataUrl(value.thumbnailDataUrl || value.thumbnail_data_url);
+  const thumb = existingThumbnail ? imageDataUrl(existingThumbnail.mime, existingThumbnail.bytes) : await createThumbnailDataUrl(source.mime, source.bytes);
+  if (thumb) result.thumbnailDataUrl = thumb;
+  try {
+    const ready = await upload({ mime: source.mime, bytes: source.bytes });
+    if (ready?.resourceUrl) {
+      result.resourceUrl = ready.resourceUrl;
+      if (ready.expiresAt) result.expiresAt = ready.expiresAt;
+      if (sourceKey === "dataUrl" || sourceKey === "data_url" || sourceKey === "data") {
+        delete result[sourceKey];
+      } else {
+        result[sourceKey] = ready.resourceUrl;
+      }
+    }
+  } catch {
+  }
+  const removableSource = /* @__PURE__ */ new Set(["dataUrl", "data_url", "data", "url", "imageUrl", "image_url", "path", "filePath", "file_path", "localPath", "local_path"]);
+  const localSource = ["path", "filePath", "file_path", "localPath", "local_path"].includes(sourceKey) || sourceKey === "url" && localPathFromValue(value[sourceKey]) !== null;
+  if (!result.resourceUrl && removableSource.has(sourceKey) && (localSource || source.bytes.length > INLINE_THUMBNAIL_BYTES)) {
+    delete result[sourceKey];
+  }
+  return result;
 }
 
 // server/connector-service.js
@@ -17525,6 +17754,22 @@ var ConnectorService = class extends EventEmitter4 {
     });
     return { status: await this.status(), checks, logs: this.logger.list(50) };
   }
+  async prepareResourceImages(value) {
+    const config2 = this.configStore.get();
+    return prepareEventImages(value, async ({ mime, bytes }) => {
+      try {
+        return await this.relay.uploadResource({ mime, data: bytes });
+      } catch (error2) {
+        this.logger.warn("resource", "\u56FE\u7247\u8D44\u6E90\u4E0A\u4F20\u5931\u8D25\uFF0C\u4FDD\u7559\u5185\u8054\u56DE\u9000", { message: error2.message });
+        return null;
+      }
+    }, /* @__PURE__ */ new WeakSet(), {
+      allowedRoots: [
+        ...Array.isArray(config2.allowedProjects) ? config2.allowedProjects : [],
+        config2.codex?.defaultWorkingDirectory
+      ]
+    });
+  }
   async syncAfter(lastSequence) {
     const events = this.eventBuffer.after(lastSequence);
     const requestedSequence = Number(lastSequence || 0);
@@ -17581,7 +17826,8 @@ var ConnectorService = class extends EventEmitter4 {
   async #forwardEvent(event, params = {}) {
     if (!await this.#isEventAllowed(params)) return;
     const config2 = this.configStore.get();
-    const envelope = eventEnvelope(config2, this.eventBuffer, event, extractContext(params));
+    const preparedEvent = await this.prepareResourceImages(event);
+    const envelope = eventEnvelope(config2, this.eventBuffer, preparedEvent, extractContext(params));
     this.relay.send(envelope);
     this.emit("event", envelope);
   }
@@ -17611,9 +17857,9 @@ var ConnectorService = class extends EventEmitter4 {
 
 // server/dashboard-server.js
 import crypto6 from "node:crypto";
-import fs5 from "node:fs/promises";
+import fs6 from "node:fs/promises";
 import http from "node:http";
-import path6 from "node:path";
+import path7 from "node:path";
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -17628,7 +17874,7 @@ var DashboardServer = class {
   constructor(service2, logger) {
     this.service = service2;
     this.logger = logger;
-    this.uiRoot = path6.join(PLUGIN_ROOT, "ui");
+    this.uiRoot = path7.join(PLUGIN_ROOT, "ui");
   }
   async start() {
     if (this.#server) return this.url();
@@ -17668,13 +17914,13 @@ var DashboardServer = class {
     }
     if (!["GET", "HEAD"].includes(request.method)) return this.#json(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "\u65B9\u6CD5\u4E0D\u5141\u8BB8" } });
     const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-    const file = path6.resolve(this.uiRoot, relative);
-    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path6.sep}`);
+    const file = path7.resolve(this.uiRoot, relative);
+    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path7.sep}`);
     if (!contained) return this.#json(response, 404, { error: { code: "NOT_FOUND", message: "\u8D44\u6E90\u4E0D\u5B58\u5728" } });
     try {
-      const body = await fs5.readFile(file);
+      const body = await fs6.readFile(file);
       response.writeHead(200, {
-        "Content-Type": CONTENT_TYPES[path6.extname(file)] || "application/octet-stream",
+        "Content-Type": CONTENT_TYPES[path7.extname(file)] || "application/octet-stream",
         "Cache-Control": "no-store"
       });
       if (request.method === "HEAD") return response.end();

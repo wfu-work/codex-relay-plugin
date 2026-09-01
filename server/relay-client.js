@@ -42,6 +42,7 @@ export class RelayClient extends EventEmitter {
   #tokenService;
   #maxFrameSize = 10 * 1024 * 1024;
   #forceTokenRefresh = false;
+  #resourceRequests = new Map();
 
   constructor(configStore, logger, options = {}) {
     super();
@@ -170,6 +171,10 @@ export class RelayClient extends EventEmitter {
     this.#credential = null;
     this.#token = null;
     this.#forceTokenRefresh = false;
+    for (const pending of this.#resourceRequests.values()) {
+      pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 连接已断开"));
+    }
+    this.#resourceRequests.clear();
     const shouldWait = Boolean(opening) || Boolean(socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING));
     this.state = shouldWait ? "disconnecting" : "disconnected";
     this.connectedAt = null;
@@ -206,6 +211,57 @@ export class RelayClient extends EventEmitter {
     }
     this.#socket.send(JSON.stringify(frame));
     return true;
+  }
+
+  /** Upload an image over the authenticated data channel and receive a
+   * short-lived capability URL from Relay. */
+  uploadResource({ mime, data, ttlSeconds } = {}) {
+    if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN || this.state !== "connected") {
+      return Promise.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 尚未连接，无法上传图片"));
+    }
+    if (!this.features.includes("resources-v1")) {
+      return Promise.reject(new RelayError("RESOURCE_UNSUPPORTED", "当前 Relay 不支持受控图片资源"));
+    }
+    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
+    const frameBudget = Math.max(0, this.#maxFrameSize - 1024);
+    const maxByFrame = Math.floor(frameBudget * 3 / 4);
+    if (!bytes.length || bytes.length > Math.min(6 * 1024 * 1024, maxByFrame)) {
+      return Promise.reject(new RelayError("RESOURCE_TOO_LARGE", "图片超过 6 MiB 限制"));
+    }
+    const requestId = randomId("resource");
+    const frame = {
+      version: PROTOCOL_VERSION,
+      type: "stream.message",
+      messageId: randomId("resource-msg"),
+      streamId: "resources",
+      from: relayEndpointId(this.configStore.get().relay),
+      protocol: "codex.resource.v1",
+      encrypted: false,
+      payload: {
+        type: "codex.resource.put",
+        requestId,
+        mime: typeof mime === "string" ? mime : "",
+        data: bytes.toString("base64"),
+        ...(Number.isInteger(ttlSeconds) ? { ttlSeconds } : {}),
+      },
+    };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#resourceRequests.delete(requestId);
+        reject(new RelayError("RESOURCE_TIMEOUT", "Relay 图片资源上传超时"));
+      }, 15_000);
+      this.#resourceRequests.set(requestId, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+      try {
+        this.#socket.send(JSON.stringify(frame));
+      } catch (error) {
+        this.#resourceRequests.delete(requestId);
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
   }
 
   #beginOpen() {
@@ -319,6 +375,12 @@ export class RelayClient extends EventEmitter {
           reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay 连接已断开：${event.code}`));
         }
         this.#socket = null;
+        if (this.#resourceRequests.size) {
+          for (const pending of this.#resourceRequests.values()) {
+            pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 连接已断开"));
+          }
+          this.#resourceRequests.clear();
+        }
         if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
           this.#scheduleReconnect();
         } else {
@@ -400,6 +462,17 @@ export class RelayClient extends EventEmitter {
       this.emit("status", this.status());
       return;
     }
+    if (message.type === "stream.message" && message.protocol === "codex.resource.v1") {
+      const resourceMessage = unwrapRelayFrame(message);
+      if (resourceMessage?.type === "codex.resource.ready" && resourceMessage.requestId) {
+        const pending = this.#resourceRequests.get(resourceMessage.requestId);
+        if (pending) {
+          this.#resourceRequests.delete(resourceMessage.requestId);
+          pending.resolve(resourceMessage);
+        }
+      }
+      return;
+    }
     if (message.type === "stream.message" && message.protocol !== "codex.v1") return;
     const productMessage = unwrapRelayFrame(message);
     if (productMessage?.type === "codex.command") this.emit("command", productMessage);
@@ -444,7 +517,7 @@ export class RelayClient extends EventEmitter {
         nonce,
         signature: crypto.sign(null, Buffer.from(canonical), privateKey).toString("base64url"),
       },
-      capabilities: ["threads", "turns", "streaming", "steer", "interrupt", "approvals", "sync-v1"],
+      capabilities: ["threads", "turns", "streaming", "steer", "interrupt", "approvals", "sync-v1", "resources-v1"],
       ...(test ? { test: true } : {}),
     };
   }

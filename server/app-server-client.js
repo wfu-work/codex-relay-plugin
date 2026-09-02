@@ -282,14 +282,26 @@ export class AppServerClient extends EventEmitter {
     return this.request("thread/resume", { threadId });
   }
 
-  startTurn({ threadId, text, cwd, model, effort }) {
-    return this.request("turn/start", {
+  async startTurn({ threadId, text, cwd, model, effort }) {
+    const params = {
       threadId,
       input: [{ type: "text", text }],
       ...(cwd ? { cwd } : {}),
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
-    });
+    };
+    try {
+      return await this.request("turn/start", params);
+    } catch (error) {
+      // `thread/list` can expose an on-disk historical task before the App
+      // Server has resumed it in the current process. Codex then rejects the
+      // first turn with a precise "thread not found" error. Resume only that
+      // case and retry once; all other errors (including an actually deleted
+      // task) must keep their original failure semantics.
+      if (!isThreadNotLoadedError(error)) throw error;
+      await this.resumeThread(threadId);
+      return this.request("turn/start", params);
+    }
   }
 
   steerTurn({ threadId, turnId, text }) {
@@ -375,4 +387,10 @@ function isPaginatedThreadReadError(error) {
   return error?.code === "APP_SERVER_ERROR" &&
     typeof error?.message === "string" &&
     error.message.includes("paginated threads do not support thread/read(includeTurns=true)");
+}
+
+function isThreadNotLoadedError(error) {
+  return error?.code === "APP_SERVER_ERROR" &&
+    typeof error?.message === "string" &&
+    /\bthread\s+not\s+found\b/i.test(error.message);
 }

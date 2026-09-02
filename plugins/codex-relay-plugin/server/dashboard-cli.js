@@ -260,14 +260,21 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   resumeThread(threadId) {
     return this.request("thread/resume", { threadId });
   }
-  startTurn({ threadId, text, cwd, model, effort }) {
-    return this.request("turn/start", {
+  async startTurn({ threadId, text, cwd, model, effort }) {
+    const params = {
       threadId,
       input: [{ type: "text", text }],
       ...cwd ? { cwd } : {},
       ...model ? { model } : {},
       ...effort ? { effort } : {}
-    });
+    };
+    try {
+      return await this.request("turn/start", params);
+    } catch (error) {
+      if (!isThreadNotLoadedError(error)) throw error;
+      await this.resumeThread(threadId);
+      return this.request("turn/start", params);
+    }
   }
   steerTurn({ threadId, turnId, text }) {
     return this.request("turn/steer", {
@@ -344,6 +351,9 @@ function isObject(value) {
 }
 function isPaginatedThreadReadError(error) {
   return error?.code === "APP_SERVER_ERROR" && typeof error?.message === "string" && error.message.includes("paginated threads do not support thread/read(includeTurns=true)");
+}
+function isThreadNotLoadedError(error) {
+  return error?.code === "APP_SERVER_ERROR" && typeof error?.message === "string" && /\bthread\s+not\s+found\b/i.test(error.message);
 }
 
 // server/utils.js
@@ -1994,7 +2004,7 @@ var RelayClient = class extends EventEmitter3 {
     if (message.type === "relay.error") {
       const authenticating = this.state === "authenticating";
       const error = new RelayError(message.code || "RELAY_ERROR", message.message || "Relay \u8FD4\u56DE\u9519\u8BEF");
-      if (error.code === "auth.token_expired" && this.#credential?.endpointGrant) {
+      if (isRefreshableCredentialFailure(error) && this.#credential?.endpointGrant) {
         this.#forceTokenRefresh = true;
       }
       handshake.reportFailure?.(error);
@@ -2110,8 +2120,12 @@ var RelayClient = class extends EventEmitter3 {
 function isTerminalRelayFailure(error, credential) {
   const code = typeof error === "string" ? error : error?.code;
   if (code === "connection.rejected") return true;
-  if (code === "auth.token_expired" && credential?.endpointGrant) return false;
+  if (isRefreshableCredentialFailure({ code }) && credential?.endpointGrant) return false;
   return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
+function isRefreshableCredentialFailure(error) {
+  const code = typeof error === "string" ? error : error?.code;
+  return code === "auth.token_expired" || code === "auth.invalid_token";
 }
 function closeSocket(socket, reason) {
   return new Promise((resolve) => {

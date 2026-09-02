@@ -53,3 +53,22 @@ test("App Server client hydrates paginated thread history", async (t) => {
   assert.equal(result.thread.id, "thread-1");
   assert.equal(result.thread.turns[0].items[0].text, "分页历史加载成功");
 });
+
+test("App Server client resumes a historical thread before retrying its first turn", async (t) => {
+  const executable = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-codex-resume.js");
+  await fs.chmod(executable, 0o755);
+  const configStore = {
+    get: () => ({ codex: { executable, defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  t.after(() => client.stop());
+
+  await client.start();
+  const started = await client.startTurn({
+    threadId: "thread-historical",
+    text: "continue",
+  });
+
+  assert.equal(started.received.threadId, "thread-historical");
+  assert.equal(started.received.input[0].text, "continue");
+});

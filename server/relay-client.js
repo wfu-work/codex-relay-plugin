@@ -451,10 +451,11 @@ export class RelayClient extends EventEmitter {
     if (message.type === "relay.error") {
       const authenticating = this.state === "authenticating";
       const error = new RelayError(message.code || "RELAY_ERROR", message.message || "Relay 返回错误");
-      if (error.code === "auth.token_expired" && this.#credential?.endpointGrant) {
+      if (isRefreshableCredentialFailure(error) && this.#credential?.endpointGrant) {
         // A manually entered token may not carry expiresAt metadata. Once the
-        // relay proves that token is expired, force the next reconnect through
-        // the proof-bound Endpoint Grant instead of retrying the same token.
+        // relay proves that token is expired or unavailable, force the next
+        // reconnect through the proof-bound Endpoint Grant instead of retrying
+        // the same stale token forever.
         this.#forceTokenRefresh = true;
       }
       handshake.reportFailure?.(error);
@@ -577,11 +578,16 @@ export class RelayClient extends EventEmitter {
 function isTerminalRelayFailure(error, credential) {
   const code = typeof error === "string" ? error : error?.code;
   if (code === "connection.rejected") return true;
-  // relay-go closes an established session when its short-lived token reaches
-  // expiry. A proof-bound Endpoint Grant can mint the next token, so allow the
-  // normal reconnect path to run in that one case.
-  if (code === "auth.token_expired" && credential?.endpointGrant) return false;
+  // Relay can reject either an expired short-lived token or a token that is no
+  // longer available. A proof-bound Endpoint Grant can mint the next token,
+  // so allow the normal reconnect path to run in either case.
+  if (isRefreshableCredentialFailure({ code }) && credential?.endpointGrant) return false;
   return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
+
+function isRefreshableCredentialFailure(error) {
+  const code = typeof error === "string" ? error : error?.code;
+  return code === "auth.token_expired" || code === "auth.invalid_token";
 }
 
 function closeSocket(socket, reason) {

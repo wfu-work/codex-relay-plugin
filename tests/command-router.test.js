@@ -3,7 +3,7 @@ import test from "node:test";
 import { CommandRouter } from "../server/command-router.js";
 import { defaultConfig } from "../server/config-store.js";
 
-function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", delayTurn = false } = {}) {
+function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", threadTurns = [], delayTurn = false, delayList = false } = {}) {
   const config = defaultConfig();
   config.relay.spaceId = "space-1";
   config.relay.endpointId = "endpoint-1";
@@ -19,14 +19,18 @@ function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", delayT
       ],
       nextCursor: null,
     }),
-    listThreads: async (params) => (calls.push(["listThreads", params]), {
-      data: [
-        { id: "thread-allowed", cwd: "/workspace/allowed/nested" },
-        { id: "thread-private", cwd: "/workspace/private" },
-      ],
-      nextCursor: null,
-    }),
-    readThread: async (threadId) => (calls.push(["readThread", threadId]), { thread: { id: threadId, cwd: threadCwd } }),
+    listThreads: async (params) => {
+      calls.push(["listThreads", params]);
+      if (delayList) await new Promise((resolve) => setImmediate(resolve));
+      return {
+        data: [
+          { id: "thread-allowed", cwd: "/workspace/allowed/nested" },
+          { id: "thread-private", cwd: "/workspace/private" },
+        ],
+        nextCursor: null,
+      };
+    },
+    readThread: async (threadId) => (calls.push(["readThread", threadId]), { thread: { id: threadId, cwd: threadCwd, turns: threadTurns } }),
     startTurn: async (params) => {
       calls.push(["startTurn", params]);
       if (delayTurn) await new Promise((resolve) => setImmediate(resolve));
@@ -103,6 +107,39 @@ test("concurrent duplicate deliveries share one in-flight execution", async () =
   assert.equal(first.success, true);
   assert.deepEqual(second, first);
   assert.equal(calls.filter(([name]) => name === "startTurn").length, 1);
+});
+
+test("concurrent thread listings with different request ids share one App Server read", async () => {
+  const { calls, router } = setup({ delayList: true });
+  const [first, second] = await Promise.all([
+    router.handle(envelope({ type: "thread.list" }, "list-1")),
+    router.handle(envelope({ type: "thread.list" }, "list-2")),
+  ]);
+  assert.equal(first.success, true);
+  assert.equal(second.success, true);
+  assert.equal(first.requestId, "list-1");
+  assert.equal(second.requestId, "list-2");
+  assert.equal(calls.filter(([name]) => name === "listThreads").length, 1);
+});
+
+test("large thread histories are compacted below the Relay frame budget", async () => {
+  const threadTurns = Array.from({ length: 20 }, (_, index) => ({
+    id: `turn-${index}`,
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: `question-${index}` }] },
+      { type: "commandExecution", aggregatedOutput: "x".repeat(200_000) },
+      { type: "agentMessage", text: `answer-${index}` },
+    ],
+  }));
+  const { router } = setup({ threadTurns });
+
+  const response = await router.handle(envelope({ type: "thread.read", threadId: "thread-1" }));
+
+  assert.equal(response.success, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(response), "utf8") < 1_600_000);
+  assert.equal(response.result.thread.turns.length, 12);
+  assert.equal(response.result.thread.turns.at(-1).id, "turn-19");
+  assert.match(response.result.thread.turns.at(-1).items[1].aggregatedOutput, /历史输出已截断/);
 });
 
 test("reusing a request id for a different command is rejected", async () => {

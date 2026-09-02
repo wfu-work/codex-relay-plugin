@@ -209,7 +209,18 @@ export class RelayClient extends EventEmitter {
       this.emit("status", this.status());
       return false;
     }
-    this.#socket.send(JSON.stringify(frame));
+    const encoded = JSON.stringify(frame);
+    if (Buffer.byteLength(encoded, "utf8") > this.#maxFrameSize) {
+      this.lastError = "待发送消息超过 Relay maxFrameSize 限制";
+      this.logger.warn("relay", "已阻止超过 maxFrameSize 的消息", {
+        bytes: Buffer.byteLength(encoded, "utf8"),
+        maxFrameSize: this.#maxFrameSize,
+        type: message?.type,
+      });
+      this.emit("status", this.status());
+      return false;
+    }
+    this.#socket.send(encoded);
     return true;
   }
 

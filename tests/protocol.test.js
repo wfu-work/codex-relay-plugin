@@ -86,6 +86,7 @@ test("wraps product messages in the transport envelope and unwraps them", () => 
   assert.equal(wrapped.type, "stream.message");
   assert.equal(wrapped.streamId, "codex");
   assert.equal(wrapped.to, "endpoint-1");
+  assert.equal(wrapped.from, "endpoint-1");
   const unwrapped = unwrapRelayFrame(wrapped);
   assert.equal(unwrapped.type, "codex.command");
   assert.equal(unwrapped.deviceId, "endpoint-1");

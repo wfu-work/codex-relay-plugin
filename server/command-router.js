@@ -2,9 +2,20 @@ import { asRelayError, RelayError } from "./errors.js";
 import { commandError, commandResult, validateRelayCommand } from "./protocol.js";
 import { filterThreadList, safeProjectPath } from "./utils.js";
 
+// A thread can contain unbounded command output. Returning that complete
+// history through a Relay frame can exceed the authenticated connection's
+// maxFrameSize and make the host disconnect with WebSocket close code 1009.
+// Keep enough recent context for the client timeline while leaving headroom
+// for the protocol envelope and JSON encoding.
+const MAX_THREAD_READ_BYTES = 1_500_000;
+const MAX_THREAD_READ_TURNS = 12;
+const MAX_THREAD_ITEM_STRING_BYTES = 8_192;
+const MAX_THREAD_ARRAY_ITEMS = 128;
+
 export class CommandRouter {
   #completed = new Map();
   #inflight = new Map();
+  #sharedReads = new Map();
   #selectedThreadId = null;
 
   constructor({ configStore, appServer, service, logger }) {
@@ -52,13 +63,31 @@ export class CommandRouter {
 
   async #run(config, message, fingerprint) {
     try {
-      const result = await this.#execute(message.command, message);
+      const result = await this.#executeSharedRead(message.command, message);
       const response = commandResult(config, message.requestId, result ?? {}, message.deviceId);
       this.#remember(message.requestId, fingerprint, response);
       return response;
     } catch (error) {
       return this.#failure(config, message, fingerprint, error);
     }
+  }
+
+  async #executeSharedRead(command, envelope) {
+    if (!['thread.list', 'thread.read'].includes(command.type)) {
+      return this.#execute(command, envelope);
+    }
+    const key = JSON.stringify({
+      deviceId: envelope.deviceId,
+      threadId: envelope.threadId || null,
+      command: stableValue(command),
+    });
+    const existing = this.#sharedReads.get(key);
+    if (existing) return existing;
+    const pending = this.#execute(command, envelope).finally(() => {
+      if (this.#sharedReads.get(key) === pending) this.#sharedReads.delete(key);
+    });
+    this.#sharedReads.set(key, pending);
+    return pending;
   }
 
   #failure(config, message, fingerprint, error) {
@@ -88,7 +117,9 @@ export class CommandRouter {
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
-        const result = await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId"));
+        const result = compactThreadReadResult(
+          await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId")),
+        );
         this.#assertThreadResultAllowed(result);
         return this.service.prepareResourceImages
           ? this.service.prepareResourceImages(result)
@@ -211,4 +242,69 @@ function requireString(value, name) {
 function optionalString(value) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || undefined;
+}
+
+function compactThreadReadResult(result) {
+  if (!result || typeof result !== "object") return result;
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_THREAD_READ_BYTES) return result;
+
+  const sourceThread = result.thread && typeof result.thread === "object" ? result.thread : result;
+  const sourceTurns = Array.isArray(sourceThread.turns) ? sourceThread.turns : [];
+  const compactThread = compactValue({ ...sourceThread, turns: [] });
+  const compactTurns = [];
+
+  // Preserve the newest turns first. The timeline is chronological, so add
+  // selected turns back at the front after each size check.
+  for (let index = sourceTurns.length - 1; index >= 0 && compactTurns.length < MAX_THREAD_READ_TURNS; index -= 1) {
+    const turn = sourceTurns[index];
+    if (!turn || typeof turn !== "object") continue;
+    compactTurns.unshift(compactValue(turn));
+    compactThread.turns = compactTurns;
+    const candidate = result.thread && typeof result.thread === "object"
+      ? { ...result, thread: compactThread }
+      : compactThread;
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_THREAD_READ_BYTES) {
+      compactTurns.shift();
+      compactThread.turns = compactTurns;
+      break;
+    }
+  }
+
+  const compacted = result.thread && typeof result.thread === "object"
+    ? { ...result, thread: compactThread }
+    : compactThread;
+  if (Buffer.byteLength(JSON.stringify(compacted), "utf8") <= MAX_THREAD_READ_BYTES) {
+    return compacted;
+  }
+
+  // A malformed or unusually large metadata field can still exceed the
+  // budget after normal value compaction. Keep the fields required by the
+  // client and project whitelist, then omit optional metadata and turns.
+  const minimalThread = compactValue(Object.fromEntries(
+    ["id", "sessionId", "cwd", "path", "preview", "name", "status", "createdAt", "updatedAt"]
+      .filter((key) => sourceThread[key] !== undefined)
+      .map((key) => [key, sourceThread[key]]),
+  ));
+  minimalThread.turns = [];
+  return result.thread && typeof result.thread === "object"
+    ? { thread: minimalThread }
+    : minimalThread;
+}
+
+function compactValue(value, depth = 0) {
+  if (typeof value === "string") {
+    if (Buffer.byteLength(value, "utf8") <= MAX_THREAD_ITEM_STRING_BYTES) return value;
+    const suffix = "\n…（历史输出已截断）";
+    const maxChars = Math.max(0, MAX_THREAD_ITEM_STRING_BYTES - Buffer.byteLength(suffix, "utf8"));
+    return `${value.slice(0, maxChars)}${suffix}`;
+  }
+  if (Array.isArray(value)) {
+    const items = value.length > MAX_THREAD_ARRAY_ITEMS ? value.slice(-MAX_THREAD_ARRAY_ITEMS) : value;
+    return items.map((item) => compactValue(item, depth + 1));
+  }
+  if (!value || typeof value !== "object") return value;
+  if (depth > 8) return "[nested value omitted]";
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, compactValue(item, depth + 1)]),
+  );
 }

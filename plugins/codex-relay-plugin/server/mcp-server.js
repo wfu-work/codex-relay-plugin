@@ -16404,9 +16404,14 @@ function extractContext(params = {}) {
 }
 
 // server/command-router.js
+var MAX_THREAD_READ_BYTES = 15e5;
+var MAX_THREAD_READ_TURNS = 12;
+var MAX_THREAD_ITEM_STRING_BYTES = 8192;
+var MAX_THREAD_ARRAY_ITEMS = 128;
 var CommandRouter = class {
   #completed = /* @__PURE__ */ new Map();
   #inflight = /* @__PURE__ */ new Map();
+  #sharedReads = /* @__PURE__ */ new Map();
   #selectedThreadId = null;
   constructor({ configStore, appServer, service: service2, logger }) {
     this.configStore = configStore;
@@ -16449,13 +16454,30 @@ var CommandRouter = class {
   }
   async #run(config2, message, fingerprint) {
     try {
-      const result = await this.#execute(message.command, message);
+      const result = await this.#executeSharedRead(message.command, message);
       const response = commandResult(config2, message.requestId, result ?? {}, message.deviceId);
       this.#remember(message.requestId, fingerprint, response);
       return response;
     } catch (error2) {
       return this.#failure(config2, message, fingerprint, error2);
     }
+  }
+  async #executeSharedRead(command, envelope) {
+    if (!["thread.list", "thread.read"].includes(command.type)) {
+      return this.#execute(command, envelope);
+    }
+    const key = JSON.stringify({
+      deviceId: envelope.deviceId,
+      threadId: envelope.threadId || null,
+      command: stableValue(command)
+    });
+    const existing = this.#sharedReads.get(key);
+    if (existing) return existing;
+    const pending = this.#execute(command, envelope).finally(() => {
+      if (this.#sharedReads.get(key) === pending) this.#sharedReads.delete(key);
+    });
+    this.#sharedReads.set(key, pending);
+    return pending;
   }
   #failure(config2, message, fingerprint, error2) {
     const relayError = asRelayError(error2);
@@ -16483,7 +16505,9 @@ var CommandRouter = class {
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
-        const result = await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId"));
+        const result = compactThreadReadResult(
+          await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId"))
+        );
         this.#assertThreadResultAllowed(result);
         return this.service.prepareResourceImages ? this.service.prepareResourceImages(result) : result;
       }
@@ -16596,6 +16620,52 @@ function requireString(value, name) {
 function optionalString(value) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || void 0;
+}
+function compactThreadReadResult(result) {
+  if (!result || typeof result !== "object") return result;
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_THREAD_READ_BYTES) return result;
+  const sourceThread = result.thread && typeof result.thread === "object" ? result.thread : result;
+  const sourceTurns = Array.isArray(sourceThread.turns) ? sourceThread.turns : [];
+  const compactThread = compactValue({ ...sourceThread, turns: [] });
+  const compactTurns = [];
+  for (let index = sourceTurns.length - 1; index >= 0 && compactTurns.length < MAX_THREAD_READ_TURNS; index -= 1) {
+    const turn = sourceTurns[index];
+    if (!turn || typeof turn !== "object") continue;
+    compactTurns.unshift(compactValue(turn));
+    compactThread.turns = compactTurns;
+    const candidate = result.thread && typeof result.thread === "object" ? { ...result, thread: compactThread } : compactThread;
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_THREAD_READ_BYTES) {
+      compactTurns.shift();
+      compactThread.turns = compactTurns;
+      break;
+    }
+  }
+  const compacted = result.thread && typeof result.thread === "object" ? { ...result, thread: compactThread } : compactThread;
+  if (Buffer.byteLength(JSON.stringify(compacted), "utf8") <= MAX_THREAD_READ_BYTES) {
+    return compacted;
+  }
+  const minimalThread = compactValue(Object.fromEntries(
+    ["id", "sessionId", "cwd", "path", "preview", "name", "status", "createdAt", "updatedAt"].filter((key) => sourceThread[key] !== void 0).map((key) => [key, sourceThread[key]])
+  ));
+  minimalThread.turns = [];
+  return result.thread && typeof result.thread === "object" ? { thread: minimalThread } : minimalThread;
+}
+function compactValue(value, depth = 0) {
+  if (typeof value === "string") {
+    if (Buffer.byteLength(value, "utf8") <= MAX_THREAD_ITEM_STRING_BYTES) return value;
+    const suffix = "\n\u2026\uFF08\u5386\u53F2\u8F93\u51FA\u5DF2\u622A\u65AD\uFF09";
+    const maxChars = Math.max(0, MAX_THREAD_ITEM_STRING_BYTES - Buffer.byteLength(suffix, "utf8"));
+    return `${value.slice(0, maxChars)}${suffix}`;
+  }
+  if (Array.isArray(value)) {
+    const items = value.length > MAX_THREAD_ARRAY_ITEMS ? value.slice(-MAX_THREAD_ARRAY_ITEMS) : value;
+    return items.map((item) => compactValue(item, depth + 1));
+  }
+  if (!value || typeof value !== "object") return value;
+  if (depth > 8) return "[nested value omitted]";
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, compactValue(item, depth + 1)])
+  );
 }
 
 // server/event-buffer.js
@@ -17076,7 +17146,18 @@ var RelayClient = class extends EventEmitter3 {
       this.emit("status", this.status());
       return false;
     }
-    this.#socket.send(JSON.stringify(frame));
+    const encoded = JSON.stringify(frame);
+    if (Buffer.byteLength(encoded, "utf8") > this.#maxFrameSize) {
+      this.lastError = "\u5F85\u53D1\u9001\u6D88\u606F\u8D85\u8FC7 Relay maxFrameSize \u9650\u5236";
+      this.logger.warn("relay", "\u5DF2\u963B\u6B62\u8D85\u8FC7 maxFrameSize \u7684\u6D88\u606F", {
+        bytes: Buffer.byteLength(encoded, "utf8"),
+        maxFrameSize: this.#maxFrameSize,
+        type: message?.type
+      });
+      this.emit("status", this.status());
+      return false;
+    }
+    this.#socket.send(encoded);
     return true;
   }
   /** Upload an image over the authenticated data channel and receive a

@@ -25,6 +25,16 @@ lines.on("line", (line) => {
           nextCursor: "page-2",
         };
   }
+if (message.method === "thread/read") {
+    result = {
+      thread: {
+        id: message.params.threadId,
+        cwd: "/workspace/one",
+        status: { type: "active", activeFlags: [] },
+        statusProbe: message.params.includeTurns === false,
+      },
+    };
+  }
   if (message.method === "model/list") result = {
     data: [{ model: "remote-model", displayName: "Remote Model", isDefault: true }],
     nextCursor: null,

@@ -275,7 +275,25 @@ export class ConnectorService extends EventEmitter {
     if (!context.threadId) return false;
     if (this.threadAccess.has(context.threadId)) return this.threadAccess.get(context.threadId);
     try {
-      const result = await this.appServer.readThread(context.threadId);
+      // Access checks only need the thread cwd. A full thread.read can pull
+      // megabytes of tool output and, while a turn is running, block the
+      // event queue long enough for every streamed delta to appear frozen on
+      // the remote client. Prefer the metadata-only status read and retain a
+      // compatibility fallback for injected/older App Server clients.
+      let result;
+      if (typeof this.appServer.readThreadStatus === "function") {
+        try {
+          result = await this.appServer.readThreadStatus(context.threadId);
+        } catch (error) {
+          // Keep event forwarding compatible with an App Server release that
+          // does not implement the metadata-only read yet. This fallback is
+          // only on the whitelist check path; normal clients still use the
+          // cheap status request above.
+          result = await this.appServer.readThread(context.threadId);
+        }
+      } else {
+        result = await this.appServer.readThread(context.threadId);
+      }
       const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
       this.threadAccess.set(context.threadId, allowed);
       return allowed;

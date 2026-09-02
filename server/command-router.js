@@ -73,7 +73,7 @@ export class CommandRouter {
   }
 
   async #executeSharedRead(command, envelope) {
-    if (!['thread.list', 'thread.read'].includes(command.type)) {
+    if (!['thread.list', 'thread.read', 'thread.status'].includes(command.type)) {
       return this.#execute(command, envelope);
     }
     const key = JSON.stringify({
@@ -124,6 +124,12 @@ export class CommandRouter {
         return this.service.prepareResourceImages
           ? this.service.prepareResourceImages(result)
           : result;
+      }
+      case "thread.status": {
+        const threadId = requireString(command.threadId || envelope.threadId, "threadId");
+        const result = await this.appServer.readThreadStatus(threadId);
+        this.#assertThreadResultAllowed(result);
+        return result;
       }
       case "thread.create": {
         const cwd = this.#allowedCwd(command.cwd, true);

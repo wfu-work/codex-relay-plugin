@@ -35,6 +35,12 @@ test("allows model discovery while Relay is read-only", () => {
   assert.equal(validateRelayCommand(message, config), message);
 });
 
+test("allows selected-thread status polling while Relay is read-only", () => {
+  const { config, message } = fixture({ type: "thread.status", threadId: "thread-1" });
+  config.readOnly = true;
+  assert.equal(validateRelayCommand(message, config), message);
+});
+
 test("rejects commands targeted to another endpoint", () => {
   const { config, message } = fixture();
   message.targetDeviceId = "endpoint-2";
@@ -141,6 +147,10 @@ test("normalizes newer streaming aliases and snake_case context", () => {
   assert.equal(
     normalizeCodexNotification("thread/status_changed", { thread_id: "thread-1" }).type,
     "thread.updated",
+  );
+  assert.equal(
+    normalizeCodexNotification("thread/tokenUsage/updated", { threadId: "thread-1" }).type,
+    "usage.updated",
   );
   assert.deepEqual(extractContext({ thread_id: "thread-1", turn_id: "turn-1" }), {
     threadId: "thread-1",

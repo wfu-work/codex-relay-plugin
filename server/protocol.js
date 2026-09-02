@@ -60,6 +60,9 @@ export const COMMAND_PERMISSIONS = Object.freeze({
   "model.list": "readThreads",
   "thread.list": "readThreads",
   "thread.read": "readThreads",
+  // A metadata-only status read keeps the mobile timeline in sync without
+  // transferring the complete (potentially very large) thread history.
+  "thread.status": "readThreads",
   "thread.create": "createThreads",
   "thread.resume": "readThreads",
   "thread.select": "readThreads",
@@ -88,7 +91,7 @@ export function validateRelayCommand(message, config) {
     throw new RelayError("MESSAGE_EXPIRED", "命令时间戳无效或已过期");
   }
   const permission = COMMAND_PERMISSIONS[commandType];
-  if (config.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "sync.request", "ping"].includes(commandType)) {
+  if (config.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "thread.status", "sync.request", "ping"].includes(commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", "插件当前处于只读模式");
   }
   if (permission && !config.permissions[permission]) {
@@ -156,6 +159,8 @@ export function normalizeCodexNotification(method, params = {}) {
     "turn/aborted": "turn.interrupted",
     "turn/interrupted": "turn.interrupted",
     "turn/status/changed": "thread.updated",
+    "thread/tokenUsage/updated": "usage.updated",
+    "thread/token_usage/updated": "usage.updated",
     "processing/heartbeat": "turn.heartbeat",
     "item/agentMessage/delta": "message.assistant.delta",
     "item/agentMessage/textDelta": "message.assistant.delta",

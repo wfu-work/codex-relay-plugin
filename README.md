@@ -294,6 +294,7 @@ Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 
 | `sync.request` | `lastSequence?` | `readThreads` |
 | `thread.list` | `cursor?`, `limit?` | `readThreads` |
 | `thread.read` | `threadId` | `readThreads` |
+| `thread.status` | `threadId` | `readThreads` |
 | `thread.create` | `cwd?` | `createThreads` |
 | `thread.resume` / `thread.select` | `threadId` | `readThreads` |
 | `turn.start` | `threadId`, `text`, `cwd?`, `model?`, `effort?` | `sendMessages` |

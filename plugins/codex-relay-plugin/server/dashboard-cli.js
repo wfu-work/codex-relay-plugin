@@ -193,6 +193,14 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       return this.#readPaginatedThread(threadId);
     });
   }
+  // Unlike readThread(), this explicitly disables includeTurns. Codex still
+  // returns the current thread status, but does not stream the full history.
+  // The Relay client uses it as a cheap heartbeat for a selected task. The
+  // explicit false also keeps older non-paginated servers from falling back
+  // to their full-history default.
+  readThreadStatus(threadId) {
+    return this.request("thread/read", { threadId, includeTurns: false });
+  }
   async #readPaginatedThread(threadId) {
     const metadata = await this.request("thread/read", { threadId });
     const turns = await this.#readAllThreadTurns(threadId);
@@ -835,6 +843,9 @@ var COMMAND_PERMISSIONS = Object.freeze({
   "model.list": "readThreads",
   "thread.list": "readThreads",
   "thread.read": "readThreads",
+  // A metadata-only status read keeps the mobile timeline in sync without
+  // transferring the complete (potentially very large) thread history.
+  "thread.status": "readThreads",
   "thread.create": "createThreads",
   "thread.resume": "readThreads",
   "thread.select": "readThreads",
@@ -862,7 +873,7 @@ function validateRelayCommand(message, config) {
     throw new RelayError("MESSAGE_EXPIRED", "\u547D\u4EE4\u65F6\u95F4\u6233\u65E0\u6548\u6216\u5DF2\u8FC7\u671F");
   }
   const permission = COMMAND_PERMISSIONS[commandType];
-  if (config.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "sync.request", "ping"].includes(commandType)) {
+  if (config.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "thread.status", "sync.request", "ping"].includes(commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", "\u63D2\u4EF6\u5F53\u524D\u5904\u4E8E\u53EA\u8BFB\u6A21\u5F0F");
   }
   if (permission && !config.permissions[permission]) {
@@ -926,6 +937,8 @@ function normalizeCodexNotification(method, params = {}) {
     "turn/aborted": "turn.interrupted",
     "turn/interrupted": "turn.interrupted",
     "turn/status/changed": "thread.updated",
+    "thread/tokenUsage/updated": "usage.updated",
+    "thread/token_usage/updated": "usage.updated",
     "processing/heartbeat": "turn.heartbeat",
     "item/agentMessage/delta": "message.assistant.delta",
     "item/agentMessage/textDelta": "message.assistant.delta",
@@ -1044,7 +1057,7 @@ var CommandRouter = class {
     }
   }
   async #executeSharedRead(command, envelope) {
-    if (!["thread.list", "thread.read"].includes(command.type)) {
+    if (!["thread.list", "thread.read", "thread.status"].includes(command.type)) {
       return this.#execute(command, envelope);
     }
     const key = JSON.stringify({
@@ -1091,6 +1104,12 @@ var CommandRouter = class {
         );
         this.#assertThreadResultAllowed(result);
         return this.service.prepareResourceImages ? this.service.prepareResourceImages(result) : result;
+      }
+      case "thread.status": {
+        const threadId = requireString(command.threadId || envelope.threadId, "threadId");
+        const result = await this.appServer.readThreadStatus(threadId);
+        this.#assertThreadResultAllowed(result);
+        return result;
       }
       case "thread.create": {
         const cwd = this.#allowedCwd(command.cwd, true);
@@ -2506,7 +2525,16 @@ var ConnectorService = class extends EventEmitter4 {
     if (!context.threadId) return false;
     if (this.threadAccess.has(context.threadId)) return this.threadAccess.get(context.threadId);
     try {
-      const result = await this.appServer.readThread(context.threadId);
+      let result;
+      if (typeof this.appServer.readThreadStatus === "function") {
+        try {
+          result = await this.appServer.readThreadStatus(context.threadId);
+        } catch (error) {
+          result = await this.appServer.readThread(context.threadId);
+        }
+      } else {
+        result = await this.appServer.readThread(context.threadId);
+      }
       const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
       this.threadAccess.set(context.threadId, allowed);
       return allowed;

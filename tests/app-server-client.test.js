@@ -23,6 +23,9 @@ test("App Server client initializes and uses expectedTurnId for steering", async
   assert.equal(threads.nextCursor, null);
   const models = await client.listModels({ includeHidden: false, limit: 100 });
   assert.equal(models.data[0].model, "remote-model");
+  const threadStatus = await client.readThreadStatus("thread-1");
+  assert.equal(threadStatus.thread.status.type, "active");
+  assert.equal(threadStatus.thread.statusProbe, true);
   const started = await client.startTurn({
     threadId: "thread-1",
     text: "hello",

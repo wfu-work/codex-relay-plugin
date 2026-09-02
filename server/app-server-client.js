@@ -200,6 +200,15 @@ export class AppServerClient extends EventEmitter {
     });
   }
 
+  // Unlike readThread(), this explicitly disables includeTurns. Codex still
+  // returns the current thread status, but does not stream the full history.
+  // The Relay client uses it as a cheap heartbeat for a selected task. The
+  // explicit false also keeps older non-paginated servers from falling back
+  // to their full-history default.
+  readThreadStatus(threadId) {
+    return this.request("thread/read", { threadId, includeTurns: false });
+  }
+
   async #readPaginatedThread(threadId) {
     // The paginated history contract keeps metadata on thread/read and moves
     // turns/items to dedicated list methods. Keep the connector response in

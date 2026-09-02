@@ -31,6 +31,9 @@ function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", thread
       };
     },
     readThread: async (threadId) => (calls.push(["readThread", threadId]), { thread: { id: threadId, cwd: threadCwd, turns: threadTurns } }),
+    readThreadStatus: async (threadId) => (calls.push(["readThreadStatus", threadId]), {
+      thread: { id: threadId, cwd: threadCwd, status: { type: "active", activeFlags: [] } },
+    }),
     startTurn: async (params) => {
       calls.push(["startTurn", params]);
       if (delayTurn) await new Promise((resolve) => setImmediate(resolve));
@@ -66,6 +69,15 @@ test("thread listing is constrained by the project whitelist", async () => {
   assert.equal(response.success, true);
   assert.equal(calls.find(([name]) => name === "listThreads")[1].cwd, undefined);
   assert.deepEqual(response.result.data.map((thread) => thread.id), ["thread-allowed"]);
+});
+
+test("thread status uses the metadata-only App Server read", async () => {
+  const { calls, router } = setup();
+  const response = await router.handle(envelope({ type: "thread.status", threadId: "thread-allowed" }));
+  assert.equal(response.success, true);
+  assert.equal(response.result.thread.status.type, "active");
+  assert.deepEqual(calls.find(([name]) => name === "readThreadStatus"), ["readThreadStatus", "thread-allowed"]);
+  assert.equal(calls.some(([name]) => name === "readThread"), false);
 });
 
 test("model listing is forwarded to the App Server and allowed in read-only mode", async () => {

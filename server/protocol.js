@@ -148,19 +148,44 @@ export function normalizeCodexNotification(method, params = {}) {
   const map = {
     "thread/started": "thread.created",
     "thread/status/changed": "thread.updated",
+    "thread/statusChanged": "thread.updated",
+    "thread/status_changed": "thread.updated",
     "turn/started": "turn.started",
     "turn/completed": "turn.completed",
     "turn/failed": "turn.failed",
     "turn/aborted": "turn.interrupted",
+    "turn/interrupted": "turn.interrupted",
+    "turn/status/changed": "thread.updated",
+    "processing/heartbeat": "turn.heartbeat",
     "item/agentMessage/delta": "message.assistant.delta",
+    "item/agentMessage/textDelta": "message.assistant.delta",
+    "item/agentMessage/text/delta": "message.assistant.delta",
+    "item/agent_message/delta": "message.assistant.delta",
+    "item/agent_message/text/delta": "message.assistant.delta",
+    "item/agent_message/text_delta": "message.assistant.delta",
     "item/reasoning/summaryTextDelta": "reasoning.delta",
+    "item/reasoning/textDelta": "reasoning.delta",
+    "item/reasoning/summaryText/delta": "reasoning.delta",
+    "item/reasoning/summary_text_delta": "reasoning.delta",
     "item/commandExecution/outputDelta": "tool.output",
+    "item/commandExecution/output/delta": "tool.output",
+    "item/command_execution/output_delta": "tool.output",
     "item/fileChange/outputDelta": "diff.updated",
+    "item/fileChange/output/delta": "diff.updated",
+    "item/file_change/output_delta": "diff.updated",
     "item/started": "item.started",
+    "item/updated": "item.updated",
     "item/completed": "item.completed",
     error: "error",
   };
-  const type = map[method];
+  // App Server method spelling changed slightly across releases (camelCase,
+  // snake_case, dotted names). Compare a separator-insensitive key so all of
+  // those forms continue to produce the same streaming event type.
+  const methodKey = normalizeNotificationMethod(method);
+  const type =
+    map[method] ||
+    Object.entries(map).find(([name]) => normalizeNotificationMethod(name) === methodKey)?.[1] ||
+    inferStreamingNotificationType(methodKey);
   if (!type) return null;
   return {
     type,
@@ -169,9 +194,42 @@ export function normalizeCodexNotification(method, params = {}) {
   };
 }
 
+function normalizeNotificationMethod(method) {
+  return String(method)
+    .trim()
+    .toLowerCase()
+    // Dots and hyphens are alternate path separators; underscores are merely
+    // casing separators (`agent_message` == `agentMessage`).
+    .replace(/[.-]+/g, "/")
+    .replace(/\/+/g, "/")
+    .replaceAll("_", "");
+}
+
+// Codex App Server occasionally adds a more specific suffix to an item
+// notification before the plugin is updated. Keep the allow-list narrow, but
+// infer the four streaming families from their stable path segments so a new
+// `.../contentDelta` spelling cannot stop the answer stream altogether.
+function inferStreamingNotificationType(methodKey) {
+  if (!methodKey.endsWith("delta")) return null;
+  if (methodKey.includes("item/agentmessage/") || methodKey.includes("item/assistant/")) {
+    return "message.assistant.delta";
+  }
+  if (methodKey.includes("item/reasoning/")) return "reasoning.delta";
+  if (methodKey.includes("item/commandexecution/") || methodKey.includes("item/tool/")) {
+    return "tool.output";
+  }
+  if (methodKey.includes("item/filechange/") || methodKey.includes("item/diff/")) {
+    return "diff.updated";
+  }
+  return null;
+}
+
 export function extractContext(params = {}) {
+  const thread = params.thread || {};
+  const turn = params.turn || {};
+  const item = params.item || {};
   return {
-    threadId: params.threadId || params.thread?.id,
-    turnId: params.turnId || params.turn?.id,
+    threadId: params.threadId || params.thread_id || params.thread?.id || params.thread?.threadId || params.thread?.thread_id || thread.id || thread.threadId || thread.thread_id || item.threadId || item.thread_id,
+    turnId: params.turnId || params.turn_id || params.turn?.id || params.turn?.turnId || params.turn?.turn_id || turn.id || turn.turnId || turn.turn_id || item.turnId || item.turn_id,
   };
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultConfig } from "../server/config-store.js";
 import { EventBuffer } from "../server/event-buffer.js";
-import { commandResult, eventEnvelope, normalizeCodexNotification, validateRelayCommand, validateRelayWelcome, wrapRelayFrame, unwrapRelayFrame } from "../server/protocol.js";
+import { commandResult, eventEnvelope, extractContext, normalizeCodexNotification, validateRelayCommand, validateRelayWelcome, wrapRelayFrame, unwrapRelayFrame } from "../server/protocol.js";
 
 function fixture(command = { type: "thread.list" }) {
   const config = defaultConfig();
@@ -106,5 +106,44 @@ test("only explicitly supported Codex notifications are relayable", () => {
     type: "message.assistant.delta",
     sourceMethod: "item/agentMessage/delta",
     data: { delta: "hello" },
+  });
+});
+
+test("normalizes newer streaming aliases and snake_case context", () => {
+  assert.equal(
+    normalizeCodexNotification("item/agentMessage/textDelta", { delta: "hello" }).type,
+    "message.assistant.delta",
+  );
+  assert.equal(
+    normalizeCodexNotification("item/reasoning/textDelta", { delta: "thinking" }).type,
+    "reasoning.delta",
+  );
+  assert.equal(
+    normalizeCodexNotification("processing/heartbeat", {}).type,
+    "turn.heartbeat",
+  );
+  assert.equal(
+    normalizeCodexNotification("item/agent_message/text/delta", { delta: "hello" }).type,
+    "message.assistant.delta",
+  );
+  assert.equal(
+    normalizeCodexNotification("item.agentMessage.delta", { delta: "hello" }).type,
+    "message.assistant.delta",
+  );
+  assert.equal(
+    normalizeCodexNotification("item/agent_message/content_delta", { delta: "hello" }).type,
+    "message.assistant.delta",
+  );
+  assert.equal(
+    normalizeCodexNotification("item/assistant/contentDelta", { delta: "hello" }).type,
+    "message.assistant.delta",
+  );
+  assert.equal(
+    normalizeCodexNotification("thread/status_changed", { thread_id: "thread-1" }).type,
+    "thread.updated",
+  );
+  assert.deepEqual(extractContext({ thread_id: "thread-1", turn_id: "turn-1" }), {
+    threadId: "thread-1",
+    turnId: "turn-1",
   });
 });

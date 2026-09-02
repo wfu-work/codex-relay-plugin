@@ -203,7 +203,7 @@ export class ConnectorService extends EventEmitter {
     }
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
-    const threads = filterThreadList(await this.appServer.listThreads({ limit: 50 }), allowedProjects);
+    const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
     return {
       mode: "snapshot",
       status: await this.status(),

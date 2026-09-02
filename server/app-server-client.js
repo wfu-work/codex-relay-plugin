@@ -136,13 +136,51 @@ export class AppServerClient extends EventEmitter {
     this.#write({ jsonrpc: "2.0", method, params });
   }
 
-  listThreads(params = {}) {
-    return this.request("thread/list", {
-      cursor: params.cursor ?? null,
-      limit: Math.min(Number(params.limit || 50), 100),
+  async listThreads(params = {}) {
+    const limit = Math.min(Number(params.limit || 50), 100);
+    const requestPage = (cursor) => this.request("thread/list", {
+      cursor,
+      limit,
       sortKey: params.sortKey || "updated_at",
       ...(params.cwd ? { cwd: params.cwd } : {}),
     });
+
+    // A cursor supplied by a caller means it explicitly requested one page.
+    // Without a cursor, fetch every page so callers such as the Relay sidebar
+    // can build a complete project list instead of seeing only the newest
+    // page of threads.  The app server currently returns at most 100 items
+    // per page; the guard prevents a malformed cursor chain from looping
+    // forever while still allowing a large local history to be synchronized.
+    if (params.cursor != null) return requestPage(params.cursor);
+
+    const first = await requestPage(null);
+    if (!first || !Array.isArray(first.data)) return first;
+
+    const data = [...first.data];
+    let cursor = typeof first.nextCursor === "string" && first.nextCursor
+      ? first.nextCursor
+      : null;
+    const seenCursors = new Set();
+    for (let page = 1; cursor && page < 1000; page += 1) {
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+      const response = await requestPage(cursor);
+      if (!response || !Array.isArray(response.data)) break;
+      data.push(...response.data);
+      const nextCursor = typeof response.nextCursor === "string" && response.nextCursor
+        ? response.nextCursor
+        : null;
+      if (!nextCursor || nextCursor === cursor) {
+        cursor = null;
+      } else {
+        cursor = nextCursor;
+      }
+    }
+    return {
+      ...first,
+      data,
+      nextCursor: null,
+    };
   }
 
   listModels(params = {}) {

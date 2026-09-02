@@ -14,7 +14,17 @@ lines.on("line", (line) => {
   if (message.id === undefined) return;
   let result = {};
   if (message.method === "initialize") result = { userAgent: "fake-codex" };
-  if (message.method === "thread/list") result = { data: [] };
+  if (message.method === "thread/list") {
+    result = message.params.cursor === "page-2"
+      ? {
+          data: [{ id: "thread-2", cwd: "/workspace/two" }],
+          nextCursor: null,
+        }
+      : {
+          data: [{ id: "thread-1", cwd: "/workspace/one" }],
+          nextCursor: "page-2",
+        };
+  }
   if (message.method === "model/list") result = {
     data: [{ model: "remote-model", displayName: "Remote Model", isDefault: true }],
     nextCursor: null,

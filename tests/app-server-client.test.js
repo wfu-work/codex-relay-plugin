@@ -18,6 +18,9 @@ test("App Server client initializes and uses expectedTurnId for steering", async
   const status = await client.start();
   assert.equal(status.state, "ready");
   assert.equal(status.version, "codex-cli 0.test");
+  const threads = await client.listThreads({ limit: 100 });
+  assert.deepEqual(threads.data.map((thread) => thread.id), ["thread-1", "thread-2"]);
+  assert.equal(threads.nextCursor, null);
   const models = await client.listModels({ includeHidden: false, limit: 100 });
   assert.equal(models.data[0].model, "remote-model");
   const started = await client.startTurn({

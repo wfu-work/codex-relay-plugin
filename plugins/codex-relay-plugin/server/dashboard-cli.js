@@ -145,13 +145,38 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   notify(method, params = {}) {
     this.#write({ jsonrpc: "2.0", method, params });
   }
-  listThreads(params = {}) {
-    return this.request("thread/list", {
-      cursor: params.cursor ?? null,
-      limit: Math.min(Number(params.limit || 50), 100),
+  async listThreads(params = {}) {
+    const limit = Math.min(Number(params.limit || 50), 100);
+    const requestPage = (cursor2) => this.request("thread/list", {
+      cursor: cursor2,
+      limit,
       sortKey: params.sortKey || "updated_at",
       ...params.cwd ? { cwd: params.cwd } : {}
     });
+    if (params.cursor != null) return requestPage(params.cursor);
+    const first = await requestPage(null);
+    if (!first || !Array.isArray(first.data)) return first;
+    const data = [...first.data];
+    let cursor = typeof first.nextCursor === "string" && first.nextCursor ? first.nextCursor : null;
+    const seenCursors = /* @__PURE__ */ new Set();
+    for (let page = 1; cursor && page < 1e3; page += 1) {
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+      const response = await requestPage(cursor);
+      if (!response || !Array.isArray(response.data)) break;
+      data.push(...response.data);
+      const nextCursor = typeof response.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
+      if (!nextCursor || nextCursor === cursor) {
+        cursor = null;
+      } else {
+        cursor = nextCursor;
+      }
+    }
+    return {
+      ...first,
+      data,
+      nextCursor: null
+    };
   }
   listModels(params = {}) {
     return this.request("model/list", {
@@ -2377,7 +2402,7 @@ var ConnectorService = class extends EventEmitter4 {
     }
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
-    const threads = filterThreadList(await this.appServer.listThreads({ limit: 50 }), allowedProjects);
+    const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
     return {
       mode: "snapshot",
       status: await this.status(),

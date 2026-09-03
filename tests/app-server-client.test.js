@@ -91,3 +91,56 @@ test("App Server client keeps reading when another client owns the thread writer
   assert.equal(status.thread.id, "thread-active-writer");
   assert.equal(status.thread.resumed, false);
 });
+
+test("App Server snapshot reads do not contend for another client's writer", async (t) => {
+  const executable = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-codex.js");
+  await fs.chmod(executable, 0o755);
+  const configStore = {
+    get: () => ({ codex: { executable, defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  t.after(() => client.stop());
+
+  await client.start();
+  const status = await client.readThreadStatusSnapshot("thread-active-writer");
+  assert.equal(status.thread.id, "thread-active-writer");
+  assert.equal(status.thread.resumed, false);
+  const snapshot = await client.readThreadSnapshot("thread-active-writer");
+  assert.equal(snapshot.thread.id, "thread-active-writer");
+  assert.equal(snapshot.thread.resumed, false);
+  assert.equal(snapshot.thread.resumeCount, 0);
+});
+
+test("thread catalog collapses duplicate ids across persisted pages", async () => {
+  const configStore = {
+    get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  const pages = [
+    {
+      data: [
+        { id: "thread-newest", cwd: "/workspace/demo" },
+        { id: "thread-older", cwd: "/workspace/demo", updated_at: "2026-09-03T00:00:00Z" },
+      ],
+      nextCursor: "page-2",
+    },
+    {
+      data: [
+        // The same id can appear at an index page boundary while the desktop
+        // App Server is persisting a new turn.
+        { id: "thread-older", cwd: "/workspace/demo", updated_at: "2026-09-02T00:00:00Z" },
+        { id: "thread-another", cwd: "/workspace/demo" },
+      ],
+      nextCursor: null,
+    },
+  ];
+  client.request = async (_method, params) =>
+    params.cursor == null ? pages[0] : pages[1];
+
+  const result = await client.listThreads({ limit: 100 });
+  assert.deepEqual(result.data.map((thread) => thread.id), [
+    "thread-newest",
+    "thread-older",
+    "thread-another",
+  ]);
+});

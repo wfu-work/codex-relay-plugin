@@ -308,7 +308,9 @@ Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 
 
 插件发出 `codex.event`，包含递增 `sequence`、`eventId`、可选的 `threadId` / `turnId` 和 `event`。Relay v1 只转发当前 Codex App Server schema 对应的 canonical 事件：`thread.created`、`thread.updated`、`thread.queue.changed`、`turn.started`、`turn.completed`、`message.assistant.delta`、`reasoning.delta`、`tool.output`、`diff.updated`、`item.started`、`item.updated`、`item.completed`、`usage.updated` 和 `approval.requested`。失败或中断由 `turn.completed` 的 `event.data.turn.status`（分别为 `failed` 或 `interrupted`）表达，不再接受旧版别名或独立终态事件。
 
-历史任务在本机 App Server 中默认只读快照，不会自动订阅后续回合。Relay 首次读取或轮询任务状态时会先执行一次 `thread/resume`，并在当前进程内复用该订阅；因此由桌面端发起的新问题和流式输出也能实时转发到移动端。项目白名单的事件访问探测仍只读元数据，不会在权限校验前恢复未授权任务。
+历史任务在本机 App Server 中通过持久化快照读取，不会为了轮询而自动执行 `thread/resume`。这样官方桌面端正在运行的任务仍由桌面 App Server 持有 writer，Relay 以最终一致的方式读取其已持久化状态，不会因争抢 writer 而制造假完成或重复重试。Relay 自己创建的任务仍可通过 `turn.start` 正常恢复未加载的历史线程并接收本进程事件；项目白名单的事件访问探测只读元数据，不会在权限校验前恢复未授权任务。
+
+两端共享的前提是使用同一个 macOS 用户和同一个 Codex 数据目录（`CODEX_HOME`）。如果官方桌面端配置了自定义 `CODEX_HOME`，启动 Relay Connector 时也必须传入同一个值；不同数据目录不会共享任务历史。官方桌面端的任务列表是否立即刷新仍由桌面端 UI 决定，必要时手动刷新任务列表或重新打开项目即可看到 Relay 创建的任务。
 
 手机端保存最后确认的 `sequence`，重连后发送 `sync.request`。缓冲仍覆盖该序号时返回增量事件；序号缺口或首次同步时返回 thread 快照。事件缓冲只在内存中，插件重启后序号重置。
 

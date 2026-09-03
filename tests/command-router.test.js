@@ -80,6 +80,36 @@ test("thread status uses the metadata-only App Server read", async () => {
   assert.equal(calls.some(([name]) => name === "readThread"), false);
 });
 
+test("thread reads prefer persisted snapshot methods over writer subscription", async () => {
+  const { config, calls } = setup();
+  let snapshotReads = 0;
+  let snapshotStatusReads = 0;
+  const appServer = {
+    start: async () => calls.push(["start"]),
+    readThreadSnapshot: async (threadId) => {
+      snapshotReads += 1;
+      return { thread: { id: threadId, cwd: "/workspace/allowed/demo", turns: [] } };
+    },
+    readThreadStatusSnapshot: async (threadId) => {
+      snapshotStatusReads += 1;
+      return { thread: { id: threadId, cwd: "/workspace/allowed/demo", status: { type: "active" } } };
+    },
+  };
+  const router = new CommandRouter({
+    configStore: { get: () => structuredClone(config) },
+    appServer,
+    service: { status: async () => ({ ok: true }), syncAfter: async () => ({ mode: "snapshot" }) },
+    logger: { warn() {} },
+  });
+
+  const read = await router.handle(envelope({ type: "thread.read", threadId: "thread-allowed" }));
+  const status = await router.handle(envelope({ type: "thread.status", threadId: "thread-allowed" }, "status-1"));
+  assert.equal(read.success, true);
+  assert.equal(status.success, true);
+  assert.equal(snapshotReads, 1);
+  assert.equal(snapshotStatusReads, 1);
+});
+
 test("model listing is forwarded to the App Server and allowed in read-only mode", async () => {
   const { calls, router } = setup({ readOnly: true });
   const response = await router.handle(envelope({ type: "model.list", includeHidden: false, limit: 100 }));

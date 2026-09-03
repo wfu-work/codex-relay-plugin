@@ -191,7 +191,12 @@ export class AppServerClient extends EventEmitter {
     }
     return {
       ...first,
-      data,
+      // Some App Server builds can repeat a historical thread at a page
+      // boundary while the on-disk index is being updated. The thread id is
+      // the stable identity shared by desktop and Relay; collapse duplicates
+      // before exposing the catalog so clients do not render two rows for one
+      // task during eventual convergence.
+      data: dedupeThreadList(data),
       nextCursor: null,
     };
   }
@@ -215,6 +220,27 @@ export class AppServerClient extends EventEmitter {
     });
   }
 
+  /**
+   * Read the persisted thread snapshot without trying to acquire the thread
+   * writer or subscribe this connection to future notifications.
+   *
+   * The official desktop client owns some threads through its private stdio
+   * App Server. Those threads are still readable from the shared Codex
+   * history, but `thread/resume` is rejected with an active-writer error.
+   * Relay reads used for reconciliation must therefore be side-effect free;
+   * starting a new turn remains responsible for resuming the thread when
+   * necessary.
+   */
+  async readThreadSnapshot(threadId) {
+    const id = normalizeThreadId(threadId);
+    if (this.#paginatedThreads === true) return this.#readPaginatedThread(id);
+    return this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
+      if (!isPaginatedThreadReadError(error)) throw error;
+      this.#paginatedThreads = true;
+      return this.#readPaginatedThread(id);
+    });
+  }
+
   // Unlike readThread(), this explicitly disables includeTurns. Codex still
   // returns the current thread status, but does not stream the full history.
   // The Relay client uses it as a cheap heartbeat for a selected task. The
@@ -225,6 +251,11 @@ export class AppServerClient extends EventEmitter {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
     return this.request("thread/read", { threadId: id, includeTurns: false });
+  }
+
+  /** Metadata-only persisted read used by snapshot reconciliation. */
+  readThreadStatusSnapshot(threadId) {
+    return this.readThreadStatus(threadId, { ensureResumed: false });
   }
 
   /**
@@ -455,6 +486,53 @@ function normalizeThreadId(threadId) {
   const id = typeof threadId === "string" ? threadId.trim() : String(threadId || "").trim();
   if (!id) throw new RelayError("INVALID_MESSAGE", "threadId 不能为空");
   return id;
+}
+
+function dedupeThreadList(threads) {
+  const seen = new Set();
+  const unique = [];
+  const indexes = new Map();
+  for (const thread of threads) {
+    if (!isObject(thread)) {
+      unique.push(thread);
+      continue;
+    }
+    const rawId = thread.id ?? thread.threadId ?? thread.thread_id;
+    const id = typeof rawId === "string" ? rawId.trim() : String(rawId ?? "").trim();
+    if (!id) {
+      unique.push(thread);
+      continue;
+    }
+    if (seen.has(id)) {
+      const index = indexes.get(id);
+      const previous = index == null ? null : unique[index];
+      if (
+        previous &&
+        threadRecency(thread) > threadRecency(previous)
+      ) {
+        unique[index] = thread;
+      }
+      continue;
+    }
+    seen.add(id);
+    indexes.set(id, unique.length);
+    unique.push(thread);
+  }
+  return unique;
+}
+
+function threadRecency(thread) {
+  for (const key of ["updatedAt", "updated_at", "createdAt", "created_at"]) {
+    const value = thread?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) return numeric;
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
 }
 
 function isActiveWriterConflict(error) {

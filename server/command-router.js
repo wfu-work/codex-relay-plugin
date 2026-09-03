@@ -117,8 +117,12 @@ export class CommandRouter {
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
+        const readThread = this.appServer.readThreadSnapshot || this.appServer.readThread;
         const result = compactThreadReadResult(
-          await this.appServer.readThread(requireString(command.threadId || envelope.threadId, "threadId")),
+          await readThread.call(
+            this.appServer,
+            requireString(command.threadId || envelope.threadId, "threadId"),
+          ),
         );
         this.#assertThreadResultAllowed(result);
         return this.service.prepareResourceImages
@@ -127,7 +131,8 @@ export class CommandRouter {
       }
       case "thread.status": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
-        const result = await this.appServer.readThreadStatus(threadId);
+        const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
+        const result = await readStatus.call(this.appServer, threadId);
         this.#assertThreadResultAllowed(result);
         return result;
       }
@@ -205,7 +210,8 @@ export class CommandRouter {
   async #assertThreadAllowed(threadId) {
     const allowedProjects = this.configStore.get().allowedProjects;
     if (!allowedProjects.length) return;
-    this.#assertThreadResultAllowed(await this.appServer.readThread(threadId));
+    const readThread = this.appServer.readThreadSnapshot || this.appServer.readThread;
+    this.#assertThreadResultAllowed(await readThread.call(this.appServer, threadId));
   }
 
   #assertThreadResultAllowed(result) {

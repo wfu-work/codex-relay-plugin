@@ -11,6 +11,7 @@ const CONTENT_TYPES = {
   ".svg": "image/svg+xml",
   ".json": "application/json; charset=utf-8",
 };
+const DASHBOARD_PORT = 3210;
 
 export class DashboardServer {
   #server = null;
@@ -33,7 +34,7 @@ export class DashboardServer {
     });
     await new Promise((resolve, reject) => {
       this.#server.once("error", reject);
-      this.#server.listen(0, "127.0.0.1", resolve);
+      this.#server.listen(DASHBOARD_PORT, "127.0.0.1", resolve);
     });
     this.#port = this.#server.address().port;
     this.logger.info("dashboard", "本地配置控制台已启动", { port: this.#port });

@@ -19,7 +19,7 @@
 - 图片事件采用“缩略图 + 短期受控资源 URL”：原图通过认证数据通道上传到 Relay，移动端点击预览时再按过期时间读取
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
 - 公网 Relay 强制 `wss://`；`ws://` 仅允许 `localhost` / 回环地址
-- 本地控制台只监听 `127.0.0.1`，API 使用随机 Bearer key，key 只放在 URL fragment 中
+- 本地控制台固定监听 `127.0.0.1:3210`，API 使用随机 Bearer key，key 只放在 URL fragment 中
 - 状态、诊断和脱敏日志 MCP 工具
 
 ## 架构
@@ -27,7 +27,7 @@
 ```text
 Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server (stdio)
                                      │
-                                     └── 127.0.0.1 随机端口配置台
+                                     └── 127.0.0.1:3210 配置台
 ```
 
 Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息；图片资源由 Relay 内存短期托管，不落盘。

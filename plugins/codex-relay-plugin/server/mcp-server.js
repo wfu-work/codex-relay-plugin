@@ -18054,6 +18054,7 @@ var CONTENT_TYPES = {
   ".svg": "image/svg+xml",
   ".json": "application/json; charset=utf-8"
 };
+var DASHBOARD_PORT = 3210;
 var DashboardServer = class {
   #server = null;
   #accessKey = crypto6.randomBytes(24).toString("base64url");
@@ -18073,7 +18074,7 @@ var DashboardServer = class {
     });
     await new Promise((resolve, reject) => {
       this.#server.once("error", reject);
-      this.#server.listen(0, "127.0.0.1", resolve);
+      this.#server.listen(DASHBOARD_PORT, "127.0.0.1", resolve);
     });
     this.#port = this.#server.address().port;
     this.logger.info("dashboard", "\u672C\u5730\u914D\u7F6E\u63A7\u5236\u53F0\u5DF2\u542F\u52A8", { port: this.#port });

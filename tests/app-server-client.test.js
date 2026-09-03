@@ -26,6 +26,10 @@ test("App Server client initializes and uses expectedTurnId for steering", async
   const threadStatus = await client.readThreadStatus("thread-1");
   assert.equal(threadStatus.thread.status.type, "active");
   assert.equal(threadStatus.thread.statusProbe, true);
+  assert.equal(threadStatus.thread.resumed, true);
+  const hydrated = await client.readThread("thread-1");
+  assert.equal(hydrated.thread.resumed, true);
+  assert.equal(hydrated.thread.resumeCount, 1);
   const started = await client.startTurn({
     threadId: "thread-1",
     text: "hello",
@@ -71,4 +75,19 @@ test("App Server client resumes a historical thread before retrying its first tu
 
   assert.equal(started.received.threadId, "thread-historical");
   assert.equal(started.received.input[0].text, "continue");
+});
+
+test("App Server client keeps reading when another client owns the thread writer", async (t) => {
+  const executable = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-codex.js");
+  await fs.chmod(executable, 0o755);
+  const configStore = {
+    get: () => ({ codex: { executable, defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  t.after(() => client.stop());
+
+  await client.start();
+  const status = await client.readThreadStatus("thread-active-writer");
+  assert.equal(status.thread.id, "thread-active-writer");
+  assert.equal(status.thread.resumed, false);
 });

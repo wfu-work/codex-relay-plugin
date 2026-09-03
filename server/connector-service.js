@@ -12,6 +12,8 @@ import { prepareEventImages } from "./resource-images.js";
 import { filterThreadList, safeProjectPath } from "./utils.js";
 
 export class ConnectorService extends EventEmitter {
+  #unsupportedNotificationMethods = new Set();
+
   constructor(options = {}) {
     super();
     this.logger = options.logger || new Logger();
@@ -241,7 +243,15 @@ export class ConnectorService extends EventEmitter {
     this.appServer.on("status", (status) => this.emit("status", status));
     this.appServer.on("notification", (method, params) => {
       const event = normalizeCodexNotification(method, params);
-      if (!event) return;
+      if (!event) {
+        // Keep protocol drift visible without flooding the log when Codex
+        // repeats an unsupported notification on every turn.
+        if (!this.#unsupportedNotificationMethods.has(method)) {
+          this.#unsupportedNotificationMethods.add(method);
+          this.logger.warn("app-server", "忽略不支持的 Codex 通知", { method });
+        }
+        return;
+      }
       this.eventQueue = this.eventQueue
         .then(() => this.#forwardEvent(event, params))
         .catch((error) => this.logger.warn("connector", "Codex 事件转发失败", { message: error.message }));
@@ -278,22 +288,12 @@ export class ConnectorService extends EventEmitter {
       // Access checks only need the thread cwd. A full thread.read can pull
       // megabytes of tool output and, while a turn is running, block the
       // event queue long enough for every streamed delta to appear frozen on
-      // the remote client. Prefer the metadata-only status read and retain a
-      // compatibility fallback for injected/older App Server clients.
-      let result;
-      if (typeof this.appServer.readThreadStatus === "function") {
-        try {
-          result = await this.appServer.readThreadStatus(context.threadId);
-        } catch (error) {
-          // Keep event forwarding compatible with an App Server release that
-          // does not implement the metadata-only read yet. This fallback is
-          // only on the whitelist check path; normal clients still use the
-          // cheap status request above.
-          result = await this.appServer.readThread(context.threadId);
-        }
-      } else {
-        result = await this.appServer.readThread(context.threadId);
-      }
+      // the remote client. The current App Server contract exposes the
+      // metadata-only status read, so use it as the single source of truth.
+      // This is only an access-control probe. Do not resume an untrusted
+      // historical thread before its cwd has been checked; the normal remote
+      // status command resumes the selected thread and enables live events.
+      const result = await this.appServer.readThreadStatus(context.threadId, { ensureResumed: false });
       const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
       this.threadAccess.set(context.threadId, allowed);
       return allowed;

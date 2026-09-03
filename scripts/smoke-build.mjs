@@ -25,6 +25,9 @@ const transport = new StdioClientTransport({
   env: {
     ...process.env,
     CODEX_RELAY_CONFIG_DIR: configDir,
+    // Keep the smoke process isolated from a developer's local dashboard on
+    // the default port while preserving 3210 for normal runtime usage.
+    CODEX_RELAY_DASHBOARD_PORT: "0",
   },
   stderr: "pipe",
 });

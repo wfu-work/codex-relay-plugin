@@ -13,15 +13,27 @@ const CONTENT_TYPES = {
 };
 const DASHBOARD_PORT = 3210;
 
+function configuredDashboardPort() {
+  const raw = process.env.CODEX_RELAY_DASHBOARD_PORT?.trim();
+  if (!raw) return DASHBOARD_PORT;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("CODEX_RELAY_DASHBOARD_PORT 必须是 0 到 65535 之间的整数");
+  }
+  return port;
+}
+
 export class DashboardServer {
   #server = null;
   #accessKey = crypto.randomBytes(24).toString("base64url");
   #port = null;
+  #listenPort;
 
-  constructor(service, logger) {
+  constructor(service, logger, options = {}) {
     this.service = service;
     this.logger = logger;
     this.uiRoot = path.join(PLUGIN_ROOT, "ui");
+    this.#listenPort = options.port ?? configuredDashboardPort();
   }
 
   async start() {
@@ -34,7 +46,7 @@ export class DashboardServer {
     });
     await new Promise((resolve, reject) => {
       this.#server.once("error", reject);
-      this.#server.listen(DASHBOARD_PORT, "127.0.0.1", resolve);
+      this.#server.listen(this.#listenPort, "127.0.0.1", resolve);
     });
     this.#port = this.#server.address().port;
     this.logger.info("dashboard", "本地配置控制台已启动", { port: this.#port });

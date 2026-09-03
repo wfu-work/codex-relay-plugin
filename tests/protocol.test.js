@@ -41,6 +41,12 @@ test("allows selected-thread status polling while Relay is read-only", () => {
   assert.equal(validateRelayCommand(message, config), message);
 });
 
+test("allows historical thread subscription while Relay is read-only", () => {
+  const { config, message } = fixture({ type: "thread.resume", threadId: "thread-1" });
+  config.readOnly = true;
+  assert.equal(validateRelayCommand(message, config), message);
+});
+
 test("rejects commands targeted to another endpoint", () => {
   const { config, message } = fixture();
   message.targetDeviceId = "endpoint-2";
@@ -115,45 +121,31 @@ test("only explicitly supported Codex notifications are relayable", () => {
   });
 });
 
-test("normalizes newer streaming aliases and snake_case context", () => {
+test("forwards current queue and turn diff notifications for live timeline sync", () => {
   assert.equal(
-    normalizeCodexNotification("item/agentMessage/textDelta", { delta: "hello" }).type,
-    "message.assistant.delta",
+    normalizeCodexNotification("thread/queue/changed", { threadId: "thread-1" }).type,
+    "thread.queue.changed",
   );
   assert.equal(
-    normalizeCodexNotification("item/reasoning/textDelta", { delta: "thinking" }).type,
-    "reasoning.delta",
+    normalizeCodexNotification("turn/diff/updated", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      diff: "diff",
+    }).type,
+    "diff.updated",
   );
-  assert.equal(
-    normalizeCodexNotification("processing/heartbeat", {}).type,
-    "turn.heartbeat",
-  );
-  assert.equal(
-    normalizeCodexNotification("item/agent_message/text/delta", { delta: "hello" }).type,
-    "message.assistant.delta",
-  );
-  assert.equal(
-    normalizeCodexNotification("item.agentMessage.delta", { delta: "hello" }).type,
-    "message.assistant.delta",
-  );
-  assert.equal(
-    normalizeCodexNotification("item/agent_message/content_delta", { delta: "hello" }).type,
-    "message.assistant.delta",
-  );
-  assert.equal(
-    normalizeCodexNotification("item/assistant/contentDelta", { delta: "hello" }).type,
-    "message.assistant.delta",
-  );
-  assert.equal(
-    normalizeCodexNotification("thread/status_changed", { thread_id: "thread-1" }).type,
-    "thread.updated",
-  );
-  assert.equal(
-    normalizeCodexNotification("thread/tokenUsage/updated", { threadId: "thread-1" }).type,
-    "usage.updated",
-  );
-  assert.deepEqual(extractContext({ thread_id: "thread-1", turn_id: "turn-1" }), {
+});
+
+test("drops unsupported notification aliases and requires canonical context fields", () => {
+  assert.equal(normalizeCodexNotification("item/agentMessage/textDelta", { delta: "hello" }), null);
+  assert.equal(normalizeCodexNotification("processing/heartbeat", {}), null);
+  assert.equal(normalizeCodexNotification("thread/status_changed", { thread_id: "thread-1" }), null);
+  assert.equal(normalizeCodexNotification("item.agentMessage.delta", { delta: "hello" }), null);
+  assert.deepEqual(extractContext({ threadId: "thread-1", turnId: "turn-1" }), {
     threadId: "thread-1",
     turnId: "turn-1",
   });
+  const legacyContext = extractContext({ thread_id: "thread-1", turn_id: "turn-1" });
+  assert.equal(legacyContext.threadId, undefined);
+  assert.equal(legacyContext.turnId, undefined);
 });

@@ -11,7 +11,9 @@ test("dashboard is local, bearer-protected, and does not expose its key in statu
     status: async () => ({ connector: { state: "running" } }),
     diagnostics: async () => ({ checks: [] }),
   };
-  const dashboard = new DashboardServer(service, logger);
+  // Use an ephemeral port so the test is isolated from a developer's local
+  // `make dev` Relay instance listening on the default dashboard port.
+  const dashboard = new DashboardServer(service, logger, { port: 0 });
   const url = await dashboard.start();
   t.after(() => dashboard.stop());
 

@@ -65,3 +65,17 @@ export function filterThreadList(result, allowedProjects) {
     data: result.data.filter((thread) => Boolean(thread?.cwd && safeProjectPath(thread.cwd, allowedProjects))),
   };
 }
+
+export function filterProjectList(result, allowedProjects) {
+  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
+  return {
+    ...result,
+    data: result.data.filter((project) => {
+      const roots = Array.isArray(project?.roots) ? project.roots : [];
+      return roots.some((root) => {
+        const projectPath = typeof root === "string" ? root : root?.path;
+        return Boolean(projectPath && safeProjectPath(projectPath, allowedProjects));
+      });
+    }),
+  };
+}

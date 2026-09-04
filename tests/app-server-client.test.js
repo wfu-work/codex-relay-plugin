@@ -43,6 +43,77 @@ test("App Server client initializes and uses expectedTurnId for steering", async
   assert.equal(Object.hasOwn(result.received, "turnId"), false);
 });
 
+test("thread catalog defaults to the official recency ordering", async () => {
+  const configStore = {
+    get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  const calls = [];
+  client.request = async (method, params) => {
+    calls.push([method, params]);
+    return {
+      data: [
+        { id: "thread-older", recencyAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z" },
+        { id: "thread-newer", recencyAt: "2026-09-04T00:00:00Z", updatedAt: "2026-09-02T00:00:00Z" },
+      ],
+      nextCursor: null,
+    };
+  };
+
+  const result = await client.listThreads({ limit: 100 });
+
+  assert.equal(calls[0][0], "thread/list");
+  assert.equal(calls[0][1].sortKey, "recency_at");
+  assert.equal(calls[0][1].sortDirection, "desc");
+  assert.deepEqual(result.data.map((thread) => thread.id), ["thread-newer", "thread-older"]);
+});
+
+test("thread catalog falls back when an older App Server rejects recency sorting", async () => {
+  const configStore = {
+    get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  const calls = [];
+  client.request = async (method, params) => {
+    calls.push([method, params]);
+    if (params.sortKey === "recency_at") {
+      const error = new Error("unknown sort key recency_at");
+      error.code = "APP_SERVER_ERROR";
+      throw error;
+    }
+    return { data: [{ id: "thread-1", updatedAt: "2026-09-01T00:00:00Z" }], nextCursor: null };
+  };
+
+  const result = await client.listThreads({ limit: 100 });
+
+  assert.equal(result.data[0].id, "thread-1");
+  assert.deepEqual(calls.map(([, params]) => [params.sortKey, params.sortDirection]), [
+    ["recency_at", "desc"],
+    ["recency_at", undefined],
+    ["updated_at", "desc"],
+  ]);
+});
+
+test("project catalog is returned in official position order", async () => {
+  const configStore = {
+    get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  client.request = async (_method, params) => params.cursor == null
+    ? {
+        data: [
+          { id: "project-b", name: "B", position: 2, roots: [{ path: "/b" }] },
+          { id: "project-a", name: "A", position: 1, roots: [{ path: "/a" }] },
+        ],
+        nextCursor: null,
+      }
+    : { data: [], nextCursor: null };
+
+  const result = await client.listProjects();
+
+  assert.deepEqual(result.data.map((project) => project.id), ["project-a", "project-b"]);
+});
+
 test("App Server client hydrates paginated thread history", async (t) => {
   const executable = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-codex-paginated.js");
   await fs.chmod(executable, 0o755);

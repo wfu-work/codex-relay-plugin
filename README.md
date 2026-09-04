@@ -291,8 +291,9 @@ Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 
 |---|---|---|
 | `host.get_status` | — | `readThreads` |
 | `model.list` | `cursor?`, `limit?`, `includeHidden?` | `readThreads` |
+| `project.list` | `cursor?`, `limit?` | `readThreads` |
 | `sync.request` | `lastSequence?` | `readThreads` |
-| `thread.list` | `cursor?`, `limit?` | `readThreads` |
+| `thread.list` | `cursor?`, `limit?`, `sortKey?`, `sortDirection?` | `readThreads` |
 | `thread.read` | `threadId` | `readThreads` |
 | `thread.status` | `threadId` | `readThreads` |
 | `thread.create` | `cwd?` | `createThreads` |
@@ -301,6 +302,10 @@ Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 
 | `turn.steer` | `threadId`, `turnId`, `text` | `steerTurns` |
 | `turn.interrupt` | `threadId`, `turnId` | `interruptTurns` |
 | `approval.respond` | `approvalId`, `decision` | `respondToApprovals` |
+
+`thread.list` 默认按官方侧栏使用的 `recency_at` 降序返回；不支持该字段的旧版
+App Server 会自动回退到 `updated_at`。`project.list` 返回官方项目的稳定 ID、根目录
+和 `position`，Relay 会按项目白名单过滤后再转发。
 
 审批 `decision` 仅允许 `accept`、`acceptForSession`、`decline`、`cancel`。远程审批默认关闭。
 

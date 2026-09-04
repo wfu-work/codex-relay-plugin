@@ -15515,6 +15515,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   #nextId = 1;
   #starting = null;
   #paginatedThreads = null;
+  #threadListSortMode = null;
   // `thread/read` only reads persisted history; it does not subscribe this
   // App Server connection to subsequent turn/item notifications. Keep track
   // of threads resumed in this process so a remote client can receive live
@@ -15565,6 +15566,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     this.state = "starting";
     this.lastError = null;
     this.#paginatedThreads = null;
+    this.#threadListSortMode = null;
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
@@ -15606,6 +15608,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     this.#process = null;
     this.state = "stopped";
     this.#paginatedThreads = null;
+    this.#threadListSortMode = null;
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
@@ -15643,14 +15646,56 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   }
   async listThreads(params = {}) {
     const limit = Math.min(Number(params.limit || 50), 100);
+    const requestedSortKey = params.sortKey || "recency_at";
+    const requestedSortDirection = params.sortDirection || "desc";
+    const useDefaultSort = params.sortKey == null && params.sortDirection == null;
+    let effectiveSortKey = requestedSortKey;
+    let includeSortDirection = true;
+    if (useDefaultSort && this.#threadListSortMode) {
+      [effectiveSortKey, includeSortDirection] = this.#threadListSortMode;
+    }
     const requestPage = (cursor2) => this.request("thread/list", {
       cursor: cursor2,
       limit,
-      sortKey: params.sortKey || "updated_at",
+      sortKey: effectiveSortKey,
+      ...includeSortDirection ? { sortDirection: requestedSortDirection } : {},
       ...params.cwd ? { cwd: params.cwd } : {}
     });
-    if (params.cursor != null) return requestPage(params.cursor);
-    const first = await requestPage(null);
+    const requestFirstPage = async () => {
+      if (useDefaultSort && this.#threadListSortMode) {
+        return requestPage(null);
+      }
+      try {
+        const result = await requestPage(null);
+        if (useDefaultSort) this.#threadListSortMode = [effectiveSortKey, includeSortDirection];
+        return result;
+      } catch (error2) {
+        if (requestedSortKey !== "recency_at" || !isUnsupportedThreadSort(error2)) {
+          throw error2;
+        }
+        const fallbacks = [
+          ["recency_at", false],
+          ["updated_at", true],
+          ["updated_at", false]
+        ];
+        let lastError = error2;
+        for (const [sortKey, withDirection] of fallbacks) {
+          effectiveSortKey = sortKey;
+          includeSortDirection = withDirection;
+          try {
+            const result = await requestPage(null);
+            if (useDefaultSort) this.#threadListSortMode = [effectiveSortKey, includeSortDirection];
+            return result;
+          } catch (fallbackError) {
+            if (!isUnsupportedThreadSort(fallbackError)) throw fallbackError;
+            lastError = fallbackError;
+          }
+        }
+        throw lastError;
+      }
+    };
+    const first = params.cursor != null ? await requestPage(params.cursor) : await requestFirstPage();
+    if (params.cursor != null) return first;
     if (!first || !Array.isArray(first.data)) return first;
     const data = [...first.data];
     let cursor = typeof first.nextCursor === "string" && first.nextCursor ? first.nextCursor : null;
@@ -15675,7 +15720,11 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       // the stable identity shared by desktop and Relay; collapse duplicates
       // before exposing the catalog so clients do not render two rows for one
       // task during eventual convergence.
-      data: dedupeThreadList(data),
+      data: sortThreadList(
+        dedupeThreadList(data),
+        requestedSortDirection,
+        effectiveSortKey
+      ),
       nextCursor: null
     };
   }
@@ -15685,6 +15734,33 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       limit: Math.min(Number(params.limit || 100), 100),
       includeHidden: params.includeHidden === true
     });
+  }
+  async listProjects(params = {}) {
+    const limit = Math.min(Number(params.limit || 100), 100);
+    const requestPage = (cursor2) => this.request("project/list", {
+      cursor: cursor2,
+      limit
+    });
+    if (params.cursor != null) return requestPage(params.cursor);
+    const first = await requestPage(null);
+    if (!first || !Array.isArray(first.data)) return first;
+    const data = [...first.data];
+    let cursor = typeof first.nextCursor === "string" && first.nextCursor ? first.nextCursor : null;
+    const seenCursors = /* @__PURE__ */ new Set();
+    for (let page = 1; cursor && page < 1e3; page += 1) {
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+      const response = await requestPage(cursor);
+      if (!response || !Array.isArray(response.data)) break;
+      data.push(...response.data);
+      const nextCursor = typeof response.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
+      cursor = !nextCursor || nextCursor === cursor ? null : nextCursor;
+    }
+    return {
+      ...first,
+      data: sortProjectList(dedupeProjectList(data)),
+      nextCursor: null
+    };
   }
   async readThread(threadId) {
     const id = normalizeThreadId(threadId);
@@ -15956,18 +16032,89 @@ function dedupeThreadList(threads) {
   }
   return unique;
 }
-function threadRecency(thread) {
-  for (const key of ["updatedAt", "updated_at", "createdAt", "created_at"]) {
-    const value = thread?.[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim()) {
-      const numeric = Number(value);
-      if (Number.isFinite(numeric)) return numeric;
-      const parsed = Date.parse(value);
-      if (Number.isFinite(parsed)) return parsed;
+function sortThreadList(threads, direction = "desc", sortKey = "recency_at") {
+  const hasTimestamp = (thread) => [
+    "recencyAt",
+    "recency_at",
+    "updatedAt",
+    "updated_at",
+    "createdAt",
+    "created_at"
+  ].some((key) => timestampValue(thread?.[key]) !== null);
+  if (!threads.every(hasTimestamp)) return [...threads];
+  const factor = direction === "asc" ? -1 : 1;
+  const primaryKeys = sortKey === "updated_at" ? ["updatedAt", "updated_at", "createdAt", "created_at"] : ["recencyAt", "recency_at", "updatedAt", "updated_at", "createdAt", "created_at"];
+  return [...threads].sort((left, right) => {
+    const recency = threadTimestamp(right, primaryKeys) - threadTimestamp(left, primaryKeys);
+    if (recency !== 0) return factor * recency;
+    const updated = threadTimestamp(right, ["updatedAt", "updated_at"]) - threadTimestamp(left, ["updatedAt", "updated_at"]);
+    if (updated !== 0) return factor * updated;
+    const created = threadTimestamp(right, ["createdAt", "created_at"]) - threadTimestamp(left, ["createdAt", "created_at"]);
+    if (created !== 0) return factor * created;
+    const leftId = String(left?.id ?? left?.threadId ?? left?.thread_id ?? "");
+    const rightId = String(right?.id ?? right?.threadId ?? right?.thread_id ?? "");
+    return factor * rightId.localeCompare(leftId);
+  });
+}
+function dedupeProjectList(projects) {
+  const seen = /* @__PURE__ */ new Set();
+  const unique = [];
+  for (const project of projects) {
+    if (!isObject2(project)) {
+      unique.push(project);
+      continue;
     }
+    const id = String(project.id ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    unique.push(project);
+  }
+  return unique;
+}
+function sortProjectList(projects) {
+  if (!projects.every((project) => Number.isFinite(Number(project?.position)))) {
+    return [...projects];
+  }
+  return [...projects].sort((left, right) => {
+    const position = Number(left.position) - Number(right.position);
+    if (position !== 0) return position;
+    return String(left.id ?? "").localeCompare(String(right.id ?? ""));
+  });
+}
+function threadRecency(thread) {
+  return threadTimestamp(thread, [
+    "recencyAt",
+    "recency_at",
+    "updatedAt",
+    "updated_at",
+    "createdAt",
+    "created_at"
+  ]);
+}
+function threadTimestamp(thread, keys) {
+  for (const key of keys) {
+    const value = thread?.[key];
+    const timestamp = timestampValue(value);
+    if (timestamp !== null) return timestamp;
   }
   return 0;
+}
+function timestampValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.abs(value) < 1e11 ? value * 1e3 : value;
+  }
+  if (typeof value !== "string" || !value.trim()) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return Math.abs(numeric) < 1e11 ? numeric * 1e3 : numeric;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function isUnsupportedThreadSort(error2) {
+  if (error2?.code && error2.code !== "APP_SERVER_ERROR") return false;
+  const message = String(error2?.message || error2 || "").toLowerCase();
+  return message.includes("recency_at") || message.includes("sortdirection") || message.includes("sort direction") || message.includes("sort key") || message.includes("sort_key") || message.includes("unsupported sort") || message.includes("unknown sort");
 }
 function isActiveWriterConflict(error2) {
   return error2?.code === "APP_SERVER_ERROR" && typeof error2?.message === "string" && /already has an active writer/i.test(error2.message);
@@ -16030,6 +16177,19 @@ function filterThreadList(result, allowedProjects) {
   return {
     ...result,
     data: result.data.filter((thread) => Boolean(thread?.cwd && safeProjectPath(thread.cwd, allowedProjects)))
+  };
+}
+function filterProjectList(result, allowedProjects) {
+  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
+  return {
+    ...result,
+    data: result.data.filter((project) => {
+      const roots = Array.isArray(project?.roots) ? project.roots : [];
+      return roots.some((root) => {
+        const projectPath = typeof root === "string" ? root : root?.path;
+        return Boolean(projectPath && safeProjectPath(projectPath, allowedProjects));
+      });
+    })
   };
 }
 
@@ -16477,6 +16637,7 @@ function unwrapRelayFrame(message) {
 var COMMAND_PERMISSIONS = Object.freeze({
   "host.get_status": "readThreads",
   "model.list": "readThreads",
+  "project.list": "readThreads",
   "thread.list": "readThreads",
   "thread.read": "readThreads",
   // A metadata-only status read keeps the mobile timeline in sync without
@@ -16509,7 +16670,7 @@ function validateRelayCommand(message, config2) {
     throw new RelayError("MESSAGE_EXPIRED", "\u547D\u4EE4\u65F6\u95F4\u6233\u65E0\u6548\u6216\u5DF2\u8FC7\u671F");
   }
   const permission = COMMAND_PERMISSIONS[commandType];
-  if (config2.readOnly && !["host.get_status", "model.list", "thread.list", "thread.read", "thread.status", "thread.resume", "thread.select", "sync.request", "ping"].includes(commandType)) {
+  if (config2.readOnly && !["host.get_status", "model.list", "project.list", "thread.list", "thread.read", "thread.status", "thread.resume", "thread.select", "sync.request", "ping"].includes(commandType)) {
     throw new RelayError("COMMAND_NOT_ALLOWED", "\u63D2\u4EF6\u5F53\u524D\u5904\u4E8E\u53EA\u8BFB\u6A21\u5F0F");
   }
   if (permission && !config2.permissions[permission]) {
@@ -16606,6 +16767,8 @@ var CommandRouter = class {
   #completed = /* @__PURE__ */ new Map();
   #inflight = /* @__PURE__ */ new Map();
   #sharedReads = /* @__PURE__ */ new Map();
+  #threadReadTails = /* @__PURE__ */ new Map();
+  #threadSnapshotRevisions = /* @__PURE__ */ new Map();
   #selectedThreadId = null;
   constructor({ configStore, appServer, service: service2, logger }) {
     this.configStore = configStore;
@@ -16657,7 +16820,7 @@ var CommandRouter = class {
     }
   }
   async #executeSharedRead(command, envelope) {
-    if (!["thread.list", "thread.read", "thread.status"].includes(command.type)) {
+    if (!["project.list", "thread.list", "thread.read", "thread.status"].includes(command.type)) {
       return this.#execute(command, envelope);
     }
     const key = JSON.stringify({
@@ -16667,10 +16830,16 @@ var CommandRouter = class {
     });
     const existing = this.#sharedReads.get(key);
     if (existing) return existing;
-    const pending = this.#execute(command, envelope).finally(() => {
+    const threadId = command.type === "thread.read" || command.type === "thread.status" ? String(command.threadId || envelope.threadId || "").trim() : "";
+    const previous = threadId ? this.#threadReadTails.get(threadId) : null;
+    const pending = (previous ? previous.catch(() => void 0) : Promise.resolve()).then(() => this.#execute(command, envelope)).finally(() => {
       if (this.#sharedReads.get(key) === pending) this.#sharedReads.delete(key);
+      if (threadId && this.#threadReadTails.get(threadId) === pending) {
+        this.#threadReadTails.delete(threadId);
+      }
     });
     this.#sharedReads.set(key, pending);
+    if (threadId) this.#threadReadTails.set(threadId, pending);
     return pending;
   }
   #failure(config2, message, fingerprint, error2) {
@@ -16696,25 +16865,29 @@ var CommandRouter = class {
     switch (command.type) {
       case "model.list":
         return this.appServer.listModels(command);
+      case "project.list":
+        return filterProjectList(await this.appServer.listProjects(command), this.configStore.get().allowedProjects);
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
+        const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         const readThread = this.appServer.readThreadSnapshot || this.appServer.readThread;
         const result = compactThreadReadResult(
           await readThread.call(
             this.appServer,
-            requireString(command.threadId || envelope.threadId, "threadId")
+            threadId
           )
         );
         this.#assertThreadResultAllowed(result);
-        return this.service.prepareResourceImages ? this.service.prepareResourceImages(result) : result;
+        const prepared = this.service.prepareResourceImages ? this.service.prepareResourceImages(result) : result;
+        return this.#annotateThreadSnapshot(threadId, await prepared, "read");
       }
       case "thread.status": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
         const result = await readStatus.call(this.appServer, threadId);
         this.#assertThreadResultAllowed(result);
-        return result;
+        return this.#annotateThreadSnapshot(threadId, result, "status");
       }
       case "thread.create": {
         const cwd = this.#allowedCwd(command.cwd, true);
@@ -16802,6 +16975,18 @@ var CommandRouter = class {
   #remember(requestId, fingerprint, response) {
     this.#completed.set(requestId, { fingerprint, response });
     if (this.#completed.size > 500) this.#completed.delete(this.#completed.keys().next().value);
+  }
+  #annotateThreadSnapshot(threadId, result, source) {
+    const id = String(threadId || "").trim();
+    if (!id || !result || typeof result !== "object") return result;
+    const revision = (this.#threadSnapshotRevisions.get(id) || 0) + 1;
+    this.#threadSnapshotRevisions.set(id, revision);
+    return {
+      ...result,
+      snapshotRevision: revision,
+      snapshotSource: source,
+      snapshotObservedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
   }
 };
 function commandFingerprint(message) {
@@ -18072,10 +18257,24 @@ var ConnectorService = class extends EventEmitter4 {
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
     const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
+    let projects = { data: [], nextCursor: null };
+    if (typeof this.appServer.listProjects === "function") {
+      try {
+        projects = filterProjectList(
+          await this.appServer.listProjects({ limit: 100 }),
+          allowedProjects
+        );
+      } catch (error2) {
+        this.logger.warn("connector", "\u9879\u76EE\u5217\u8868\u4E0D\u53EF\u7528\uFF0C\u4F7F\u7528\u4EFB\u52A1\u76EE\u5F55\u56DE\u9000", {
+          message: error2.message
+        });
+      }
+    }
     return {
       mode: "snapshot",
       status: await this.status(),
       threads,
+      projects,
       latestSequence: this.eventBuffer.latestSequence()
     };
   }

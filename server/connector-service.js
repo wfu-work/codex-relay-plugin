@@ -9,7 +9,7 @@ import { Logger } from "./logger.js";
 import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
 import { RelayClient } from "./relay-client.js";
 import { prepareEventImages } from "./resource-images.js";
-import { filterThreadList, safeProjectPath } from "./utils.js";
+import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
 
 export class ConnectorService extends EventEmitter {
   #unsupportedNotificationMethods = new Set();
@@ -206,10 +206,24 @@ export class ConnectorService extends EventEmitter {
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
     const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
+    let projects = { data: [], nextCursor: null };
+    if (typeof this.appServer.listProjects === "function") {
+      try {
+        projects = filterProjectList(
+          await this.appServer.listProjects({ limit: 100 }),
+          allowedProjects,
+        );
+      } catch (error) {
+        this.logger.warn("connector", "项目列表不可用，使用任务目录回退", {
+          message: error.message,
+        });
+      }
+    }
     return {
       mode: "snapshot",
       status: await this.status(),
       threads,
+      projects,
       latestSequence: this.eventBuffer.latestSequence(),
     };
   }

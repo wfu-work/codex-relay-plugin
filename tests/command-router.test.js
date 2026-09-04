@@ -30,6 +30,16 @@ function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", thread
         nextCursor: null,
       };
     },
+    listProjects: async (params) => {
+      calls.push(["listProjects", params]);
+      return {
+        data: [
+          { id: "project-allowed", roots: [{ path: "/workspace/allowed/demo" }] },
+          { id: "project-private", roots: [{ path: "/workspace/private" }] },
+        ],
+        nextCursor: null,
+      };
+    },
     readThread: async (threadId) => (calls.push(["readThread", threadId]), { thread: { id: threadId, cwd: threadCwd, turns: threadTurns } }),
     readThreadStatus: async (threadId) => (calls.push(["readThreadStatus", threadId]), {
       thread: { id: threadId, cwd: threadCwd, status: { type: "active", activeFlags: [] } },
@@ -69,6 +79,14 @@ test("thread listing is constrained by the project whitelist", async () => {
   assert.equal(response.success, true);
   assert.equal(calls.find(([name]) => name === "listThreads")[1].cwd, undefined);
   assert.deepEqual(response.result.data.map((thread) => thread.id), ["thread-allowed"]);
+});
+
+test("project listing is constrained by the project whitelist", async () => {
+  const { calls, router } = setup();
+  const response = await router.handle(envelope({ type: "project.list" }));
+  assert.equal(response.success, true);
+  assert.equal(calls.find(([name]) => name === "listProjects")[1].limit, undefined);
+  assert.deepEqual(response.result.data.map((project) => project.id), ["project-allowed"]);
 });
 
 test("thread status uses the metadata-only App Server read", async () => {
@@ -162,6 +180,48 @@ test("concurrent thread listings with different request ids share one App Server
   assert.equal(first.requestId, "list-1");
   assert.equal(second.requestId, "list-2");
   assert.equal(calls.filter(([name]) => name === "listThreads").length, 1);
+});
+
+test("serializes status/read snapshots and annotates monotonic revisions", async () => {
+  const { config } = setup();
+  const calls = [];
+  let releaseStatus;
+  const statusGate = new Promise((resolve) => { releaseStatus = resolve; });
+  const appServer = {
+    start: async () => {},
+    readThreadStatusSnapshot: async (threadId) => {
+      calls.push("status:start");
+      await statusGate;
+      calls.push("status:end");
+      return { thread: { id: threadId, cwd: "/workspace/allowed/demo", status: { type: "active" } } };
+    },
+    readThreadSnapshot: async (threadId) => {
+      calls.push("read");
+      return { thread: { id: threadId, cwd: "/workspace/allowed/demo", turns: [] } };
+    },
+  };
+  const router = new CommandRouter({
+    configStore: { get: () => structuredClone(config) },
+    appServer,
+    service: { status: async () => ({ ok: true }), syncAfter: async () => ({ mode: "snapshot" }) },
+    logger: { warn() {} },
+  });
+
+  const statusPromise = router.handle(envelope({ type: "thread.status", threadId: "thread-allowed" }, "status-serial"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const readPromise = router.handle(envelope({ type: "thread.read", threadId: "thread-allowed" }, "read-serial"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["status:start"]);
+  releaseStatus();
+  const [status, read] = await Promise.all([statusPromise, readPromise]);
+
+  assert.deepEqual(calls, ["status:start", "status:end", "read"]);
+  assert.equal(status.success, true);
+  assert.equal(read.success, true);
+  assert.equal(status.result.snapshotRevision, 1);
+  assert.equal(read.result.snapshotRevision, 2);
+  assert.equal(status.result.snapshotSource, "status");
+  assert.equal(read.result.snapshotSource, "read");
 });
 
 test("large thread histories are compacted below the Relay frame budget", async () => {

@@ -1,6 +1,6 @@
 import { asRelayError, RelayError } from "./errors.js";
 import { commandError, commandResult, validateRelayCommand } from "./protocol.js";
-import { filterThreadList, safeProjectPath } from "./utils.js";
+import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
 
 // A thread can contain unbounded command output. Returning that complete
 // history through a Relay frame can exceed the authenticated connection's
@@ -16,6 +16,8 @@ export class CommandRouter {
   #completed = new Map();
   #inflight = new Map();
   #sharedReads = new Map();
+  #threadReadTails = new Map();
+  #threadSnapshotRevisions = new Map();
   #selectedThreadId = null;
 
   constructor({ configStore, appServer, service, logger }) {
@@ -73,7 +75,7 @@ export class CommandRouter {
   }
 
   async #executeSharedRead(command, envelope) {
-    if (!['thread.list', 'thread.read', 'thread.status'].includes(command.type)) {
+    if (!['project.list', 'thread.list', 'thread.read', 'thread.status'].includes(command.type)) {
       return this.#execute(command, envelope);
     }
     const key = JSON.stringify({
@@ -83,10 +85,24 @@ export class CommandRouter {
     });
     const existing = this.#sharedReads.get(key);
     if (existing) return existing;
-    const pending = this.#execute(command, envelope).finally(() => {
-      if (this.#sharedReads.get(key) === pending) this.#sharedReads.delete(key);
-    });
+    // `thread.status` and `thread.read` are two projections of the same
+    // persisted snapshot. Serialize them per thread so an older status read
+    // cannot finish after a newer full read and reintroduce a stale terminal
+    // state on the client. Different threads remain fully concurrent.
+    const threadId = command.type === 'thread.read' || command.type === 'thread.status'
+      ? String(command.threadId || envelope.threadId || '').trim()
+      : '';
+    const previous = threadId ? this.#threadReadTails.get(threadId) : null;
+    const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(() => this.#execute(command, envelope))
+      .finally(() => {
+        if (this.#sharedReads.get(key) === pending) this.#sharedReads.delete(key);
+        if (threadId && this.#threadReadTails.get(threadId) === pending) {
+          this.#threadReadTails.delete(threadId);
+        }
+      });
     this.#sharedReads.set(key, pending);
+    if (threadId) this.#threadReadTails.set(threadId, pending);
     return pending;
   }
 
@@ -114,27 +130,31 @@ export class CommandRouter {
     switch (command.type) {
       case "model.list":
         return this.appServer.listModels(command);
+      case "project.list":
+        return filterProjectList(await this.appServer.listProjects(command), this.configStore.get().allowedProjects);
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
+        const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         const readThread = this.appServer.readThreadSnapshot || this.appServer.readThread;
         const result = compactThreadReadResult(
           await readThread.call(
             this.appServer,
-            requireString(command.threadId || envelope.threadId, "threadId"),
+            threadId,
           ),
         );
         this.#assertThreadResultAllowed(result);
-        return this.service.prepareResourceImages
+        const prepared = this.service.prepareResourceImages
           ? this.service.prepareResourceImages(result)
           : result;
+        return this.#annotateThreadSnapshot(threadId, await prepared, "read");
       }
       case "thread.status": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
         const result = await readStatus.call(this.appServer, threadId);
         this.#assertThreadResultAllowed(result);
-        return result;
+        return this.#annotateThreadSnapshot(threadId, result, "status");
       }
       case "thread.create": {
         const cwd = this.#allowedCwd(command.cwd, true);
@@ -226,6 +246,19 @@ export class CommandRouter {
   #remember(requestId, fingerprint, response) {
     this.#completed.set(requestId, { fingerprint, response });
     if (this.#completed.size > 500) this.#completed.delete(this.#completed.keys().next().value);
+  }
+
+  #annotateThreadSnapshot(threadId, result, source) {
+    const id = String(threadId || '').trim();
+    if (!id || !result || typeof result !== 'object') return result;
+    const revision = (this.#threadSnapshotRevisions.get(id) || 0) + 1;
+    this.#threadSnapshotRevisions.set(id, revision);
+    return {
+      ...result,
+      snapshotRevision: revision,
+      snapshotSource: source,
+      snapshotObservedAt: new Date().toISOString(),
+    };
   }
 }
 

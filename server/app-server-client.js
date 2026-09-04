@@ -13,6 +13,7 @@ export class AppServerClient extends EventEmitter {
   #nextId = 1;
   #starting = null;
   #paginatedThreads = null;
+  #threadListSortMode = null;
   // `thread/read` only reads persisted history; it does not subscribe this
   // App Server connection to subsequent turn/item notifications. Keep track
   // of threads resumed in this process so a remote client can receive live
@@ -69,6 +70,7 @@ export class AppServerClient extends EventEmitter {
     this.state = "starting";
     this.lastError = null;
     this.#paginatedThreads = null;
+    this.#threadListSortMode = null;
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
@@ -111,6 +113,7 @@ export class AppServerClient extends EventEmitter {
     this.#process = null;
     this.state = "stopped";
     this.#paginatedThreads = null;
+    this.#threadListSortMode = null;
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
@@ -151,12 +154,61 @@ export class AppServerClient extends EventEmitter {
 
   async listThreads(params = {}) {
     const limit = Math.min(Number(params.limit || 50), 100);
+    const requestedSortKey = params.sortKey || "recency_at";
+    const requestedSortDirection = params.sortDirection || "desc";
+    const useDefaultSort = params.sortKey == null && params.sortDirection == null;
+    let effectiveSortKey = requestedSortKey;
+    let includeSortDirection = true;
+    if (useDefaultSort && this.#threadListSortMode) {
+      [effectiveSortKey, includeSortDirection] = this.#threadListSortMode;
+    }
     const requestPage = (cursor) => this.request("thread/list", {
       cursor,
       limit,
-      sortKey: params.sortKey || "updated_at",
+      sortKey: effectiveSortKey,
+      ...(includeSortDirection ? { sortDirection: requestedSortDirection } : {}),
       ...(params.cwd ? { cwd: params.cwd } : {}),
     });
+
+    // `recency_at` is the sort key used by the current Codex sidebar. Older
+    // App Server builds only know `updated_at` (and some reject the newer
+    // sortDirection parameter as well), so make the compatibility downgrade
+    // once per catalog request instead of failing the whole sidebar refresh.
+    const requestFirstPage = async () => {
+      if (useDefaultSort && this.#threadListSortMode) {
+        return requestPage(null);
+      }
+      try {
+        const result = await requestPage(null);
+        if (useDefaultSort) this.#threadListSortMode = [effectiveSortKey, includeSortDirection];
+        return result;
+      } catch (error) {
+        if (requestedSortKey !== "recency_at" || !isUnsupportedThreadSort(error)) {
+          throw error;
+        }
+        // Try the new key without the optional direction first. This handles
+        // servers that understand `recency_at` but predate `sortDirection`.
+        const fallbacks = [
+          ["recency_at", false],
+          ["updated_at", true],
+          ["updated_at", false],
+        ];
+        let lastError = error;
+        for (const [sortKey, withDirection] of fallbacks) {
+          effectiveSortKey = sortKey;
+          includeSortDirection = withDirection;
+          try {
+            const result = await requestPage(null);
+            if (useDefaultSort) this.#threadListSortMode = [effectiveSortKey, includeSortDirection];
+            return result;
+          } catch (fallbackError) {
+            if (!isUnsupportedThreadSort(fallbackError)) throw fallbackError;
+            lastError = fallbackError;
+          }
+        }
+        throw lastError;
+      }
+    };
 
     // A cursor supplied by a caller means it explicitly requested one page.
     // Without a cursor, fetch every page so callers such as the Relay sidebar
@@ -164,9 +216,10 @@ export class AppServerClient extends EventEmitter {
     // page of threads.  The app server currently returns at most 100 items
     // per page; the guard prevents a malformed cursor chain from looping
     // forever while still allowing a large local history to be synchronized.
-    if (params.cursor != null) return requestPage(params.cursor);
-
-    const first = await requestPage(null);
+    const first = params.cursor != null
+      ? await requestPage(params.cursor)
+      : await requestFirstPage();
+    if (params.cursor != null) return first;
     if (!first || !Array.isArray(first.data)) return first;
 
     const data = [...first.data];
@@ -196,7 +249,11 @@ export class AppServerClient extends EventEmitter {
       // the stable identity shared by desktop and Relay; collapse duplicates
       // before exposing the catalog so clients do not render two rows for one
       // task during eventual convergence.
-      data: dedupeThreadList(data),
+      data: sortThreadList(
+        dedupeThreadList(data),
+        requestedSortDirection,
+        effectiveSortKey,
+      ),
       nextCursor: null,
     };
   }
@@ -207,6 +264,41 @@ export class AppServerClient extends EventEmitter {
       limit: Math.min(Number(params.limit || 100), 100),
       includeHidden: params.includeHidden === true,
     });
+  }
+
+  async listProjects(params = {}) {
+    const limit = Math.min(Number(params.limit || 100), 100);
+    const requestPage = (cursor) => this.request("project/list", {
+      cursor,
+      limit,
+    });
+
+    if (params.cursor != null) return requestPage(params.cursor);
+
+    const first = await requestPage(null);
+    if (!first || !Array.isArray(first.data)) return first;
+
+    const data = [...first.data];
+    let cursor = typeof first.nextCursor === "string" && first.nextCursor
+      ? first.nextCursor
+      : null;
+    const seenCursors = new Set();
+    for (let page = 1; cursor && page < 1000; page += 1) {
+      if (seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+      const response = await requestPage(cursor);
+      if (!response || !Array.isArray(response.data)) break;
+      data.push(...response.data);
+      const nextCursor = typeof response.nextCursor === "string" && response.nextCursor
+        ? response.nextCursor
+        : null;
+      cursor = !nextCursor || nextCursor === cursor ? null : nextCursor;
+    }
+    return {
+      ...first,
+      data: sortProjectList(dedupeProjectList(data)),
+      nextCursor: null,
+    };
   }
 
   async readThread(threadId) {
@@ -521,18 +613,110 @@ function dedupeThreadList(threads) {
   return unique;
 }
 
-function threadRecency(thread) {
-  for (const key of ["updatedAt", "updated_at", "createdAt", "created_at"]) {
-    const value = thread?.[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim()) {
-      const numeric = Number(value);
-      if (Number.isFinite(numeric)) return numeric;
-      const parsed = Date.parse(value);
-      if (Number.isFinite(parsed)) return parsed;
+function sortThreadList(threads, direction = "desc", sortKey = "recency_at") {
+  // Preserve the App Server's order when a legacy/malformed response omits
+  // timestamps. Sorting a partially populated catalog by arbitrary IDs would
+  // make the fallback less compatible with older Codex releases.
+  const hasTimestamp = (thread) => [
+    "recencyAt",
+    "recency_at",
+    "updatedAt",
+    "updated_at",
+    "createdAt",
+    "created_at",
+  ].some((key) => timestampValue(thread?.[key]) !== null);
+  if (!threads.every(hasTimestamp)) return [...threads];
+
+  const factor = direction === "asc" ? -1 : 1;
+  const primaryKeys = sortKey === "updated_at"
+    ? ["updatedAt", "updated_at", "createdAt", "created_at"]
+    : ["recencyAt", "recency_at", "updatedAt", "updated_at", "createdAt", "created_at"];
+  return [...threads].sort((left, right) => {
+    const recency = threadTimestamp(right, primaryKeys) -
+      threadTimestamp(left, primaryKeys);
+    if (recency !== 0) return factor * recency;
+    const updated = threadTimestamp(right, ["updatedAt", "updated_at"]) -
+      threadTimestamp(left, ["updatedAt", "updated_at"]);
+    if (updated !== 0) return factor * updated;
+    const created = threadTimestamp(right, ["createdAt", "created_at"]) -
+      threadTimestamp(left, ["createdAt", "created_at"]);
+    if (created !== 0) return factor * created;
+    const leftId = String(left?.id ?? left?.threadId ?? left?.thread_id ?? "");
+    const rightId = String(right?.id ?? right?.threadId ?? right?.thread_id ?? "");
+    return factor * rightId.localeCompare(leftId);
+  });
+}
+
+function dedupeProjectList(projects) {
+  const seen = new Set();
+  const unique = [];
+  for (const project of projects) {
+    if (!isObject(project)) {
+      unique.push(project);
+      continue;
     }
+    const id = String(project.id ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    unique.push(project);
+  }
+  return unique;
+}
+
+function sortProjectList(projects) {
+  if (!projects.every((project) => Number.isFinite(Number(project?.position)))) {
+    return [...projects];
+  }
+  return [...projects].sort((left, right) => {
+    const position = Number(left.position) - Number(right.position);
+    if (position !== 0) return position;
+    return String(left.id ?? "").localeCompare(String(right.id ?? ""));
+  });
+}
+
+function threadRecency(thread) {
+  return threadTimestamp(thread, [
+    "recencyAt",
+    "recency_at",
+    "updatedAt",
+    "updated_at",
+    "createdAt",
+    "created_at",
+  ]);
+}
+
+function threadTimestamp(thread, keys) {
+  for (const key of keys) {
+    const value = thread?.[key];
+    const timestamp = timestampValue(value);
+    if (timestamp !== null) return timestamp;
   }
   return 0;
+}
+
+function timestampValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.abs(value) < 100_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value !== "string" || !value.trim()) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return Math.abs(numeric) < 100_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isUnsupportedThreadSort(error) {
+  if (error?.code && error.code !== "APP_SERVER_ERROR") return false;
+  const message = String(error?.message || error || "").toLowerCase();
+  return message.includes("recency_at") ||
+    message.includes("sortdirection") ||
+    message.includes("sort direction") ||
+    message.includes("sort key") ||
+    message.includes("sort_key") ||
+    message.includes("unsupported sort") ||
+    message.includes("unknown sort");
 }
 
 function isActiveWriterConflict(error) {

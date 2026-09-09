@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
+import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +23,10 @@ export class AppServerClient extends EventEmitter {
   #resumedThreads = new Set();
   #resumingThreads = new Map();
   #resumeRetryAt = new Map();
+  #rollouts = new RolloutSnapshots();
+  #observedThreads = new Map();
+  #rolloutTimer = null;
+  #pollingRollouts = false;
   static MAX_RESUMED_THREADS = 1000;
 
   static APPROVAL_METHODS = new Set([
@@ -128,6 +133,10 @@ export class AppServerClient extends EventEmitter {
   }
 
   async stop() {
+    clearInterval(this.#rolloutTimer);
+    this.#rolloutTimer = null;
+    this.#observedThreads.clear();
+    this.#rollouts.clear();
     if (!this.#process) return;
     const child = this.#process;
     this.#process = null;
@@ -274,6 +283,12 @@ export class AppServerClient extends EventEmitter {
         cursor = nextCursor;
       }
     }
+    // Keep the visible recent catalog in step with foreign Desktop writers.
+    // Other rows are hydrated when selected; do not scan every old transcript
+    // on each catalog refresh.
+    for (let index = 0; index < Math.min(data.length, 5); index += 1) {
+      data[index] = await this.#reconcileRollout(data[index], false);
+    }
     return {
       ...first,
       // Some App Server builds can repeat a historical thread at a page
@@ -282,7 +297,7 @@ export class AppServerClient extends EventEmitter {
       // before exposing the catalog so clients do not render two rows for one
       // task during eventual convergence.
       data: sortThreadList(
-        dedupeThreadList(data),
+        dedupeThreadList(data.map((thread) => this.#observedThreads.get(thread.id)?.projected || thread)),
         requestedSortDirection,
         effectiveSortKey,
       ),
@@ -350,12 +365,13 @@ export class AppServerClient extends EventEmitter {
    */
   async readThreadSnapshot(threadId) {
     const id = normalizeThreadId(threadId);
-    if (this.#paginatedThreads === true) return this.#readPaginatedThread(id);
-    return this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
+    const result = this.#paginatedThreads === true ? await this.#readPaginatedThread(id)
+      : await this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
       if (!isPaginatedThreadReadError(error)) throw error;
       this.#paginatedThreads = true;
       return this.#readPaginatedThread(id);
     });
+    return this.#reconcileRollout(result, true);
   }
 
   // Unlike readThread(), this explicitly disables includeTurns. Codex still
@@ -367,7 +383,57 @@ export class AppServerClient extends EventEmitter {
   async readThreadStatus(threadId, { ensureResumed = false } = {}) {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
-    return this.request("thread/read", { threadId: id, includeTurns: false });
+    const result = await this.request("thread/read", { threadId: id, includeTurns: false });
+    return this.#reconcileRollout(result, false);
+  }
+
+  async #reconcileRollout(result, includeTurns) {
+    const thread = result?.thread || result;
+    // This process's in-memory state is authoritative for its own writers.
+    // A foreign notLoaded thread needs the latest Desktop rollout instead.
+    if (thread?.status?.type !== "notLoaded" || this.#resumedThreads.has(thread.id)) return result;
+    const snapshot = await this.#rollouts.read(thread);
+    if (!snapshot) return result;
+    const observed = this.#observedThreads.get(thread.id);
+    for (const [method, params] of snapshot.notifications) this.emit("notification", method, params);
+    const projected = applyRolloutSnapshot(thread, snapshot, { includeTurns });
+    this.#observedThreads.delete(thread.id);
+    this.#observedThreads.set(thread.id, { thread: { ...thread, turns: [] }, projected: { ...projected, turns: [] },
+      touchedAt: Date.now(), updatedAt: snapshot.updatedAt });
+    while (this.#observedThreads.size > 8) this.#observedThreads.delete(this.#observedThreads.keys().next().value);
+    if (observed && observed.updatedAt !== snapshot.updatedAt) {
+      this.emit("notification", "thread/status/changed", { threadId: thread.id, turnId: snapshot.currentTurn.id,
+        thread: { ...projected, turns: [] } });
+    }
+    this.#rolloutTimer ??= setInterval(() => this.#pollRollouts(), 1000);
+    this.#rolloutTimer.unref();
+    return result?.thread ? { ...result, thread: projected } : projected;
+  }
+
+  async #pollRollouts() {
+    if (this.#pollingRollouts) return;
+    this.#pollingRollouts = true;
+    try {
+      for (const [id, observed] of [...this.#observedThreads]) {
+        if (Date.now() - observed.touchedAt > 60_000 || this.#resumedThreads.has(id)) {
+          this.#observedThreads.delete(id);
+          continue;
+        }
+        const snapshot = await this.#rollouts.read(observed.thread);
+        if (!this.#rolloutTimer || this.#observedThreads.get(id) !== observed) continue;
+        if (!snapshot) continue;
+        for (const [method, params] of snapshot.notifications) this.emit("notification", method, params);
+        if (observed.updatedAt !== snapshot.updatedAt) {
+          observed.updatedAt = snapshot.updatedAt;
+          observed.projected = applyRolloutSnapshot(observed.thread, snapshot);
+          this.emit("notification", "thread/status/changed", { threadId: id, turnId: snapshot.currentTurn.id, thread: observed.projected });
+        }
+      }
+      if (!this.#observedThreads.size) {
+        clearInterval(this.#rolloutTimer);
+        this.#rolloutTimer = null;
+      }
+    } finally { this.#pollingRollouts = false; }
   }
 
   /** Metadata-only persisted read used by snapshot reconciliation. */

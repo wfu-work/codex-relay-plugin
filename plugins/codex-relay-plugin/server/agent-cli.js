@@ -2,8 +2,8 @@
 
 // server/runtime.js
 import crypto7 from "node:crypto";
-import fs7 from "node:fs/promises";
-import path8 from "node:path";
+import fs8 from "node:fs/promises";
+import path9 from "node:path";
 
 // server/connector-service.js
 import { EventEmitter as EventEmitter4 } from "node:events";
@@ -28,6 +28,274 @@ function asRelayError(error, fallbackCode = "INTERNAL_ERROR") {
   return new RelayError(fallbackCode, error instanceof Error ? error.message : String(error));
 }
 
+// server/rollout-snapshot.js
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+
+// server/rollout-items.js
+function rolloutItem(item) {
+  if (!item || typeof item.id !== "string") return null;
+  const common = { id: item.id };
+  switch (item.type) {
+    case "UserMessage":
+      return { ...common, type: "userMessage", content: (item.content || []).flatMap((part) => {
+        if (part.type === "text") return [{ type: "text", text: text(part.text) }];
+        if (part.type === "local_image") return [{ type: "localImage", path: part.path }];
+        if (part.type === "image") return [{ type: "image", url: part.image_url }];
+        return [];
+      }) };
+    case "AgentMessage":
+      return {
+        ...common,
+        type: "agentMessage",
+        phase: item.phase,
+        text: text((item.content || []).filter((part) => part.type === "Text").map((part) => part.text).join(""))
+      };
+    case "Reasoning":
+      return { ...common, type: "reasoning", summary: (item.summary_text || []).map(text), content: [] };
+    case "CommandExecution":
+      return {
+        ...common,
+        type: "commandExecution",
+        command: text(Array.isArray(item.command) ? item.command.join(" ") : item.command),
+        cwd: item.cwd,
+        status: item.status,
+        aggregatedOutput: text(item.aggregated_output),
+        exitCode: item.exit_code,
+        durationMs: duration(item.duration)
+      };
+    case "McpToolCall":
+      return {
+        ...common,
+        type: "mcpToolCall",
+        server: item.server,
+        tool: item.tool,
+        status: item.status,
+        result: { content: (item.result?.content || []).filter((part) => part.type === "text").map((part) => ({ type: "text", text: text(part.text) })) },
+        durationMs: duration(item.duration)
+      };
+    case "FileChange":
+      return {
+        ...common,
+        type: "fileChange",
+        status: item.status,
+        changes: Object.entries(item.changes || {}).slice(0, 128).map(([path10, change]) => ({
+          path: path10,
+          kind: { type: change.type, move_path: change.move_path },
+          diff: text(change.unified_diff)
+        }))
+      };
+    default:
+      return null;
+  }
+}
+function text(value) {
+  if (typeof value !== "string") return "";
+  return value.length > 32768 ? `${value.slice(0, 32768)}
+\u2026\uFF08\u5386\u53F2\u8F93\u51FA\u5DF2\u622A\u65AD\uFF09` : value;
+}
+function duration(value) {
+  return value && Number.isFinite(value.secs) ? Math.round(value.secs * 1e3 + (value.nanos || 0) / 1e6) : null;
+}
+
+// server/rollout-snapshot.js
+var UUID = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
+var JOURNAL = new RegExp(`^rollout-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-(${UUID})(?:_${UUID})?\\.jsonl$`, "i");
+var MAX_READ_BYTES = 32 * 1024 * 1024;
+var MAX_LINE_BYTES = 4 * 1024 * 1024;
+var RolloutSnapshots = class {
+  #root;
+  #index = /* @__PURE__ */ new Map();
+  #indexedAt = 0;
+  #indexing;
+  #records = /* @__PURE__ */ new Map();
+  #pending = /* @__PURE__ */ new Map();
+  constructor({ codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), indexIntervalMs = 2e3 } = {}) {
+    this.#root = path.join(codexHome, "sessions");
+    this.indexIntervalMs = indexIntervalMs;
+  }
+  clear() {
+    this.#records.clear();
+  }
+  async read(thread) {
+    if (!thread?.id || !thread.path || !thread.cwd) return null;
+    const existing = this.#pending.get(thread.id);
+    if (existing) return existing;
+    const pending = this.#read(thread).catch(() => null).finally(() => this.#pending.delete(thread.id));
+    this.#pending.set(thread.id, pending);
+    return pending;
+  }
+  async #refreshIndex() {
+    if (this.#indexing) return this.#indexing;
+    if (Date.now() - this.#indexedAt < this.indexIntervalMs) return;
+    this.#indexing = (async () => {
+      const entries = await fs.readdir(this.#root, { recursive: true, withFileTypes: true });
+      const index = /* @__PURE__ */ new Map();
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const match = entry.name.match(JOURNAL);
+        if (!match) continue;
+        const file = path.join(entry.parentPath, entry.name);
+        const files = index.get(match[1]) || [];
+        files.push(file);
+        index.set(match[1], files);
+      }
+      for (const files of index.values()) files.sort().reverse();
+      this.#index = index;
+      this.#indexedAt = Date.now();
+    })().finally(() => {
+      this.#indexing = null;
+    });
+    return this.#indexing;
+  }
+  async #read(thread) {
+    const root = await fs.realpath(this.#root);
+    const original = await fs.realpath(thread.path);
+    if (!inside(root, original)) return null;
+    await this.#refreshIndex();
+    for (const candidate of this.#index.get(thread.id) || [original]) {
+      const file = await fs.realpath(candidate);
+      if (!inside(root, file)) continue;
+      const handle = await fs.open(file, "r");
+      try {
+        const stat = await handle.stat();
+        let record = this.#records.get(thread.id);
+        const reusable = record?.file === file && record.cwd === path.resolve(thread.cwd) && record.ino === stat.ino && stat.size >= record.offset;
+        if (!reusable) {
+          const head = Buffer.alloc(Math.min(MAX_LINE_BYTES, stat.size));
+          const { bytesRead } = await handle.read(head, 0, head.length, 0);
+          const end = head.indexOf(10);
+          if (end < 0 || end >= bytesRead) continue;
+          const meta = JSON.parse(head.subarray(0, end).toString("utf8"));
+          if (meta.type !== "session_meta" || meta.payload?.id !== thread.id || path.resolve(meta.payload?.cwd || "") !== path.resolve(thread.cwd)) continue;
+          if (stat.size > MAX_READ_BYTES) return null;
+          record = {
+            file,
+            cwd: path.resolve(thread.cwd),
+            ino: stat.ino,
+            offset: 0,
+            remainder: Buffer.alloc(0),
+            turns: [],
+            current: null,
+            itemCount: 0,
+            updatedAt: meta.timestamp,
+            complete: true
+          };
+        }
+        const notifications = [];
+        if (stat.size - record.offset > MAX_READ_BYTES) return null;
+        while (record.offset < stat.size) {
+          const chunk = Buffer.alloc(Math.min(256 * 1024, stat.size - record.offset));
+          const { bytesRead } = await handle.read(chunk, 0, chunk.length, record.offset);
+          if (!bytesRead) break;
+          record.offset += bytesRead;
+          let buffer = Buffer.concat([record.remainder, chunk.subarray(0, bytesRead)]);
+          let end;
+          while ((end = buffer.indexOf(10)) >= 0) {
+            const line = buffer.subarray(0, end);
+            buffer = buffer.subarray(end + 1);
+            if (line.length > MAX_LINE_BYTES) {
+              record.complete = false;
+              continue;
+            }
+            if (!line.length) continue;
+            let row;
+            try {
+              row = JSON.parse(line.toString("utf8"));
+            } catch {
+              record.complete = false;
+              continue;
+            }
+            projectRow(record, row, notifications, thread.id);
+          }
+          if (buffer.length > MAX_LINE_BYTES) return null;
+          record.remainder = buffer;
+        }
+        this.#records.delete(thread.id);
+        this.#records.set(thread.id, record);
+        while (this.#records.size > 8) this.#records.delete(this.#records.keys().next().value);
+        if (!record.current || !record.complete) return null;
+        return {
+          file,
+          turns: structuredClone(record.turns),
+          currentTurn: structuredClone(record.current),
+          updatedAt: record.updatedAt,
+          notifications: reusable ? notifications : [],
+          replaced: file !== original
+        };
+      } finally {
+        await handle.close();
+      }
+    }
+    return null;
+  }
+};
+function inside(root, file) {
+  const relative = path.relative(root, file);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+function projectRow(record, row, notifications, threadId) {
+  if (row.type !== "event_msg") return;
+  const event = row.payload;
+  if (!event || event.thread_id && event.thread_id !== threadId) return;
+  if (event.type === "task_started" && event.turn_id) {
+    const turn = {
+      id: event.turn_id,
+      status: "inProgress",
+      startedAt: event.started_at ?? Date.parse(row.timestamp) / 1e3,
+      completedAt: null,
+      durationMs: null,
+      items: []
+    };
+    record.turns.push(turn);
+    record.current = turn;
+    if (record.turns.length > 12) {
+      record.itemCount -= record.turns.shift().items.length;
+    }
+    notifications.push(["turn/started", { threadId, turn: { ...turn, items: [] } }]);
+  } else if (event.type === "item_completed" || event.type === "item_started" || event.type === "item_updated") {
+    const turn = record.turns.find((turn2) => turn2.id === event.turn_id);
+    const item = rolloutItem(event.item);
+    if (!turn || !item) return;
+    const index = turn.items.findIndex((existing) => existing.id === item.id);
+    if (index >= 0) turn.items[index] = item;
+    else {
+      turn.items.push(item);
+      record.itemCount += 1;
+    }
+    while (record.itemCount > 500) {
+      record.turns.find((entry) => entry.items.length)?.items.shift();
+      record.itemCount -= 1;
+    }
+    const method = event.type.replace("item_", "item/");
+    notifications.push([method, { threadId, turnId: turn.id, item }]);
+  } else if (event.type === "task_complete" || event.type === "turn_aborted") {
+    const turn = event.turn_id ? record.turns.find((turn2) => turn2.id === event.turn_id) : record.current;
+    if (!turn) return;
+    turn.status = event.type === "turn_aborted" ? "interrupted" : event.error ? "failed" : "completed";
+    turn.completedAt = event.completed_at ?? Date.parse(row.timestamp) / 1e3;
+    turn.durationMs = event.duration_ms ?? Math.max(0, (turn.completedAt - turn.startedAt) * 1e3);
+    if (event.error) turn.error = { message: String(event.error.message || "\u4EFB\u52A1\u6267\u884C\u5931\u8D25") };
+    notifications.push(["turn/completed", { threadId, turn: { ...turn, items: [] } }]);
+  }
+  record.updatedAt = row.timestamp || record.updatedAt;
+}
+function applyRolloutSnapshot(thread, snapshot, { includeTurns = false } = {}) {
+  if (!snapshot) return thread;
+  const turn = snapshot.currentTurn;
+  const currentTurn = { ...turn, items: [] };
+  const updatedAt = Date.parse(snapshot.updatedAt) / 1e3;
+  return {
+    ...thread,
+    path: snapshot.file,
+    status: { type: turn.status === "inProgress" ? "active" : "idle", activeFlags: [] },
+    currentTurn,
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : thread.updatedAt,
+    ...includeTurns ? { turns: snapshot.turns } : {}
+  };
+}
+
 // server/app-server-client.js
 var execFileAsync = promisify(execFile);
 var AppServerClient = class _AppServerClient extends EventEmitter {
@@ -46,6 +314,10 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   #resumedThreads = /* @__PURE__ */ new Set();
   #resumingThreads = /* @__PURE__ */ new Map();
   #resumeRetryAt = /* @__PURE__ */ new Map();
+  #rollouts = new RolloutSnapshots();
+  #observedThreads = /* @__PURE__ */ new Map();
+  #rolloutTimer = null;
+  #pollingRollouts = false;
   static MAX_RESUMED_THREADS = 1e3;
   static APPROVAL_METHODS = /* @__PURE__ */ new Set([
     "item/commandExecution/requestApproval",
@@ -110,8 +382,8 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     this.#outputLines = lines;
     lines.on("line", (line) => this.#handleLine(line));
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString().trim();
-      if (text) this.logger.info("app-server", text);
+      const text2 = chunk.toString().trim();
+      if (text2) this.logger.info("app-server", text2);
     });
     try {
       await this.request("initialize", {
@@ -151,6 +423,10 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     }
   }
   async stop() {
+    clearInterval(this.#rolloutTimer);
+    this.#rolloutTimer = null;
+    this.#observedThreads.clear();
+    this.#rollouts.clear();
     if (!this.#process) return;
     const child = this.#process;
     this.#process = null;
@@ -273,6 +549,9 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
         cursor = nextCursor;
       }
     }
+    for (let index = 0; index < Math.min(data.length, 5); index += 1) {
+      data[index] = await this.#reconcileRollout(data[index], false);
+    }
     return {
       ...first,
       // Some App Server builds can repeat a historical thread at a page
@@ -281,7 +560,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       // before exposing the catalog so clients do not render two rows for one
       // task during eventual convergence.
       data: sortThreadList(
-        dedupeThreadList(data),
+        dedupeThreadList(data.map((thread) => this.#observedThreads.get(thread.id)?.projected || thread)),
         requestedSortDirection,
         effectiveSortKey
       ),
@@ -338,12 +617,12 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
    */
   async readThreadSnapshot(threadId) {
     const id = normalizeThreadId(threadId);
-    if (this.#paginatedThreads === true) return this.#readPaginatedThread(id);
-    return this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
+    const result = this.#paginatedThreads === true ? await this.#readPaginatedThread(id) : await this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
       if (!isPaginatedThreadReadError(error)) throw error;
       this.#paginatedThreads = true;
       return this.#readPaginatedThread(id);
     });
+    return this.#reconcileRollout(result, true);
   }
   // Unlike readThread(), this explicitly disables includeTurns. Codex still
   // returns the current thread status, but does not stream the full history.
@@ -354,7 +633,62 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   async readThreadStatus(threadId, { ensureResumed = false } = {}) {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
-    return this.request("thread/read", { threadId: id, includeTurns: false });
+    const result = await this.request("thread/read", { threadId: id, includeTurns: false });
+    return this.#reconcileRollout(result, false);
+  }
+  async #reconcileRollout(result, includeTurns) {
+    const thread = result?.thread || result;
+    if (thread?.status?.type !== "notLoaded" || this.#resumedThreads.has(thread.id)) return result;
+    const snapshot = await this.#rollouts.read(thread);
+    if (!snapshot) return result;
+    const observed = this.#observedThreads.get(thread.id);
+    for (const [method, params] of snapshot.notifications) this.emit("notification", method, params);
+    const projected = applyRolloutSnapshot(thread, snapshot, { includeTurns });
+    this.#observedThreads.delete(thread.id);
+    this.#observedThreads.set(thread.id, {
+      thread: { ...thread, turns: [] },
+      projected: { ...projected, turns: [] },
+      touchedAt: Date.now(),
+      updatedAt: snapshot.updatedAt
+    });
+    while (this.#observedThreads.size > 8) this.#observedThreads.delete(this.#observedThreads.keys().next().value);
+    if (observed && observed.updatedAt !== snapshot.updatedAt) {
+      this.emit("notification", "thread/status/changed", {
+        threadId: thread.id,
+        turnId: snapshot.currentTurn.id,
+        thread: { ...projected, turns: [] }
+      });
+    }
+    this.#rolloutTimer ??= setInterval(() => this.#pollRollouts(), 1e3);
+    this.#rolloutTimer.unref();
+    return result?.thread ? { ...result, thread: projected } : projected;
+  }
+  async #pollRollouts() {
+    if (this.#pollingRollouts) return;
+    this.#pollingRollouts = true;
+    try {
+      for (const [id, observed] of [...this.#observedThreads]) {
+        if (Date.now() - observed.touchedAt > 6e4 || this.#resumedThreads.has(id)) {
+          this.#observedThreads.delete(id);
+          continue;
+        }
+        const snapshot = await this.#rollouts.read(observed.thread);
+        if (!this.#rolloutTimer || this.#observedThreads.get(id) !== observed) continue;
+        if (!snapshot) continue;
+        for (const [method, params] of snapshot.notifications) this.emit("notification", method, params);
+        if (observed.updatedAt !== snapshot.updatedAt) {
+          observed.updatedAt = snapshot.updatedAt;
+          observed.projected = applyRolloutSnapshot(observed.thread, snapshot);
+          this.emit("notification", "thread/status/changed", { threadId: id, turnId: snapshot.currentTurn.id, thread: observed.projected });
+        }
+      }
+      if (!this.#observedThreads.size) {
+        clearInterval(this.#rolloutTimer);
+        this.#rolloutTimer = null;
+      }
+    } finally {
+      this.#pollingRollouts = false;
+    }
   }
   /** Metadata-only persisted read used by snapshot reconciliation. */
   readThreadStatusSnapshot(threadId) {
@@ -473,11 +807,11 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     this.#rememberResumedThread(id);
     return result;
   }
-  async startTurn({ threadId, text, cwd, model, effort }) {
+  async startTurn({ threadId, text: text2, cwd, model, effort }) {
     const id = normalizeThreadId(threadId);
     const params = {
       threadId: id,
-      input: [{ type: "text", text }],
+      input: [{ type: "text", text: text2 }],
       ...cwd ? { cwd } : {},
       ...model ? { model } : {},
       ...effort ? { effort } : {}
@@ -492,11 +826,11 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
       return this.request("turn/start", params);
     }
   }
-  steerTurn({ threadId, turnId, text }) {
+  steerTurn({ threadId, turnId, text: text2 }) {
     return this.request("turn/steer", {
       threadId,
       expectedTurnId: turnId,
-      input: [{ type: "text", text }]
+      input: [{ type: "text", text: text2 }]
     });
   }
   interruptTurn({ threadId, turnId }) {
@@ -701,9 +1035,9 @@ import { createHash } from "node:crypto";
 
 // server/utils.js
 import crypto from "node:crypto";
-import path from "node:path";
+import path2 from "node:path";
 import { fileURLToPath } from "node:url";
-var PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+var PLUGIN_ROOT = path2.resolve(path2.dirname(fileURLToPath(import.meta.url)), "..");
 function nowIso() {
   return (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -733,12 +1067,12 @@ function isLoopbackHostname(hostname) {
 }
 function safeProjectPath(projectPath, allowedProjects) {
   if (!projectPath) return null;
-  const candidate = path.resolve(projectPath);
+  const candidate = path2.resolve(projectPath);
   if (!allowedProjects?.length) return candidate;
   const allowed = allowedProjects.some((root) => {
-    const normalizedRoot = path.resolve(root);
-    const relative = path.relative(normalizedRoot, candidate);
-    return relative === "" || !relative.startsWith("..") && !path.isAbsolute(relative);
+    const normalizedRoot = path2.resolve(root);
+    const relative = path2.relative(normalizedRoot, candidate);
+    return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
   });
   return allowed ? candidate : null;
 }
@@ -764,19 +1098,19 @@ function filterProjectList(result, allowedProjects) {
 }
 
 // server/config-store.js
-import fs3 from "node:fs/promises";
-import os from "node:os";
-import path4 from "node:path";
+import fs4 from "node:fs/promises";
+import os2 from "node:os";
+import path5 from "node:path";
 
 // server/secret-store.js
 import crypto2 from "node:crypto";
-import fs from "node:fs/promises";
-import path2 from "node:path";
+import fs2 from "node:fs/promises";
+import path3 from "node:path";
 var SecretStore = class {
   constructor(configDir, logger) {
     this.configDir = configDir;
     this.logger = logger;
-    this.fallbackFile = path2.join(configDir, "secrets.json");
+    this.fallbackFile = path3.join(configDir, "secrets.json");
     this.cache = /* @__PURE__ */ new Map();
     this.writeQueue = Promise.resolve();
   }
@@ -890,19 +1224,19 @@ var SecretStore = class {
   }
   async #readFallback() {
     try {
-      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
+      return JSON.parse(await fs2.readFile(this.fallbackFile, "utf8"));
     } catch (error) {
       if (error.code === "ENOENT") return {};
       throw error;
     }
   }
   async #writeFallback(values) {
-    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
+    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
     const temporary = `${this.fallbackFile}.${process.pid}.${crypto2.randomUUID()}.tmp`;
-    await fs.writeFile(temporary, `${JSON.stringify(values, null, 2)}
+    await fs2.writeFile(temporary, `${JSON.stringify(values, null, 2)}
 `, { mode: 384 });
-    await fs.rename(temporary, this.fallbackFile);
-    await fs.chmod(this.fallbackFile, 384);
+    await fs2.rename(temporary, this.fallbackFile);
+    await fs2.chmod(this.fallbackFile, 384);
   }
   #enqueue(operation) {
     const next = this.writeQueue.then(operation, operation);
@@ -978,19 +1312,19 @@ function matchesCredential(current, expected) {
 
 // server/endpoint-identity-store.js
 import crypto3 from "node:crypto";
-import fs2 from "node:fs/promises";
-import path3 from "node:path";
+import fs3 from "node:fs/promises";
+import path4 from "node:path";
 var EndpointIdentityStore = class {
   constructor(configDir) {
     this.configDir = configDir;
-    this.file = path3.join(configDir, "endpoint-identity.json");
+    this.file = path4.join(configDir, "endpoint-identity.json");
     this.identity = null;
   }
   async get() {
     if (this.identity) return { ...this.identity };
     try {
-      this.identity = this.#validate(JSON.parse(await fs2.readFile(this.file, "utf8")));
-      await fs2.chmod(this.file, 384);
+      this.identity = this.#validate(JSON.parse(await fs3.readFile(this.file, "utf8")));
+      await fs3.chmod(this.file, 384);
       return { ...this.identity };
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -1003,12 +1337,12 @@ var EndpointIdentityStore = class {
       publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
       privateKey: Buffer.from(privateDer).toString("base64url")
     };
-    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
+    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
     const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
-    await fs2.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
+    await fs3.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
 `, { mode: 384 });
-    await fs2.rename(temporary, this.file);
-    await fs2.chmod(this.file, 384);
+    await fs3.rename(temporary, this.file);
+    await fs3.chmod(this.file, 384);
     this.identity = identity;
     return { ...identity };
   }
@@ -1040,7 +1374,7 @@ function defaultConfig() {
       spaceId: "",
       endpointId: "",
       deviceId: randomId("host"),
-      deviceName: os.hostname(),
+      deviceName: os2.hostname(),
       autoConnect: false,
       heartbeatSeconds: 20,
       reconnectMaxSeconds: 30
@@ -1057,8 +1391,8 @@ function defaultConfig() {
 }
 var ConfigStore = class {
   constructor({ configDir, logger } = {}) {
-    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path4.join(os.homedir(), ".codex-relay-plugin");
-    this.configFile = path4.join(this.configDir, "config.json");
+    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path5.join(os2.homedir(), ".codex-relay-plugin");
+    this.configFile = path5.join(this.configDir, "config.json");
     this.logger = logger;
     this.secretStore = new SecretStore(this.configDir, logger);
     this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
@@ -1067,7 +1401,7 @@ var ConfigStore = class {
   async load() {
     let saved = {};
     try {
-      saved = JSON.parse(await fs3.readFile(this.configFile, "utf8"));
+      saved = JSON.parse(await fs4.readFile(this.configFile, "utf8"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -1149,12 +1483,12 @@ var ConfigStore = class {
       }
       if (Object.keys(credential).length) this.secretStore.validate(credential);
     }
-    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
+    await fs4.mkdir(this.configDir, { recursive: true, mode: 448 });
     const temporary = `${this.configFile}.tmp`;
-    await fs3.writeFile(temporary, `${JSON.stringify(next, null, 2)}
+    await fs4.writeFile(temporary, `${JSON.stringify(next, null, 2)}
 `, { mode: 384 });
-    await fs3.rename(temporary, this.configFile);
-    await fs3.chmod(this.configFile, 384);
+    await fs4.rename(temporary, this.configFile);
+    await fs4.chmod(this.configFile, 384);
     this.config = next;
     if (credentialTouched) {
       await this.secretStore.update(nextSpace, credentialPatch);
@@ -1245,7 +1579,7 @@ function validateConfig(config) {
   if (!config.codex || typeof config.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
   if (typeof config.codex.executable !== "string" || !config.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
   if (typeof config.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
-  if (config.codex.defaultWorkingDirectory && !path4.isAbsolute(config.codex.defaultWorkingDirectory)) {
+  if (config.codex.defaultWorkingDirectory && !path5.isAbsolute(config.codex.defaultWorkingDirectory)) {
     throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
   }
   if (typeof config.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
@@ -1256,7 +1590,7 @@ function validateConfig(config) {
   if (typeof config.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
   if (!Array.isArray(config.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
   for (const project of config.allowedProjects) {
-    if (typeof project !== "string" || !path4.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
+    if (typeof project !== "string" || !path5.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
   }
   return config;
 }
@@ -1687,8 +2021,8 @@ function requireString(value, name) {
   return value;
 }
 function optionalString(value) {
-  const text = typeof value === "string" ? value.trim() : "";
-  return text || void 0;
+  const text2 = typeof value === "string" ? value.trim() : "";
+  return text2 || void 0;
 }
 function compactThreadReadResult(result) {
   if (!result || typeof result !== "object") return result;
@@ -1800,15 +2134,15 @@ function byteSize(value) {
 }
 
 // server/instance-lock.js
-import fs4 from "node:fs/promises";
-import path5 from "node:path";
+import fs5 from "node:fs/promises";
+import path6 from "node:path";
 var LOCK_WRITE_GRACE_MS = 5e3;
 var InstanceLock = class {
   #file = null;
   #handle = null;
   #acquirePromise = null;
   constructor(configDir, name = "connector.lock") {
-    this.#file = path5.join(configDir, name);
+    this.#file = path6.join(configDir, name);
   }
   async acquire() {
     if (this.#handle) return;
@@ -1821,10 +2155,10 @@ var InstanceLock = class {
     }
   }
   async #acquire() {
-    await fs4.mkdir(path5.dirname(this.#file), { recursive: true, mode: 448 });
+    await fs5.mkdir(path6.dirname(this.#file), { recursive: true, mode: 448 });
     for (; ; ) {
       try {
-        this.#handle = await fs4.open(this.#file, "wx", 384);
+        this.#handle = await fs5.open(this.#file, "wx", 384);
         await this.#handle.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: (/* @__PURE__ */ new Date()).toISOString() })}
 `);
         return;
@@ -1848,31 +2182,31 @@ var InstanceLock = class {
     this.#handle = null;
     await handle.close().catch(() => {
     });
-    await fs4.unlink(this.#file).catch((error) => {
+    await fs5.unlink(this.#file).catch((error) => {
       if (error.code !== "ENOENT") throw error;
     });
   }
   async #removeIfStale() {
     let record;
     try {
-      record = JSON.parse(await fs4.readFile(this.#file, "utf8"));
+      record = JSON.parse(await fs5.readFile(this.#file, "utf8"));
     } catch (error) {
       if (error.code === "ENOENT") return true;
       try {
-        const stat = await fs4.stat(this.#file);
+        const stat = await fs5.stat(this.#file);
         if (Date.now() - stat.mtimeMs < LOCK_WRITE_GRACE_MS) return false;
       } catch (statError) {
         if (statError.code === "ENOENT") return true;
         return false;
       }
-      await fs4.unlink(this.#file).catch((unlinkError) => {
+      await fs5.unlink(this.#file).catch((unlinkError) => {
         if (unlinkError.code !== "ENOENT") throw unlinkError;
       });
       return true;
     }
     const pid = Number(record?.pid);
     if (!Number.isInteger(pid) || pid <= 0) {
-      await fs4.unlink(this.#file).catch((error) => {
+      await fs5.unlink(this.#file).catch((error) => {
         if (error.code !== "ENOENT") throw error;
       });
       return true;
@@ -1882,7 +2216,7 @@ var InstanceLock = class {
       return false;
     } catch (error) {
       if (error.code !== "ESRCH") return false;
-      await fs4.unlink(this.#file).catch((unlinkError) => {
+      await fs5.unlink(this.#file).catch((unlinkError) => {
         if (unlinkError.code !== "ENOENT") throw unlinkError;
       });
       return true;
@@ -3310,9 +3644,9 @@ function validateWelcomeIdentity(message, config) {
 
 // server/resource-images.js
 import { execFile as execFile2 } from "node:child_process";
-import fs5 from "node:fs/promises";
-import os2 from "node:os";
-import path6 from "node:path";
+import fs6 from "node:fs/promises";
+import os3 from "node:os";
+import path7 from "node:path";
 import { promisify as promisify2 } from "node:util";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -3335,7 +3669,7 @@ function imageDataUrl(mime, bytes) {
   return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 function imageMimeForPath(filePath) {
-  const extension = path6.extname(filePath).toLowerCase();
+  const extension = path7.extname(filePath).toLowerCase();
   return {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -3357,31 +3691,31 @@ function localPathFromValue(value) {
       return null;
     }
   }
-  return path6.isAbsolute(candidate) ? candidate : null;
+  return path7.isAbsolute(candidate) ? candidate : null;
 }
 async function parseLocalImage(value, declaredMime, allowedRoots) {
   const candidate = localPathFromValue(value);
   if (!candidate) return null;
-  const roots = await Promise.all([os2.tmpdir(), ...allowedRoots || []].filter((root) => typeof root === "string" && path6.isAbsolute(root)).map(async (root) => {
+  const roots = await Promise.all([os3.tmpdir(), ...allowedRoots || []].filter((root) => typeof root === "string" && path7.isAbsolute(root)).map(async (root) => {
     try {
-      return await fs5.realpath(root);
+      return await fs6.realpath(root);
     } catch {
-      return path6.resolve(root);
+      return path7.resolve(root);
     }
   }));
   let realPath;
   try {
-    realPath = await fs5.realpath(candidate);
+    realPath = await fs6.realpath(candidate);
   } catch {
     return null;
   }
-  if (!roots.some((root) => realPath === root || realPath.startsWith(`${root}${path6.sep}`))) return null;
+  if (!roots.some((root) => realPath === root || realPath.startsWith(`${root}${path7.sep}`))) return null;
   const mime = typeof declaredMime === "string" && declaredMime.toLowerCase().startsWith("image/") ? declaredMime.toLowerCase() : imageMimeForPath(realPath);
   if (!mime) return null;
   try {
-    const stat = await fs5.stat(realPath);
+    const stat = await fs6.stat(realPath);
     if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES) return null;
-    return { mime, bytes: await fs5.readFile(realPath) };
+    return { mime, bytes: await fs6.readFile(realPath) };
   } catch {
     return null;
   }
@@ -3392,19 +3726,19 @@ function thumbnailDataUrl(mime, bytes) {
 async function createThumbnailDataUrl(mime, bytes) {
   const inline = thumbnailDataUrl(mime, bytes);
   if (inline || process.platform !== "darwin") return inline;
-  const directory = await fs5.mkdtemp(path6.join(os2.tmpdir(), "recodex-thumb-"));
+  const directory = await fs6.mkdtemp(path7.join(os3.tmpdir(), "recodex-thumb-"));
   const extension = mime.split("/", 2)[1]?.replace(/[^a-z0-9]/gi, "") || "img";
-  const input = path6.join(directory, `source.${extension}`);
-  const output = path6.join(directory, "thumbnail.jpg");
+  const input = path7.join(directory, `source.${extension}`);
+  const output = path7.join(directory, "thumbnail.jpg");
   try {
-    await fs5.writeFile(input, bytes, { mode: 384 });
+    await fs6.writeFile(input, bytes, { mode: 384 });
     await execFileAsync2("sips", ["--resampleWidth", "640", "--setProperty", "format", "jpeg", input, "--out", output], { timeout: 5e3 });
-    const thumbnail = await fs5.readFile(output);
+    const thumbnail = await fs6.readFile(output);
     return thumbnail.length <= INLINE_THUMBNAIL_BYTES ? imageDataUrl("image/jpeg", thumbnail) : "";
   } catch {
     return "";
   } finally {
-    await fs5.rm(directory, { recursive: true, force: true }).catch(() => {
+    await fs6.rm(directory, { recursive: true, force: true }).catch(() => {
     });
   }
 }
@@ -3822,9 +4156,9 @@ var ConnectorService = class _ConnectorService extends EventEmitter4 {
 
 // server/dashboard-server.js
 import crypto6 from "node:crypto";
-import fs6 from "node:fs/promises";
+import fs7 from "node:fs/promises";
 import http from "node:http";
-import path7 from "node:path";
+import path8 from "node:path";
 var CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -3854,9 +4188,9 @@ var DashboardServer = class {
   constructor(service, logger, options = {}) {
     this.service = service;
     this.logger = logger;
-    this.uiRoot = path7.join(PLUGIN_ROOT, "ui");
+    this.uiRoot = path8.join(PLUGIN_ROOT, "ui");
     this.#listenPort = options.port ?? configuredDashboardPort();
-    this.#sessionFile = path7.join(service.configStore.configDir, "dashboard-session.json");
+    this.#sessionFile = path8.join(service.configStore.configDir, "dashboard-session.json");
   }
   async start() {
     if (this.#server) return this.url();
@@ -3913,13 +4247,13 @@ var DashboardServer = class {
     }
     if (!["GET", "HEAD"].includes(request.method)) return this.#json(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "\u65B9\u6CD5\u4E0D\u5141\u8BB8" } });
     const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-    const file = path7.resolve(this.uiRoot, relative);
-    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path7.sep}`);
+    const file = path8.resolve(this.uiRoot, relative);
+    const contained = file === this.uiRoot || file.startsWith(`${this.uiRoot}${path8.sep}`);
     if (!contained) return this.#json(response, 404, { error: { code: "NOT_FOUND", message: "\u8D44\u6E90\u4E0D\u5B58\u5728" } });
     try {
-      const body = await fs6.readFile(file);
+      const body = await fs7.readFile(file);
       response.writeHead(200, {
-        "Content-Type": CONTENT_TYPES[path7.extname(file)] || "application/octet-stream",
+        "Content-Type": CONTENT_TYPES[path8.extname(file)] || "application/octet-stream",
         "Cache-Control": "no-store"
       });
       if (request.method === "HEAD") return response.end();
@@ -4001,7 +4335,7 @@ var DashboardServer = class {
   async #loadOrCreateSession() {
     let hashes = [];
     try {
-      const saved = JSON.parse(await fs6.readFile(this.#sessionFile, "utf8"));
+      const saved = JSON.parse(await fs7.readFile(this.#sessionFile, "utf8"));
       hashes = Array.isArray(saved?.tokenHashes) ? saved.tokenHashes : [];
       if (typeof saved?.token === "string" && saved.token.length >= 32) hashes.push(crypto6.createHash("sha256").update(saved.token).digest("hex"));
     } catch (error) {
@@ -4009,8 +4343,8 @@ var DashboardServer = class {
     }
     this.#sessionToken = crypto6.randomBytes(32).toString("base64url");
     this.#sessionTokenHashes = [.../* @__PURE__ */ new Set([...hashes.filter((value) => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value)), crypto6.createHash("sha256").update(this.#sessionToken).digest("hex")])].slice(-8);
-    await fs6.mkdir(path7.dirname(this.#sessionFile), { recursive: true, mode: 448 });
-    await fs6.writeFile(this.#sessionFile, `${JSON.stringify({ version: 1, tokenHashes: this.#sessionTokenHashes })}
+    await fs7.mkdir(path8.dirname(this.#sessionFile), { recursive: true, mode: 448 });
+    await fs7.writeFile(this.#sessionFile, `${JSON.stringify({ version: 1, tokenHashes: this.#sessionTokenHashes })}
 `, { mode: 384 });
   }
   async #body(request) {
@@ -4073,8 +4407,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260909095818",
-      buildId: "1.0.0+codex.20260909095818:1788947911985",
+      version: "1.0.0+codex.20260909130410",
+      buildId: "1.0.0+codex.20260909130410:1788959061710",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -4101,7 +4435,7 @@ async function stopRuntime() {
 }
 async function readRuntimeInfo(configDir) {
   try {
-    const info = JSON.parse(await fs7.readFile(path8.join(configDir, "runtime.json"), "utf8"));
+    const info = JSON.parse(await fs8.readFile(path9.join(configDir, "runtime.json"), "utf8"));
     if (!Number.isInteger(info?.port) || info.port <= 0 || typeof info.accessKey !== "string" || !info.url) return null;
     try {
       process.kill(Number(info.pid), 0);
@@ -4114,28 +4448,28 @@ async function readRuntimeInfo(configDir) {
   }
 }
 async function writeRuntimeInfo(configDir, info) {
-  await fs7.mkdir(configDir, { recursive: true, mode: 448 });
-  const file = path8.join(configDir, "runtime.json");
+  await fs8.mkdir(configDir, { recursive: true, mode: 448 });
+  const file = path9.join(configDir, "runtime.json");
   const temporary = `${file}.${process.pid}.tmp`;
-  await fs7.writeFile(temporary, `${JSON.stringify(info)}
+  await fs8.writeFile(temporary, `${JSON.stringify(info)}
 `, { mode: 384 });
-  await fs7.rename(temporary, file);
+  await fs8.rename(temporary, file);
 }
 async function removeRuntimeInfo(configDir, pid) {
-  const file = path8.join(configDir, "runtime.json");
+  const file = path9.join(configDir, "runtime.json");
   try {
-    const current = JSON.parse(await fs7.readFile(file, "utf8"));
+    const current = JSON.parse(await fs8.readFile(file, "utf8"));
     if (pid && Number(current.pid) !== Number(pid)) return;
   } catch {
   }
-  await fs7.unlink(file).catch((error) => {
+  await fs8.unlink(file).catch((error) => {
     if (error.code !== "ENOENT") throw error;
   });
 }
 async function retireLegacyConnector(configDir, runtimeLock) {
-  const file = path8.join(configDir, "connector.lock");
+  const file = path9.join(configDir, "connector.lock");
   try {
-    const record = JSON.parse(await fs7.readFile(file, "utf8"));
+    const record = JSON.parse(await fs8.readFile(file, "utf8"));
     const pid = Number(record?.pid);
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
     try {
@@ -4147,7 +4481,7 @@ async function retireLegacyConnector(configDir, runtimeLock) {
     const deadline = Date.now() + 3e3;
     while (Date.now() < deadline) {
       try {
-        await fs7.access(file);
+        await fs8.access(file);
         await new Promise((resolve) => setTimeout(resolve, 100));
       } catch (error2) {
         if (error2.code === "ENOENT") return;

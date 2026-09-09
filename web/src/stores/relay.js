@@ -38,6 +38,16 @@ export const relayState = reactive({
   },
 });
 
+// Values last read from the Connector. Credential fields are sent as a
+// partial patch on save so a long-lived dashboard tab cannot write an old
+// token back over one that the background renewer just rotated.
+let credentialBaseline = {
+  token: '',
+  endpointGrant: '',
+  grantExpiresAt: null,
+  tokenEndpoint: '',
+};
+
 export const themeConfig = computed(() => ({
   algorithm: relayState.themeMode === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
   token: relayState.themeMode === 'dark'
@@ -91,7 +101,12 @@ export const configReady = computed(() => Boolean(
   relayState.form.relayUrl.trim()
   && relayState.form.spaceId.trim()
   && relayState.form.endpointId.trim()
-  && relayState.status?.security?.tokenConfigured,
+  && (
+    relayState.status?.security?.credentialConfigured
+    || relayState.status?.security?.tokenConfigured
+    || relayState.form.token.trim()
+    || relayState.form.endpointGrant.trim()
+  ),
 ));
 
 function describeRelayError(errorOrMessage) {
@@ -127,7 +142,7 @@ function describeRelayError(errorOrMessage) {
     return '暂时连不到 Relay。请检查 Relay 地址、网络和服务是否已启动，再重新测试连接。';
   }
   if (code === 'CONFIG_INCOMPLETE' || normalized.includes('尚未配置')) {
-    return '还缺少连接信息。请填写 Relay 地址、空间 ID、接入端 ID 和连接令牌。';
+    return '还缺少连接信息。请填写 Relay 地址、空间 ID、接入端 ID，以及连接令牌或接入端授权凭证。';
   }
   return message || '连接失败，请运行诊断查看具体原因。';
 }
@@ -183,6 +198,12 @@ function applyConfig(config) {
   relayState.form.readOnly = Boolean(config.readOnly);
   relayState.form.allowedProjects = (config.allowedProjects || []).join('\n');
   for (const name of permissionNames) relayState.form.permissions[name] = Boolean(config.permissions?.[name]);
+  credentialBaseline = {
+    token: relayState.form.token,
+    endpointGrant: relayState.form.endpointGrant,
+    grantExpiresAt: relayState.form.grantExpiresAt,
+    tokenEndpoint: relayState.form.tokenEndpoint,
+  };
   relayState.dirty = false;
   nextTick(() => {
     relayState.applyingConfig = false;
@@ -244,16 +265,22 @@ async function saveConfig() {
   }
   relayState.loading.save = true;
   try {
+    const token = relayState.form.token.trim();
+    const endpointGrant = relayState.form.endpointGrant.trim();
+    const grantExpiresAt = relayState.form.grantExpiresAt
+      ? Number(relayState.form.grantExpiresAt)
+      : null;
+    const tokenEndpoint = relayState.form.tokenEndpoint.trim();
+    const credential = {};
+    if (token !== credentialBaseline.token) credential.connectToken = token;
+    if (endpointGrant !== credentialBaseline.endpointGrant) credential.endpointGrant = endpointGrant;
+    if (grantExpiresAt !== credentialBaseline.grantExpiresAt) credential.grantExpiresAt = grantExpiresAt;
+    if (tokenEndpoint !== credentialBaseline.tokenEndpoint) credential.tokenEndpoint = tokenEndpoint;
     const updated = await api('/api/config', {
       method: 'PUT',
       body: JSON.stringify({
         config: collectConfig(),
-        credential: {
-          ...(relayState.form.token ? { connectToken: relayState.form.token.trim() } : {}),
-          endpointGrant: relayState.form.endpointGrant.trim(),
-          grantExpiresAt: relayState.form.grantExpiresAt ? Number(relayState.form.grantExpiresAt) : null,
-          tokenEndpoint: relayState.form.tokenEndpoint.trim(),
-        },
+        credential,
       }),
     });
     applyConfig(updated);

@@ -52,7 +52,7 @@ const {
       <div><span>连接空间</span><strong>{{ state.status?.space?.spaceId || '未配置' }}</strong><small>{{ state.status?.space?.deviceName || '设备名称待设置' }}</small></div>
       <div><span>接入端 ID</span><strong>{{ state.status?.space?.endpointId || '未配置' }}</strong><small>{{ state.status?.space?.endpointType || 'bridge' }} / 网关</small></div>
       <div><span>事件序号</span><strong>{{ state.status?.protocol?.latestSequence ?? 0 }}</strong><small>最近心跳 {{ shortTime(state.status?.relay?.lastHeartbeat) }}</small></div>
-      <div><span>连接凭据</span><strong>{{ configReady ? '已就绪' : '待配置' }}</strong><small>{{ state.status?.security?.tokenConfigured ? '连接令牌已安全保存' : '尚未保存连接令牌' }}</small></div>
+      <div><span>连接凭据</span><strong>{{ configReady ? '已就绪' : '待配置' }}</strong><small>{{ state.status?.security?.endpointGrantConfigured ? '已保存令牌与自动续期凭证' : state.status?.security?.tokenConfigured ? '已保存连接令牌，建议补充自动续期凭证' : '尚未保存连接凭据' }}</small></div>
     </section>
 
     <section class="overview-next">

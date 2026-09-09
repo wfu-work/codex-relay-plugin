@@ -69,6 +69,7 @@ export class ConfigStore {
     const config = this.get();
     const credential = await this.secretStore.getCredential(relaySpaceId(config.relay));
     const identity = await this.endpointIdentityStore.get();
+    const credentialConfigured = Boolean(credential?.connectToken || credential?.endpointGrant);
     return {
       ...config,
       relay: {
@@ -78,6 +79,7 @@ export class ConfigStore {
           ...(credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}),
         } : {}),
         tokenConfigured: Boolean(credential?.connectToken),
+        credentialConfigured,
         tokenExpiresAt: credential?.expiresAt || null,
         endpointGrantConfigured: Boolean(credential?.endpointGrant),
         grantExpiresAt: credential?.grantExpiresAt || null,
@@ -91,8 +93,9 @@ export class ConfigStore {
     const next = mergeConfig(this.get(), patch || {});
     validateConfig(next);
     const nextSpace = relaySpaceId(next.relay);
-    let nextCredential;
+    let credentialTouched = false;
     if (credentialPatch !== undefined) {
+      credentialTouched = true;
       if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
       if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
         throw new Error("Relay Token 凭证必须是对象");
@@ -100,21 +103,53 @@ export class ConfigStore {
       if (Object.hasOwn(credentialPatch, "token")) {
         throw new Error("Relay Token 必须通过字符串或 connectToken 字段提供");
       }
-      const current = (await this.secretStore.getCredential(nextSpace)) || {};
-      const credential = credentialPatch.connectToken ? {
-        connectToken: credentialPatch.connectToken,
-        ...(credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {}),
-        ...credentialField(credentialPatch, "endpointGrant"),
-        ...credentialField(credentialPatch, "grantExpiresAt"),
-        ...credentialField(credentialPatch, "tokenEndpoint"),
-      } : {
-        ...current,
-        ...(credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {}),
-        ...credentialField(credentialPatch, "endpointGrant"),
-        ...credentialField(credentialPatch, "grantExpiresAt"),
-        ...credentialField(credentialPatch, "tokenEndpoint"),
-      };
-      if (Object.keys(credential).length) nextCredential = this.secretStore.validate(credential);
+      // The dashboard sends a partial credential object.  An empty object
+      // means "no credential fields were edited", not "clear the pairing".
+      // Explicit clearing remains supported through connectToken/endpointGrant
+      // set to an empty string, null, or undefined.
+      if (Object.keys(credentialPatch).length === 0) credentialTouched = false;
+      // Configuration edits must merge with the credential actually persisted
+      // on disk.  CODEX_RELAY_TOKEN is a runtime override and must never be
+      // copied into the durable pairing when a user only edits the Grant or
+      // another optional field.
+      const current = credentialTouched
+        ? (await this.secretStore.getPersistedCredential(nextSpace)) || {}
+        : {};
+      // Dashboard edits are partial updates. Preserve the grant and expiry
+      // metadata when a user changes an unrelated setting or re-saves the
+      // same token; otherwise the next restart cannot schedule auto-renewal.
+      // A genuinely new token must not inherit the old token's expiry.
+      const credential = { ...current };
+      if (Object.hasOwn(credentialPatch, "connectToken")) {
+        const nextToken = credentialPatch.connectToken;
+        if (nextToken === null || nextToken === "" || nextToken === undefined) {
+          delete credential.connectToken;
+          delete credential.expiresAt;
+        } else if (typeof nextToken === "string" && nextToken.trim()) {
+          if (nextToken !== current.connectToken) delete credential.expiresAt;
+          credential.connectToken = nextToken;
+        } else {
+          throw new Error("Connect Token 格式无效");
+        }
+      }
+      if (Object.hasOwn(credentialPatch, "expiresAt")) {
+        if (credentialPatch.expiresAt === null || credentialPatch.expiresAt === "" || credentialPatch.expiresAt === undefined) delete credential.expiresAt;
+        else credential.expiresAt = credentialPatch.expiresAt;
+      }
+      for (const name of ["endpointGrant", "grantExpiresAt", "tokenEndpoint"]) {
+        if (!Object.hasOwn(credentialPatch, name)) continue;
+        const value = credentialPatch[name];
+        if (value === "" || value === null || value === undefined) {
+          delete credential[name];
+        } else {
+          if (name === "endpointGrant" && value !== current.endpointGrant
+              && !Object.hasOwn(credentialPatch, "grantExpiresAt")) {
+            delete credential.grantExpiresAt;
+          }
+          credential[name] = value;
+        }
+      }
+      if (Object.keys(credential).length) this.secretStore.validate(credential);
     }
     await fs.mkdir(this.configDir, { recursive: true, mode: 0o700 });
     const temporary = `${this.configFile}.tmp`;
@@ -122,7 +157,13 @@ export class ConfigStore {
     await fs.rename(temporary, this.configFile);
     await fs.chmod(this.configFile, 0o600);
     this.config = next;
-    if (nextCredential) await this.secretStore.set(nextSpace, nextCredential);
+    if (credentialTouched) {
+      // Apply the original partial patch atomically inside SecretStore.  A
+      // refresh can finish between the validation read above and this point;
+      // re-reading/merging in the store preserves the newest token instead of
+      // allowing a dashboard save to resurrect stale credential state.
+      await this.secretStore.update(nextSpace, credentialPatch);
+    }
     // Connect Tokens are proof-bound to a single Space. Do not copy a token
     // when the configured Space changes; an existing token for the new Space,
     // if any, remains available in the per-Space secret store.
@@ -130,8 +171,16 @@ export class ConfigStore {
     return this.publicConfig();
   }
 
-  async relayCredential() {
-    return this.secretStore.getCredential(relaySpaceId(this.get().relay));
+  async relayCredential(options = {}) {
+    const spaceId = relaySpaceId(this.get().relay);
+    if (options?.ignoreEnvironment === true) {
+      return this.secretStore.getPersistedCredential(spaceId);
+    }
+    return this.secretStore.getCredential(spaceId);
+  }
+
+  async persistedRelayCredential() {
+    return this.secretStore.getPersistedCredential(relaySpaceId(this.get().relay));
   }
 
   async token() {
@@ -139,20 +188,14 @@ export class ConfigStore {
     return credential?.connectToken || null;
   }
 
-  async updateRelayCredential(patch) {
+  async updateRelayCredential(patch, expectedCredential) {
     const spaceId = relaySpaceId(this.get().relay);
-    await this.secretStore.update(spaceId, patch);
-    return this.secretStore.getCredential(spaceId);
+    return this.secretStore.update(spaceId, patch, expectedCredential);
   }
 
   async endpointIdentity() {
     return this.endpointIdentityStore.get();
   }
-}
-
-function credentialField(patch, name) {
-  if (!Object.hasOwn(patch, name)) return {};
-  return patch[name] === "" || patch[name] === null ? { [name]: undefined } : { [name]: patch[name] };
 }
 
 function mergeConfig(base, patch) {

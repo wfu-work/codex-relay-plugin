@@ -25,14 +25,22 @@ const TERMINAL_RELAY_AUTH_CODES = new Set([
   "auth.space_unavailable",
   "auth.endpoint_type_mismatch",
   "auth.revoked",
+  "AUTH_CONTEXT_CHANGED",
   "handshake.invalid",
   "connection.kicked",
 ]);
+
+const TOKEN_REFRESH_LEAD_MS = 60_000;
+const UNKNOWN_EXPIRY_REFRESH_MS = 5 * 60_000;
+const TOKEN_REFRESH_RETRY_MS = 15_000;
 
 export class RelayClient extends EventEmitter {
   #socket = null;
   #heartbeat = null;
   #reconnectTimer = null;
+  #tokenRefreshTimer = null;
+  #tokenRefreshInFlight = null;
+  #tokenRefreshContextKey = null;
   #connectPromise = null;
   #socketGeneration = 0;
   #attempt = 0;
@@ -42,6 +50,8 @@ export class RelayClient extends EventEmitter {
   #tokenService;
   #maxFrameSize = 10 * 1024 * 1024;
   #forceTokenRefresh = false;
+  #credentialRefreshBlocked = false;
+  #rotationInProgress = false;
   #resourceRequests = new Map();
 
   constructor(configStore, logger, options = {}) {
@@ -77,12 +87,25 @@ export class RelayClient extends EventEmitter {
     if (!config.relay.url) throw new RelayError("CONFIG_INCOMPLETE", "尚未配置 Relay 地址");
     if (!spaceId) throw new RelayError("CONFIG_INCOMPLETE", "尚未配置 Space ID");
     if (!relayEndpointId(config.relay)) throw new RelayError("CONFIG_INCOMPLETE", "尚未配置 Relay Endpoint ID");
-    const token = typeof credential === "string" ? credential : credential?.connectToken;
-    if (credential !== undefined && !token) throw new RelayError("AUTH_FAILED", "尚未配置 Relay Token");
-    if (credential === undefined) this.#credential = null;
-    else if (typeof credential === "string") this.#credential = { connectToken: credential };
-    else if (credential?.connectToken) this.#credential = { ...credential };
+    const token = typeof credential === "string"
+      ? credential.trim()
+      : credential?.connectToken?.trim?.() || "";
+    const grant = credential && typeof credential === "object"
+      ? credential.endpointGrant?.trim?.() || ""
+      : "";
+    if (credential !== undefined && credential !== null && !token && !grant) {
+      throw new RelayError("AUTH_FAILED", "尚未配置 Relay Connect Token 或 Endpoint Grant");
+    }
+    if (credential === undefined || credential === null) this.#credential = null;
+    else if (typeof credential === "string") this.#credential = { connectToken: token };
+    else this.#credential = {
+      ...credential,
+      ...(token ? { connectToken: token } : {}),
+      ...(grant ? { endpointGrant: grant } : {}),
+    };
     this.#manualClose = false;
+    this.#credentialRefreshBlocked = false;
+    this.#forceTokenRefresh = false;
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     return this.#beginOpen();
@@ -105,11 +128,60 @@ export class RelayClient extends EventEmitter {
     if (!config.relay.url || !relaySpaceId(config.relay) || !relayEndpointId(config.relay)) {
       throw new RelayError("CONFIG_INCOMPLETE", "请先填写 Relay 地址、Space ID 和 Relay Endpoint ID");
     }
-    const token = await this.#tokenService.usableToken({ credential: supplied });
-    if (!token) throw new RelayError("CONFIG_INCOMPLETE", "请先填写 Connect Token");
+    let storedCredential = null;
+    if (typeof this.configStore.relayCredential === "function") {
+      try {
+        storedCredential = await this.configStore.relayCredential();
+      } catch {
+        // The handshake itself remains useful even when a lightweight or
+        // temporarily unavailable credential store cannot be read here.
+      }
+    }
+    const endpointGrant = supplied && typeof supplied === "object"
+      && Object.hasOwn(supplied, "endpointGrant")
+      ? supplied.endpointGrant?.trim?.() || ""
+      : storedCredential?.endpointGrant?.trim?.() || "";
+    // An editor may test a replacement token/Grant before saving it. Tell the
+    // token service to keep that refresh ephemeral so it cannot overwrite the
+    // credential currently persisted for this Space. Matching saved values
+    // retain the normal durable refresh behavior.
+    const draftCredential = hasDifferentCredentialFields(supplied, storedCredential);
+    const persistRefresh = !draftCredential;
+    let token = await this.#tokenService.usableToken({
+      credential: supplied,
+      persist: persistRefresh,
+    });
+    if (!token) throw new RelayError("CONFIG_INCOMPLETE", "请先填写 Connect Token 或 Endpoint Grant");
+    let refreshAttempted = false;
+    while (true) {
+      try {
+        return await this.#testHandshake(config, token, timeoutMs);
+      } catch (error) {
+        // Expiry metadata can be missing or stale (for example after a
+        // dashboard import). Let the Relay be authoritative and use the
+        // proof-bound Grant once before surfacing the failure.
+        if (!refreshAttempted && isRefreshableCredentialFailure(error) && endpointGrant) {
+          token = await this.#tokenService.usableToken({
+            force: true,
+            credential: typeof supplied === "object" && supplied
+              ? { ...supplied, connectToken: token }
+              : { connectToken: token },
+            persist: persistRefresh,
+          });
+          if (!token) throw new RelayError("CONFIG_INCOMPLETE", "刷新后仍未获得有效 Connect Token");
+          refreshAttempted = true;
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  async #testHandshake(config, token, timeoutMs) {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(config.relay.url);
       let settled = false;
+      let timeout;
       const finishReject = (error) => {
         if (settled) return;
         settled = true;
@@ -122,16 +194,24 @@ export class RelayClient extends EventEmitter {
         clearTimeout(timeout);
         resolve(value);
       };
-      const timeout = setTimeout(() => {
-        socket.close();
+      const closeAfter = () => {
+        try {
+          socket.close();
+        } catch {
+          // The result has already been settled; a platform-specific close
+          // failure must not replace the authentication outcome.
+        }
+      };
+      timeout = setTimeout(() => {
         finishReject(new RelayError("RELAY_TIMEOUT", "Relay 在测试时间内没有确认认证"));
+        closeAfter();
       }, timeoutMs);
       socket.addEventListener("open", async () => {
         try {
           socket.send(JSON.stringify(await this.#hello(config, token, true)));
         } catch (error) {
-          socket.close();
           finishReject(error);
+          closeAfter();
         }
       });
       socket.addEventListener("message", (event) => {
@@ -140,22 +220,22 @@ export class RelayClient extends EventEmitter {
           if (message.type === "connect.welcome") {
             validateRelayWelcome(message);
             validateWelcomeIdentity(message, config);
-            socket.close(1000, "test complete");
             finishResolve({ ok: true, connectionId: message.connectionId, protocolVersion: message.version });
+            closeAfter();
           } else if (message.type === "relay.error") {
-            socket.close();
             finishReject(new RelayError(message.code || "AUTH_FAILED", message.message || "Relay 拒绝连接"));
+            closeAfter();
           }
         } catch (error) {
-          socket.close();
           finishReject(new RelayError("INVALID_MESSAGE", `Relay 返回了无效消息：${error.message}`));
+          closeAfter();
         }
       });
       socket.addEventListener("error", () => {
         finishReject(new RelayError("RELAY_UNAVAILABLE", "无法连接 Relay"));
       });
       socket.addEventListener("close", (event) => {
-        finishReject(new RelayError("RELAY_UNAVAILABLE", `Relay 在认证前断开：${event.code}`));
+        if (!settled) finishReject(new RelayError("RELAY_UNAVAILABLE", `Relay 在认证前断开：${event.code}`));
       });
     });
   }
@@ -164,13 +244,17 @@ export class RelayClient extends EventEmitter {
     this.#manualClose = true;
     clearTimeout(this.#reconnectTimer);
     clearInterval(this.#heartbeat);
+    clearTimeout(this.#tokenRefreshTimer);
     this.#reconnectTimer = null;
     this.#heartbeat = null;
+    this.#tokenRefreshTimer = null;
+    this.#rotationInProgress = false;
     const socket = this.#socket;
     const opening = this.#connectPromise;
     this.#credential = null;
     this.#token = null;
     this.#forceTokenRefresh = false;
+    this.#credentialRefreshBlocked = false;
     for (const pending of this.#resourceRequests.values()) {
       pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 连接已断开"));
     }
@@ -288,13 +372,34 @@ export class RelayClient extends EventEmitter {
 
   async #open() {
     try {
-      this.#token = await this.#tokenService.usableToken({
+      const usableCredential = await this.#usableCredential({
         force: this.#forceTokenRefresh,
         credential: this.#credential,
       });
+      this.#token = usableCredential?.connectToken || null;
+      this.#credential = {
+        ...(this.#credential || {}),
+        ...(usableCredential || {}),
+        ...(this.#token ? { connectToken: this.#token } : {}),
+      };
+      if (!this.#token) throw new RelayError("AUTH_FAILED", "尚未配置 Relay Connect Token");
       this.#forceTokenRefresh = false;
-      if (typeof this.configStore.relayCredential === "function") {
-        this.#credential = await this.configStore.relayCredential();
+      const stored = await this.#authoritativeCredential();
+      if (stored) {
+        if (stored?.connectToken === this.#token) {
+          this.#credential = stored;
+        } else {
+          const supplied = this.#credential || {};
+          const tokenChanged = Boolean(
+            supplied.connectToken && supplied.connectToken !== this.#token,
+          );
+          this.#credential = {
+            ...(stored || {}),
+            ...supplied,
+            connectToken: this.#token,
+          };
+          if (tokenChanged) delete this.#credential.expiresAt;
+        }
       }
     } catch (error) {
       if (this.#manualClose) throw error;
@@ -376,24 +481,22 @@ export class RelayClient extends EventEmitter {
         clearTimeout(authenticationTimeout);
         clearInterval(this.#heartbeat);
         this.#heartbeat = null;
+        clearTimeout(this.#tokenRefreshTimer);
+        this.#tokenRefreshTimer = null;
+        const rotating = this.#rotationInProgress;
+        this.#rotationInProgress = false;
         if (!settled) {
           settled = true;
           const error = new RelayError("RELAY_UNAVAILABLE", `Relay 在认证前断开：${event.code}`);
           reportFailure(error);
           reject(error);
         }
-        if (established && !failureReported && !this.#manualClose) {
+        if (established && !failureReported && !this.#manualClose && !rotating) {
           reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay 连接已断开：${event.code}`));
         }
-        this.#socket = null;
-        if (this.#resourceRequests.size) {
-          for (const pending of this.#resourceRequests.values()) {
-            pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 连接已断开"));
-          }
-          this.#resourceRequests.clear();
-        }
-        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
-          this.#scheduleReconnect();
+        this.#detachSocket(socket);
+        if (!this.#manualClose && !this.#credentialRefreshBlocked && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
+          this.#scheduleReconnect(rotating ? 100 : undefined);
         } else {
           this.emit("disconnected", { code: failureCode || event.code });
         }
@@ -441,6 +544,7 @@ export class RelayClient extends EventEmitter {
       this.#attempt = 0;
       this.lastError = null;
       this.#startHeartbeat();
+      this.#scheduleTokenRefresh();
       this.logger.info("relay", "Relay 已连接并完成认证", { connectionId: this.connectionId });
       this.emit("status", this.status());
       this.emit("connected", message);
@@ -549,26 +653,246 @@ export class RelayClient extends EventEmitter {
   }
 
   #handleFailure(error) {
-    if (isTerminalRelayFailure(error, this.#credential)) this.#manualClose = true;
+    if (isTerminalRelayFailure(error, this.#credential)) {
+      this.#manualClose = true;
+      this.#credentialRefreshBlocked = true;
+      clearTimeout(this.#tokenRefreshTimer);
+      this.#tokenRefreshTimer = null;
+    }
     this.state = "error";
     this.lastError = error.message;
     this.logger.error("relay", "Relay 连接异常", { code: error.code, message: error.message });
     this.emit("status", this.status());
   }
 
-  #scheduleReconnect() {
-    if (this.#manualClose || this.#reconnectTimer) return;
+  #scheduleReconnect(delayOverride = undefined) {
+    if (this.#manualClose || this.#credentialRefreshBlocked || this.#reconnectTimer) return;
     const max = this.configStore.get().relay.reconnectMaxSeconds;
     this.#attempt += 1;
-    const delay = Math.min(max, 2 ** Math.min(this.#attempt, 8)) * 1000 + Math.floor(Math.random() * 500);
+    const delay = delayOverride ?? (
+      Math.min(max, 2 ** Math.min(this.#attempt, 8)) * 1000
+      + Math.floor(Math.random() * 500)
+    );
     this.state = "reconnecting";
     this.emit("status", this.status());
     this.logger.warn("relay", "Relay 已断开，计划重连", { attempt: this.#attempt, delayMs: delay });
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
-      if (this.#manualClose) return;
+      if (this.#manualClose || this.#credentialRefreshBlocked) return;
       this.#beginOpen().catch(() => {});
     }, delay);
+    this.#reconnectTimer.unref?.();
+  }
+
+  #scheduleTokenRefresh(delayOverride = undefined) {
+    clearTimeout(this.#tokenRefreshTimer);
+    this.#tokenRefreshTimer = null;
+    if (
+      this.#manualClose
+      || this.#credentialRefreshBlocked
+      || this.state !== "connected"
+      || !this.#credential?.endpointGrant
+    ) return;
+    const expiresAt = Number.isSafeInteger(this.#credential.expiresAt)
+      && this.#credential.expiresAt > 0
+      ? this.#credential.expiresAt
+      : null;
+    const delay = delayOverride ?? (
+      expiresAt == null
+        ? UNKNOWN_EXPIRY_REFRESH_MS
+        : Math.max(1_000, expiresAt - Date.now() - TOKEN_REFRESH_LEAD_MS)
+    );
+    this.#tokenRefreshTimer = setTimeout(() => {
+      this.#tokenRefreshTimer = null;
+      this.#runScheduledTokenRefresh().catch(() => {});
+    }, Math.max(250, delay));
+    this.#tokenRefreshTimer.unref?.();
+  }
+
+  async #runScheduledTokenRefresh() {
+    if (
+      this.#manualClose
+      || this.#credentialRefreshBlocked
+      || this.state !== "connected"
+    ) return;
+    const socket = this.#socket;
+    const credential = this.#credential;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !credential?.endpointGrant) return;
+    const generation = this.#socketGeneration;
+    const contextKey = this.#tokenRefreshKey(credential, generation);
+    if (this.#tokenRefreshInFlight && this.#tokenRefreshContextKey === contextKey) return;
+    const promise = (async () => {
+      let rotationStarted = false;
+      try {
+        const refreshedCredential = await this.#usableCredential({ force: true, credential });
+        const token = refreshedCredential?.connectToken || null;
+        if (!token) throw new RelayError("AUTH_FAILED", "自动续期未返回有效 Connect Token");
+        if (!this.#isCurrentRefreshContext(socket, generation, credential)) return;
+        // Keep the complete refresh result (especially expiresAt).  Reading
+        // only the token would leave a stale/unknown expiry in memory and the
+        // next timer could either refresh too late or refresh on every boot.
+        let nextCredential = {
+          ...credential,
+          ...(refreshedCredential || {}),
+          connectToken: token,
+        };
+        const stored = await this.#authoritativeCredential();
+        if (stored) {
+          if (!this.#isCurrentRefreshContext(socket, generation, credential)) return;
+          // The persisted view is authoritative for the Grant and endpoint,
+          // while the just-returned refresh response is authoritative for the
+          // rotated token and its expiry.  Merge in that order so a stale
+          // environment override or cached record cannot overwrite metadata
+          // from the successful refresh.
+          nextCredential = {
+            ...(stored || {}),
+            ...credential,
+            ...(refreshedCredential || {}),
+            connectToken: token,
+          };
+        }
+        this.#token = token;
+        this.#credential = nextCredential;
+        this.#forceTokenRefresh = false;
+        this.#credentialRefreshBlocked = false;
+        this.#rotationInProgress = true;
+        rotationStarted = true;
+        this.state = "reconnecting";
+        this.emit("status", this.status());
+        await closeSocket(socket, "connect token renewed");
+        // A compliant WebSocket emits close and the close handler schedules
+        // the reconnect. If a platform implementation drops that callback,
+        // finish the rotation here so the client cannot remain stuck forever.
+        if (this.#socket === socket && this.#socketGeneration === generation) {
+          this.#detachSocket(socket);
+          this.#rotationInProgress = false;
+          if (!this.#manualClose && !this.#credentialRefreshBlocked) this.#scheduleReconnect(100);
+        }
+      } catch (error) {
+        if (rotationStarted) {
+          this.logger.warn("relay", "旧 Relay 连接关闭异常，继续重连", {
+            code: error.code,
+            message: error.message,
+          });
+          return;
+        }
+        if (isTerminalRelayFailure(error, credential)) {
+          this.#credentialRefreshBlocked = true;
+          this.#manualClose = true;
+          clearTimeout(this.#tokenRefreshTimer);
+          this.#tokenRefreshTimer = null;
+          // The current socket is no longer usable once the proof-bound
+          // credential has been rejected. Publish an error state before
+          // closing it so the dashboard cannot briefly report a dead session
+          // as still connected.
+          this.state = "error";
+          this.connectedAt = null;
+          this.connectionId = null;
+          this.features = [];
+          this.lastError = error.message;
+          this.logger.error("relay", "Connect Token 自动续期已停止", {
+            code: error.code,
+            message: error.message,
+          });
+          this.emit("status", this.status());
+          this.#rotationInProgress = true;
+          const closed = await closeSocket(socket, "connect token renewal stopped");
+          if (this.#socket === socket) {
+            this.#detachSocket(socket);
+          }
+          this.#rotationInProgress = false;
+          if (!closed) this.emit("disconnected", { code: error.code || "auth.refresh_rejected" });
+          return;
+        }
+        // Keep a still-valid socket alive during a transient refresh outage;
+        // retry before expiry and let the Relay's own expiry signal take over
+        // if the outage lasts longer.
+        this.lastError = error.message;
+        this.logger.warn("relay", "Connect Token 自动续期暂时失败，稍后重试", {
+          code: error.code,
+          message: error.message,
+        });
+        this.emit("status", this.status());
+        this.#scheduleTokenRefresh(refreshRetryDelay(error));
+      } finally {
+        if (
+          rotationStarted
+          && this.#rotationInProgress
+          && this.#socket === socket
+          && this.#socketGeneration === generation
+        ) {
+          this.#rotationInProgress = false;
+          if (!this.#manualClose && !this.#credentialRefreshBlocked) {
+            this.#detachSocket(socket);
+            this.#scheduleReconnect(100);
+          }
+        }
+      }
+    })();
+    this.#tokenRefreshInFlight = promise;
+    this.#tokenRefreshContextKey = contextKey;
+    try {
+      await promise;
+    } finally {
+      if (this.#tokenRefreshInFlight === promise) {
+        this.#tokenRefreshInFlight = null;
+        this.#tokenRefreshContextKey = null;
+      }
+    }
+  }
+
+  #isCurrentRefreshContext(socket, generation, credential) {
+    return !this.#manualClose
+      && this.#socket === socket
+      && this.#socketGeneration === generation
+      && this.state === "connected"
+      && this.#credential?.endpointGrant === credential?.endpointGrant;
+  }
+
+  #tokenRefreshKey(credential, generation) {
+    const config = this.configStore.get();
+    return [
+      generation,
+      config.relay?.url || "",
+      relaySpaceId(config.relay),
+      relayEndpointId(config.relay),
+      credential?.endpointGrant || "",
+      credential?.tokenEndpoint || "",
+    ].join("\u0000");
+  }
+
+  async #usableCredential(options) {
+    if (typeof this.#tokenService.usableCredential === "function") {
+      return this.#tokenService.usableCredential(options);
+    }
+    const token = await this.#tokenService.usableToken(options);
+    return {
+      ...(options?.credential || {}),
+      ...(token ? { connectToken: token } : {}),
+    };
+  }
+
+  async #authoritativeCredential() {
+    if (typeof this.configStore.persistedRelayCredential === "function") {
+      return this.configStore.persistedRelayCredential();
+    }
+    if (typeof this.configStore.relayCredential === "function") {
+      return this.configStore.relayCredential({ ignoreEnvironment: true });
+    }
+    return null;
+  }
+
+  #detachSocket(socket) {
+    if (this.#socket !== socket) return;
+    this.#socket = null;
+    clearInterval(this.#heartbeat);
+    this.#heartbeat = null;
+    clearTimeout(this.#tokenRefreshTimer);
+    this.#tokenRefreshTimer = null;
+    for (const pending of this.#resourceRequests.values()) {
+      pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 连接已断开"));
+    }
+    this.#resourceRequests.clear();
   }
 }
 
@@ -577,6 +901,11 @@ export class RelayClient extends EventEmitter {
 // for the user to rotate the credential in the local dashboard.
 function isTerminalRelayFailure(error, credential) {
   const code = typeof error === "string" ? error : error?.code;
+  // HTTP 408/425/429/5xx and transport failures are temporary.  The current
+  // authenticated socket remains usable, so a refresh outage must never be
+  // converted into a permanent credential failure just because its public
+  // error code happens to be listed in the auth set below.
+  if (isRetryableRefreshFailure(error)) return false;
   if (code === "connection.rejected") return true;
   // Relay can reject either an expired short-lived token or a token that is no
   // longer available. A proof-bound Endpoint Grant can mint the next token,
@@ -585,21 +914,54 @@ function isTerminalRelayFailure(error, credential) {
   return TERMINAL_RELAY_AUTH_CODES.has(code);
 }
 
+function isRetryableRefreshFailure(error) {
+  return error?.code === "RELAY_RETRYABLE" || error?.details?.retryable === true;
+}
+
+function refreshRetryDelay(error) {
+  const retryAfterMs = error?.details?.retryAfterMs;
+  return Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0
+    ? Math.max(250, retryAfterMs)
+    : TOKEN_REFRESH_RETRY_MS;
+}
+
 function isRefreshableCredentialFailure(error) {
   const code = typeof error === "string" ? error : error?.code;
   return code === "auth.token_expired" || code === "auth.invalid_token";
 }
 
+function hasDifferentCredentialFields(supplied, stored) {
+  if (supplied === undefined || supplied === null) return false;
+  const candidate = typeof supplied === "string"
+    ? { connectToken: supplied.trim() }
+    : supplied;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return true;
+  if (!stored) return Object.keys(candidate).some((field) => [
+    "connectToken",
+    "endpointGrant",
+    "tokenEndpoint",
+    "expiresAt",
+    "grantExpiresAt",
+  ].includes(field));
+  for (const field of ["connectToken", "endpointGrant", "tokenEndpoint", "expiresAt", "grantExpiresAt"]) {
+    if (!Object.hasOwn(candidate, field)) continue;
+    const suppliedValue = candidate[field] == null ? "" : String(candidate[field]).trim();
+    const storedValue = stored[field] == null ? "" : String(stored[field]).trim();
+    if (suppliedValue !== storedValue) return true;
+  }
+  return false;
+}
+
 function closeSocket(socket, reason) {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = () => {
+    const finish = (closed = true) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve();
+      resolve(closed === false ? false : true);
     };
-    const timer = setTimeout(finish, 3_000);
+    const timer = setTimeout(() => finish(false), 3_000);
     try {
       socket.addEventListener("close", finish, { once: true });
       socket.close(1000, reason);

@@ -1,572 +1,5 @@
 #!/usr/bin/env node
 
-// server/agent-launcher.js
-import { spawn as spawn2 } from "node:child_process";
-import path9 from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-
-// server/config-store.js
-import fs3 from "node:fs/promises";
-import os from "node:os";
-import path4 from "node:path";
-
-// server/utils.js
-import crypto from "node:crypto";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-var PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-function nowIso() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function randomId(prefix) {
-  return `${prefix}_${crypto.randomBytes(12).toString("hex")}`;
-}
-function redact(value) {
-  if (typeof value === "string") {
-    return value.replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]").replace(/("?(?:token|connect[_-]?token|endpoint[_-]?grant|grant|secret|authorization|api[_-]?key|private[_-]?key|signature)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
-  }
-  return JSON.parse(redact(JSON.stringify(value)));
-}
-function normalizeRelayUrl(raw) {
-  const url = new URL(String(raw || ""));
-  if (!["ws:", "wss:"].includes(url.protocol)) {
-    throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 ws:// \u6216 wss://");
-  }
-  if (!url.hostname) throw new Error("Relay \u5730\u5740\u7F3A\u5C11\u4E3B\u673A\u540D");
-  if (url.username || url.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
-  if (url.search || url.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
-  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
-  if (url.pathname !== "/v1/connect") throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 /v1/connect");
-  return url.toString();
-}
-function isLoopbackHostname(hostname) {
-  return ["127.0.0.1", "::1", "localhost"].includes(hostname);
-}
-function safeProjectPath(projectPath, allowedProjects) {
-  if (!projectPath) return null;
-  const candidate = path.resolve(projectPath);
-  if (!allowedProjects?.length) return candidate;
-  const allowed = allowedProjects.some((root) => {
-    const normalizedRoot = path.resolve(root);
-    const relative = path.relative(normalizedRoot, candidate);
-    return relative === "" || !relative.startsWith("..") && !path.isAbsolute(relative);
-  });
-  return allowed ? candidate : null;
-}
-function filterThreadList(result, allowedProjects) {
-  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
-  return {
-    ...result,
-    data: result.data.filter((thread) => Boolean(thread?.cwd && safeProjectPath(thread.cwd, allowedProjects)))
-  };
-}
-function filterProjectList(result, allowedProjects) {
-  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
-  return {
-    ...result,
-    data: result.data.filter((project) => {
-      const roots = Array.isArray(project?.roots) ? project.roots : [];
-      return roots.some((root) => {
-        const projectPath = typeof root === "string" ? root : root?.path;
-        return Boolean(projectPath && safeProjectPath(projectPath, allowedProjects));
-      });
-    })
-  };
-}
-
-// server/secret-store.js
-import crypto2 from "node:crypto";
-import fs from "node:fs/promises";
-import path2 from "node:path";
-var SecretStore = class {
-  constructor(configDir, logger) {
-    this.configDir = configDir;
-    this.logger = logger;
-    this.fallbackFile = path2.join(configDir, "secrets.json");
-    this.cache = /* @__PURE__ */ new Map();
-    this.writeQueue = Promise.resolve();
-  }
-  async get(spaceId) {
-    const credential = await this.getCredential(spaceId);
-    return credential?.connectToken || null;
-  }
-  async getCredential(spaceId) {
-    const key = spaceId || "default";
-    const environmentToken = process.env.CODEX_RELAY_TOKEN?.trim();
-    if (environmentToken) {
-      const persisted = await this.getPersistedCredential(key);
-      const candidate = {
-        ...persisted || {},
-        connectToken: environmentToken
-      };
-      if (persisted?.connectToken && persisted.connectToken !== environmentToken) {
-        delete candidate.expiresAt;
-      }
-      const credential = validateCredential(candidate);
-      return cloneCredential(credential);
-    }
-    return this.getPersistedCredential(key);
-  }
-  /**
-   * Read the credential written to disk without applying the optional
-   * CODEX_RELAY_TOKEN runtime override.  Refresh responses must use this view
-   * when they need authoritative expiry metadata; otherwise an environment
-   * token would mask the newly rotated token forever.
-   */
-  async getPersistedCredential(spaceId) {
-    const key = spaceId || "default";
-    if (this.cache.has(key)) return cloneCredential(this.cache.get(key));
-    const values = await this.#readFallback();
-    const credential = values[key] ? validateCredential(values[key]) : null;
-    this.cache.set(key, credential);
-    return cloneCredential(credential);
-  }
-  async set(spaceId, credential) {
-    const key = spaceId || "default";
-    if (!credential) return this.delete(key);
-    const normalized = validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
-    return this.#enqueue(async () => {
-      const values = await this.#readFallback();
-      values[key] = normalized;
-      await this.#writeFallback(values);
-      this.cache.set(key, normalized);
-      return { backend: "file" };
-    });
-  }
-  async update(spaceId, patch, expectedCredential) {
-    const key = spaceId || "default";
-    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-      throw new Error("Relay \u51ED\u8BC1\u66F4\u65B0\u683C\u5F0F\u65E0\u6548");
-    }
-    if (Object.keys(patch).length === 0) return this.getPersistedCredential(key);
-    return this.#enqueue(async () => {
-      const values = await this.#readFallback();
-      const persisted = values[key] ? validateCredential(values[key]) : null;
-      const current = persisted || {};
-      if (expectedCredential && !matchesCredential(current, expectedCredential)) {
-        return null;
-      }
-      const next = { ...current, ...patch };
-      if (Object.hasOwn(patch, "connectToken") && (patch.connectToken === "" || patch.connectToken === null || patch.connectToken === void 0)) {
-        delete next.connectToken;
-        delete next.expiresAt;
-      }
-      if (Object.hasOwn(patch, "endpointGrant") && (patch.endpointGrant === "" || patch.endpointGrant === null || patch.endpointGrant === void 0)) {
-        delete next.endpointGrant;
-        delete next.grantExpiresAt;
-      }
-      if (Object.hasOwn(patch, "connectToken") && typeof patch.connectToken === "string" && patch.connectToken.trim() && patch.connectToken !== current.connectToken && !Object.hasOwn(patch, "expiresAt")) {
-        delete next.expiresAt;
-      }
-      if (Object.hasOwn(patch, "endpointGrant") && typeof patch.endpointGrant === "string" && patch.endpointGrant.trim() && patch.endpointGrant !== current.endpointGrant && !Object.hasOwn(patch, "grantExpiresAt")) {
-        delete next.grantExpiresAt;
-      }
-      for (const name of ["expiresAt", "grantExpiresAt", "tokenEndpoint"]) {
-        if (next[name] === null || next[name] === "" || next[name] === void 0) {
-          delete next[name];
-        }
-      }
-      for (const name of Object.keys(next)) {
-        if (next[name] === void 0) delete next[name];
-      }
-      if (!Object.keys(next).length) {
-        delete values[key];
-        await this.#writeFallback(values);
-        this.cache.set(key, null);
-        return null;
-      }
-      const normalized = validateCredential(next);
-      values[key] = normalized;
-      await this.#writeFallback(values);
-      this.cache.set(key, normalized);
-      return cloneCredential(normalized);
-    });
-  }
-  validate(credential) {
-    return validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
-  }
-  async delete(spaceId) {
-    const key = spaceId || "default";
-    return this.#enqueue(async () => {
-      const values = await this.#readFallback();
-      delete values[key];
-      await this.#writeFallback(values);
-      this.cache.set(key, null);
-    });
-  }
-  async #readFallback() {
-    try {
-      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
-    } catch (error) {
-      if (error.code === "ENOENT") return {};
-      throw error;
-    }
-  }
-  async #writeFallback(values) {
-    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.fallbackFile}.${process.pid}.${crypto2.randomUUID()}.tmp`;
-    await fs.writeFile(temporary, `${JSON.stringify(values, null, 2)}
-`, { mode: 384 });
-    await fs.rename(temporary, this.fallbackFile);
-    await fs.chmod(this.fallbackFile, 384);
-  }
-  #enqueue(operation) {
-    const next = this.writeQueue.then(operation, operation);
-    this.writeQueue = next.catch(() => void 0);
-    return next;
-  }
-};
-function validateCredential(value) {
-  if (typeof value === "string") value = { connectToken: value };
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Relay \u51ED\u8BC1\u683C\u5F0F\u65E0\u6548");
-  }
-  const connectToken = validateSecret(value.connectToken, "Connect Token", false);
-  const endpointGrant = validateSecret(value.endpointGrant, "Endpoint Grant", false);
-  if (!connectToken && !endpointGrant) throw new Error("Connect Token \u6216 Endpoint Grant \u81F3\u5C11\u9700\u8981\u4E00\u4E2A");
-  const expiresAt = validateExpiry(value.expiresAt, "Connect Token");
-  const grantExpiresAt = validateExpiry(value.grantExpiresAt, "Endpoint Grant");
-  const tokenEndpoint = validateTokenEndpoint(value.tokenEndpoint);
-  return {
-    ...connectToken === void 0 ? {} : { connectToken },
-    ...expiresAt === void 0 ? {} : { expiresAt },
-    ...endpointGrant === void 0 ? {} : { endpointGrant },
-    ...grantExpiresAt === void 0 ? {} : { grantExpiresAt },
-    ...tokenEndpoint === void 0 ? {} : { tokenEndpoint }
-  };
-}
-function validateSecret(value, label, required) {
-  if (value === void 0 || value === null || value === "") {
-    if (required) throw new Error(`${label} \u4E0D\u80FD\u4E3A\u7A7A`);
-    return void 0;
-  }
-  const minimum = label === "Endpoint Grant" ? 16 : 1;
-  if (typeof value !== "string" || value.length < minimum || value.length > 16384 || !/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error(`${label} \u683C\u5F0F\u65E0\u6548`);
-  }
-  return value;
-}
-function validateExpiry(value, label) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} \u8FC7\u671F\u65F6\u95F4\u65E0\u6548`);
-  return value;
-}
-function validateTokenEndpoint(value) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (typeof value !== "string" || value.length > 2048) throw new Error("Token Endpoint \u65E0\u6548");
-  const endpoint = new URL(value);
-  if (!endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-    throw new Error("Token Endpoint \u4E0D\u80FD\u5305\u542B\u51ED\u8BC1\u3001query \u6216 hash");
-  }
-  const loopback = ["127.0.0.1", "::1", "localhost"].includes(endpoint.hostname);
-  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
-    throw new Error("\u975E\u672C\u673A Token Endpoint \u5FC5\u987B\u4F7F\u7528 https://");
-  }
-  return endpoint.toString();
-}
-function cloneCredential(value) {
-  return value ? { ...value } : null;
-}
-function matchesCredential(current, expected) {
-  const candidate = typeof expected === "string" ? { connectToken: expected } : expected;
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
-  for (const field of ["connectToken", "endpointGrant", "tokenEndpoint"]) {
-    if (!Object.hasOwn(candidate, field)) continue;
-    const expectedValue = candidate[field];
-    if (expectedValue === null || expectedValue === void 0) {
-      if (current?.[field] !== void 0) return false;
-    } else if (current?.[field] !== expectedValue) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// server/endpoint-identity-store.js
-import crypto3 from "node:crypto";
-import fs2 from "node:fs/promises";
-import path3 from "node:path";
-var EndpointIdentityStore = class {
-  constructor(configDir) {
-    this.configDir = configDir;
-    this.file = path3.join(configDir, "endpoint-identity.json");
-    this.identity = null;
-  }
-  async get() {
-    if (this.identity) return { ...this.identity };
-    try {
-      this.identity = this.#validate(JSON.parse(await fs2.readFile(this.file, "utf8")));
-      await fs2.chmod(this.file, 384);
-      return { ...this.identity };
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    const pair = crypto3.generateKeyPairSync("ed25519");
-    const publicDer = pair.publicKey.export({ format: "der", type: "spki" });
-    const privateDer = pair.privateKey.export({ format: "der", type: "pkcs8" });
-    const identity = {
-      schemaVersion: 1,
-      publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
-      privateKey: Buffer.from(privateDer).toString("base64url")
-    };
-    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
-    await fs2.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
-`, { mode: 384 });
-    await fs2.rename(temporary, this.file);
-    await fs2.chmod(this.file, 384);
-    this.identity = identity;
-    return { ...identity };
-  }
-  #validate(value) {
-    if (!value || value.schemaVersion !== 1) throw new Error("Endpoint identity schema is invalid");
-    const publicBytes = Buffer.from(value.publicKey || "", "base64url");
-    const privateBytes = Buffer.from(value.privateKey || "", "base64url");
-    if (publicBytes.length !== 32 || publicBytes.toString("base64url") !== value.publicKey || privateBytes.length < 32 || privateBytes.toString("base64url") !== value.privateKey) {
-      throw new Error("Endpoint identity key material is invalid");
-    }
-    return { schemaVersion: 1, publicKey: value.publicKey, privateKey: value.privateKey };
-  }
-};
-
-// server/config-store.js
-var DEFAULT_PERMISSIONS = Object.freeze({
-  readThreads: true,
-  sendMessages: true,
-  createThreads: true,
-  steerTurns: true,
-  interruptTurns: true,
-  respondToApprovals: false
-});
-function defaultConfig() {
-  return {
-    version: 1,
-    relay: {
-      url: "",
-      spaceId: "",
-      endpointId: "",
-      deviceId: randomId("host"),
-      deviceName: os.hostname(),
-      autoConnect: false,
-      heartbeatSeconds: 20,
-      reconnectMaxSeconds: 30
-    },
-    codex: {
-      executable: "codex",
-      autoStartAppServer: true,
-      defaultWorkingDirectory: ""
-    },
-    permissions: { ...DEFAULT_PERMISSIONS },
-    allowedProjects: [],
-    readOnly: false
-  };
-}
-var ConfigStore = class {
-  constructor({ configDir, logger } = {}) {
-    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path4.join(os.homedir(), ".codex-relay-plugin");
-    this.configFile = path4.join(this.configDir, "config.json");
-    this.logger = logger;
-    this.secretStore = new SecretStore(this.configDir, logger);
-    this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
-    this.config = null;
-  }
-  async load() {
-    let saved = {};
-    try {
-      saved = JSON.parse(await fs3.readFile(this.configFile, "utf8"));
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    this.config = mergeConfig(defaultConfig(), migrateSavedConfig(saved));
-    validateConfig(this.config);
-    return this.config;
-  }
-  get() {
-    if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
-    return structuredClone(this.config);
-  }
-  async publicConfig({ includeToken = false } = {}) {
-    const config = this.get();
-    const credential = await this.secretStore.getCredential(relaySpaceId(config.relay));
-    const identity = await this.endpointIdentityStore.get();
-    const credentialConfigured = Boolean(credential?.connectToken || credential?.endpointGrant);
-    return {
-      ...config,
-      relay: {
-        ...config.relay,
-        ...includeToken ? {
-          token: credential?.connectToken || "",
-          ...credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}
-        } : {},
-        tokenConfigured: Boolean(credential?.connectToken),
-        credentialConfigured,
-        tokenExpiresAt: credential?.expiresAt || null,
-        endpointGrantConfigured: Boolean(credential?.endpointGrant),
-        grantExpiresAt: credential?.grantExpiresAt || null,
-        tokenEndpoint: credential?.tokenEndpoint || "",
-        endpointPublicKey: identity.publicKey
-      }
-    };
-  }
-  async update(patch, credentialPatch) {
-    const next = mergeConfig(this.get(), patch || {});
-    validateConfig(next);
-    const nextSpace = relaySpaceId(next.relay);
-    let credentialTouched = false;
-    if (credentialPatch !== void 0) {
-      credentialTouched = true;
-      if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
-      if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
-        throw new Error("Relay Token \u51ED\u8BC1\u5FC5\u987B\u662F\u5BF9\u8C61");
-      }
-      if (Object.hasOwn(credentialPatch, "token")) {
-        throw new Error("Relay Token \u5FC5\u987B\u901A\u8FC7\u5B57\u7B26\u4E32\u6216 connectToken \u5B57\u6BB5\u63D0\u4F9B");
-      }
-      if (Object.keys(credentialPatch).length === 0) credentialTouched = false;
-      const current = credentialTouched ? await this.secretStore.getPersistedCredential(nextSpace) || {} : {};
-      const credential = { ...current };
-      if (Object.hasOwn(credentialPatch, "connectToken")) {
-        const nextToken = credentialPatch.connectToken;
-        if (nextToken === null || nextToken === "" || nextToken === void 0) {
-          delete credential.connectToken;
-          delete credential.expiresAt;
-        } else if (typeof nextToken === "string" && nextToken.trim()) {
-          if (nextToken !== current.connectToken) delete credential.expiresAt;
-          credential.connectToken = nextToken;
-        } else {
-          throw new Error("Connect Token \u683C\u5F0F\u65E0\u6548");
-        }
-      }
-      if (Object.hasOwn(credentialPatch, "expiresAt")) {
-        if (credentialPatch.expiresAt === null || credentialPatch.expiresAt === "" || credentialPatch.expiresAt === void 0) delete credential.expiresAt;
-        else credential.expiresAt = credentialPatch.expiresAt;
-      }
-      for (const name of ["endpointGrant", "grantExpiresAt", "tokenEndpoint"]) {
-        if (!Object.hasOwn(credentialPatch, name)) continue;
-        const value = credentialPatch[name];
-        if (value === "" || value === null || value === void 0) {
-          delete credential[name];
-        } else {
-          if (name === "endpointGrant" && value !== current.endpointGrant && !Object.hasOwn(credentialPatch, "grantExpiresAt")) {
-            delete credential.grantExpiresAt;
-          }
-          credential[name] = value;
-        }
-      }
-      if (Object.keys(credential).length) this.secretStore.validate(credential);
-    }
-    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.configFile}.tmp`;
-    await fs3.writeFile(temporary, `${JSON.stringify(next, null, 2)}
-`, { mode: 384 });
-    await fs3.rename(temporary, this.configFile);
-    await fs3.chmod(this.configFile, 384);
-    this.config = next;
-    if (credentialTouched) {
-      await this.secretStore.update(nextSpace, credentialPatch);
-    }
-    this.logger?.info("config", "\u914D\u7F6E\u5DF2\u4FDD\u5B58", { relayUrl: next.relay.url, spaceId: nextSpace });
-    return this.publicConfig();
-  }
-  async relayCredential(options = {}) {
-    const spaceId = relaySpaceId(this.get().relay);
-    if (options?.ignoreEnvironment === true) {
-      return this.secretStore.getPersistedCredential(spaceId);
-    }
-    return this.secretStore.getCredential(spaceId);
-  }
-  async persistedRelayCredential() {
-    return this.secretStore.getPersistedCredential(relaySpaceId(this.get().relay));
-  }
-  async token() {
-    const credential = await this.relayCredential();
-    return credential?.connectToken || null;
-  }
-  async updateRelayCredential(patch, expectedCredential) {
-    const spaceId = relaySpaceId(this.get().relay);
-    return this.secretStore.update(spaceId, patch, expectedCredential);
-  }
-  async endpointIdentity() {
-    return this.endpointIdentityStore.get();
-  }
-};
-function mergeConfig(base, patch) {
-  const relayPatch = patch.relay || {};
-  const spaceId = relayPatch.spaceId ?? base.relay.spaceId ?? "";
-  return {
-    ...base,
-    ...patch,
-    relay: { ...base.relay, ...relayPatch, spaceId },
-    codex: { ...base.codex, ...patch.codex || {} },
-    permissions: { ...base.permissions, ...patch.permissions || {} },
-    allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects
-  };
-}
-function relaySpaceId(relay) {
-  return String(relay?.spaceId || "");
-}
-function relayEndpointId(relay) {
-  return String(relay?.endpointId || "");
-}
-function migrateSavedConfig(saved) {
-  if (!saved || typeof saved !== "object" || !saved.relay || typeof saved.relay !== "object") return saved;
-  if (Object.hasOwn(saved.relay, "endpointId")) return saved;
-  const legacyDeviceId = typeof saved.relay.deviceId === "string" ? saved.relay.deviceId : "";
-  const endpointId = legacyDeviceId && !legacyDeviceId.startsWith("host_") ? legacyDeviceId : "";
-  return { ...saved, relay: { ...saved.relay, endpointId } };
-}
-function validateConfig(config) {
-  if (!config || typeof config !== "object" || config.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
-  if (!config.relay || typeof config.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
-  if (config.relay.url) {
-    const normalizedRelayUrl = normalizeRelayUrl(config.relay.url);
-    const relayUrl = new URL(normalizedRelayUrl);
-    config.relay.url = normalizedRelayUrl;
-    if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
-      throw new Error("\u975E\u672C\u673A Relay \u5FC5\u987B\u4F7F\u7528 wss:// \u52A0\u5BC6\u8FDE\u63A5");
-    }
-    if (relayUrl.username || relayUrl.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
-    if (relayUrl.search || relayUrl.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
-  }
-  const spaceId = relaySpaceId(config.relay);
-  if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
-    throw new Error("Space ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
-  }
-  const endpointId = relayEndpointId(config.relay);
-  if (typeof config.relay.endpointId !== "string") throw new Error("Relay Endpoint ID \u65E0\u6548");
-  if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID \u65E0\u6548");
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("\u5185\u90E8\u4E3B\u673A\u8EAB\u4EFD ID \u65E0\u6548");
-  const heartbeat = Number(config.relay.heartbeatSeconds);
-  if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
-    throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
-  }
-  const reconnectMax = Number(config.relay.reconnectMaxSeconds);
-  if (!Number.isFinite(reconnectMax) || reconnectMax < 5 || reconnectMax > 600) {
-    throw new Error("\u6700\u5927\u91CD\u8FDE\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 600 \u79D2\u4E4B\u95F4");
-  }
-  if (typeof config.relay.deviceName !== "string" || config.relay.deviceName.length > 128) {
-    throw new Error("\u8BBE\u5907\u540D\u79F0\u65E0\u6548");
-  }
-  if (typeof config.relay.autoConnect !== "boolean") throw new Error("\u81EA\u52A8\u8FDE\u63A5\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!config.codex || typeof config.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
-  if (typeof config.codex.executable !== "string" || !config.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
-  if (typeof config.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
-  if (config.codex.defaultWorkingDirectory && !path4.isAbsolute(config.codex.defaultWorkingDirectory)) {
-    throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
-  }
-  if (typeof config.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!config.permissions || typeof config.permissions !== "object") throw new Error("\u8FDC\u7A0B\u6743\u9650\u914D\u7F6E\u65E0\u6548");
-  for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
-    if (typeof config.permissions[name] !== "boolean") throw new Error(`\u8FDC\u7A0B\u6743\u9650 ${name} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
-  }
-  if (typeof config.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!Array.isArray(config.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
-  for (const project of config.allowedProjects) {
-    if (typeof project !== "string" || !path4.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
-  }
-  return config;
-}
-
 // server/runtime.js
 import crypto7 from "node:crypto";
 import fs7 from "node:fs/promises";
@@ -1268,6 +701,568 @@ function isPaginatedThreadReadError(error) {
 }
 function isThreadNotLoadedError(error) {
   return error?.code === "APP_SERVER_ERROR" && typeof error?.message === "string" && /\bthread\s+not\s+found\b/i.test(error.message);
+}
+
+// server/utils.js
+import crypto from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+var PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function randomId(prefix) {
+  return `${prefix}_${crypto.randomBytes(12).toString("hex")}`;
+}
+function redact(value) {
+  if (typeof value === "string") {
+    return value.replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]").replace(/("?(?:token|connect[_-]?token|endpoint[_-]?grant|grant|secret|authorization|api[_-]?key|private[_-]?key|signature)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
+  }
+  return JSON.parse(redact(JSON.stringify(value)));
+}
+function normalizeRelayUrl(raw) {
+  const url = new URL(String(raw || ""));
+  if (!["ws:", "wss:"].includes(url.protocol)) {
+    throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 ws:// \u6216 wss://");
+  }
+  if (!url.hostname) throw new Error("Relay \u5730\u5740\u7F3A\u5C11\u4E3B\u673A\u540D");
+  if (url.username || url.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
+  if (url.search || url.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
+  if (url.pathname !== "/v1/connect") throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 /v1/connect");
+  return url.toString();
+}
+function isLoopbackHostname(hostname) {
+  return ["127.0.0.1", "::1", "localhost"].includes(hostname);
+}
+function safeProjectPath(projectPath, allowedProjects) {
+  if (!projectPath) return null;
+  const candidate = path.resolve(projectPath);
+  if (!allowedProjects?.length) return candidate;
+  const allowed = allowedProjects.some((root) => {
+    const normalizedRoot = path.resolve(root);
+    const relative = path.relative(normalizedRoot, candidate);
+    return relative === "" || !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
+  return allowed ? candidate : null;
+}
+function filterThreadList(result, allowedProjects) {
+  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
+  return {
+    ...result,
+    data: result.data.filter((thread) => Boolean(thread?.cwd && safeProjectPath(thread.cwd, allowedProjects)))
+  };
+}
+function filterProjectList(result, allowedProjects) {
+  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
+  return {
+    ...result,
+    data: result.data.filter((project) => {
+      const roots = Array.isArray(project?.roots) ? project.roots : [];
+      return roots.some((root) => {
+        const projectPath = typeof root === "string" ? root : root?.path;
+        return Boolean(projectPath && safeProjectPath(projectPath, allowedProjects));
+      });
+    })
+  };
+}
+
+// server/config-store.js
+import fs3 from "node:fs/promises";
+import os from "node:os";
+import path4 from "node:path";
+
+// server/secret-store.js
+import crypto2 from "node:crypto";
+import fs from "node:fs/promises";
+import path2 from "node:path";
+var SecretStore = class {
+  constructor(configDir, logger) {
+    this.configDir = configDir;
+    this.logger = logger;
+    this.fallbackFile = path2.join(configDir, "secrets.json");
+    this.cache = /* @__PURE__ */ new Map();
+    this.writeQueue = Promise.resolve();
+  }
+  async get(spaceId) {
+    const credential = await this.getCredential(spaceId);
+    return credential?.connectToken || null;
+  }
+  async getCredential(spaceId) {
+    const key = spaceId || "default";
+    const environmentToken = process.env.CODEX_RELAY_TOKEN?.trim();
+    if (environmentToken) {
+      const persisted = await this.getPersistedCredential(key);
+      const candidate = {
+        ...persisted || {},
+        connectToken: environmentToken
+      };
+      if (persisted?.connectToken && persisted.connectToken !== environmentToken) {
+        delete candidate.expiresAt;
+      }
+      const credential = validateCredential(candidate);
+      return cloneCredential(credential);
+    }
+    return this.getPersistedCredential(key);
+  }
+  /**
+   * Read the credential written to disk without applying the optional
+   * CODEX_RELAY_TOKEN runtime override.  Refresh responses must use this view
+   * when they need authoritative expiry metadata; otherwise an environment
+   * token would mask the newly rotated token forever.
+   */
+  async getPersistedCredential(spaceId) {
+    const key = spaceId || "default";
+    if (this.cache.has(key)) return cloneCredential(this.cache.get(key));
+    const values = await this.#readFallback();
+    const credential = values[key] ? validateCredential(values[key]) : null;
+    this.cache.set(key, credential);
+    return cloneCredential(credential);
+  }
+  async set(spaceId, credential) {
+    const key = spaceId || "default";
+    if (!credential) return this.delete(key);
+    const normalized = validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      values[key] = normalized;
+      await this.#writeFallback(values);
+      this.cache.set(key, normalized);
+      return { backend: "file" };
+    });
+  }
+  async update(spaceId, patch, expectedCredential) {
+    const key = spaceId || "default";
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error("Relay \u51ED\u8BC1\u66F4\u65B0\u683C\u5F0F\u65E0\u6548");
+    }
+    if (Object.keys(patch).length === 0) return this.getPersistedCredential(key);
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      const persisted = values[key] ? validateCredential(values[key]) : null;
+      const current = persisted || {};
+      if (expectedCredential && !matchesCredential(current, expectedCredential)) {
+        return null;
+      }
+      const next = { ...current, ...patch };
+      if (Object.hasOwn(patch, "connectToken") && (patch.connectToken === "" || patch.connectToken === null || patch.connectToken === void 0)) {
+        delete next.connectToken;
+        delete next.expiresAt;
+      }
+      if (Object.hasOwn(patch, "endpointGrant") && (patch.endpointGrant === "" || patch.endpointGrant === null || patch.endpointGrant === void 0)) {
+        delete next.endpointGrant;
+        delete next.grantExpiresAt;
+      }
+      if (Object.hasOwn(patch, "connectToken") && typeof patch.connectToken === "string" && patch.connectToken.trim() && patch.connectToken !== current.connectToken && !Object.hasOwn(patch, "expiresAt")) {
+        delete next.expiresAt;
+      }
+      if (Object.hasOwn(patch, "endpointGrant") && typeof patch.endpointGrant === "string" && patch.endpointGrant.trim() && patch.endpointGrant !== current.endpointGrant && !Object.hasOwn(patch, "grantExpiresAt")) {
+        delete next.grantExpiresAt;
+      }
+      for (const name of ["expiresAt", "grantExpiresAt", "tokenEndpoint"]) {
+        if (next[name] === null || next[name] === "" || next[name] === void 0) {
+          delete next[name];
+        }
+      }
+      for (const name of Object.keys(next)) {
+        if (next[name] === void 0) delete next[name];
+      }
+      if (!Object.keys(next).length) {
+        delete values[key];
+        await this.#writeFallback(values);
+        this.cache.set(key, null);
+        return null;
+      }
+      const normalized = validateCredential(next);
+      values[key] = normalized;
+      await this.#writeFallback(values);
+      this.cache.set(key, normalized);
+      return cloneCredential(normalized);
+    });
+  }
+  validate(credential) {
+    return validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
+  }
+  async delete(spaceId) {
+    const key = spaceId || "default";
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      delete values[key];
+      await this.#writeFallback(values);
+      this.cache.set(key, null);
+    });
+  }
+  async #readFallback() {
+    try {
+      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") return {};
+      throw error;
+    }
+  }
+  async #writeFallback(values) {
+    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.fallbackFile}.${process.pid}.${crypto2.randomUUID()}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify(values, null, 2)}
+`, { mode: 384 });
+    await fs.rename(temporary, this.fallbackFile);
+    await fs.chmod(this.fallbackFile, 384);
+  }
+  #enqueue(operation) {
+    const next = this.writeQueue.then(operation, operation);
+    this.writeQueue = next.catch(() => void 0);
+    return next;
+  }
+};
+function validateCredential(value) {
+  if (typeof value === "string") value = { connectToken: value };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Relay \u51ED\u8BC1\u683C\u5F0F\u65E0\u6548");
+  }
+  const connectToken = validateSecret(value.connectToken, "Connect Token", false);
+  const endpointGrant = validateSecret(value.endpointGrant, "Endpoint Grant", false);
+  if (!connectToken && !endpointGrant) throw new Error("Connect Token \u6216 Endpoint Grant \u81F3\u5C11\u9700\u8981\u4E00\u4E2A");
+  const expiresAt = validateExpiry(value.expiresAt, "Connect Token");
+  const grantExpiresAt = validateExpiry(value.grantExpiresAt, "Endpoint Grant");
+  const tokenEndpoint = validateTokenEndpoint(value.tokenEndpoint);
+  return {
+    ...connectToken === void 0 ? {} : { connectToken },
+    ...expiresAt === void 0 ? {} : { expiresAt },
+    ...endpointGrant === void 0 ? {} : { endpointGrant },
+    ...grantExpiresAt === void 0 ? {} : { grantExpiresAt },
+    ...tokenEndpoint === void 0 ? {} : { tokenEndpoint }
+  };
+}
+function validateSecret(value, label, required) {
+  if (value === void 0 || value === null || value === "") {
+    if (required) throw new Error(`${label} \u4E0D\u80FD\u4E3A\u7A7A`);
+    return void 0;
+  }
+  const minimum = label === "Endpoint Grant" ? 16 : 1;
+  if (typeof value !== "string" || value.length < minimum || value.length > 16384 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${label} \u683C\u5F0F\u65E0\u6548`);
+  }
+  return value;
+}
+function validateExpiry(value, label) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} \u8FC7\u671F\u65F6\u95F4\u65E0\u6548`);
+  return value;
+}
+function validateTokenEndpoint(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (typeof value !== "string" || value.length > 2048) throw new Error("Token Endpoint \u65E0\u6548");
+  const endpoint = new URL(value);
+  if (!endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new Error("Token Endpoint \u4E0D\u80FD\u5305\u542B\u51ED\u8BC1\u3001query \u6216 hash");
+  }
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(endpoint.hostname);
+  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
+    throw new Error("\u975E\u672C\u673A Token Endpoint \u5FC5\u987B\u4F7F\u7528 https://");
+  }
+  return endpoint.toString();
+}
+function cloneCredential(value) {
+  return value ? { ...value } : null;
+}
+function matchesCredential(current, expected) {
+  const candidate = typeof expected === "string" ? { connectToken: expected } : expected;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  for (const field of ["connectToken", "endpointGrant", "tokenEndpoint"]) {
+    if (!Object.hasOwn(candidate, field)) continue;
+    const expectedValue = candidate[field];
+    if (expectedValue === null || expectedValue === void 0) {
+      if (current?.[field] !== void 0) return false;
+    } else if (current?.[field] !== expectedValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// server/endpoint-identity-store.js
+import crypto3 from "node:crypto";
+import fs2 from "node:fs/promises";
+import path3 from "node:path";
+var EndpointIdentityStore = class {
+  constructor(configDir) {
+    this.configDir = configDir;
+    this.file = path3.join(configDir, "endpoint-identity.json");
+    this.identity = null;
+  }
+  async get() {
+    if (this.identity) return { ...this.identity };
+    try {
+      this.identity = this.#validate(JSON.parse(await fs2.readFile(this.file, "utf8")));
+      await fs2.chmod(this.file, 384);
+      return { ...this.identity };
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const pair = crypto3.generateKeyPairSync("ed25519");
+    const publicDer = pair.publicKey.export({ format: "der", type: "spki" });
+    const privateDer = pair.privateKey.export({ format: "der", type: "pkcs8" });
+    const identity = {
+      schemaVersion: 1,
+      publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
+      privateKey: Buffer.from(privateDer).toString("base64url")
+    };
+    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
+    await fs2.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
+`, { mode: 384 });
+    await fs2.rename(temporary, this.file);
+    await fs2.chmod(this.file, 384);
+    this.identity = identity;
+    return { ...identity };
+  }
+  #validate(value) {
+    if (!value || value.schemaVersion !== 1) throw new Error("Endpoint identity schema is invalid");
+    const publicBytes = Buffer.from(value.publicKey || "", "base64url");
+    const privateBytes = Buffer.from(value.privateKey || "", "base64url");
+    if (publicBytes.length !== 32 || publicBytes.toString("base64url") !== value.publicKey || privateBytes.length < 32 || privateBytes.toString("base64url") !== value.privateKey) {
+      throw new Error("Endpoint identity key material is invalid");
+    }
+    return { schemaVersion: 1, publicKey: value.publicKey, privateKey: value.privateKey };
+  }
+};
+
+// server/config-store.js
+var DEFAULT_PERMISSIONS = Object.freeze({
+  readThreads: true,
+  sendMessages: true,
+  createThreads: true,
+  steerTurns: true,
+  interruptTurns: true,
+  respondToApprovals: false
+});
+function defaultConfig() {
+  return {
+    version: 1,
+    relay: {
+      url: "",
+      spaceId: "",
+      endpointId: "",
+      deviceId: randomId("host"),
+      deviceName: os.hostname(),
+      autoConnect: false,
+      heartbeatSeconds: 20,
+      reconnectMaxSeconds: 30
+    },
+    codex: {
+      executable: "codex",
+      autoStartAppServer: true,
+      defaultWorkingDirectory: ""
+    },
+    permissions: { ...DEFAULT_PERMISSIONS },
+    allowedProjects: [],
+    readOnly: false
+  };
+}
+var ConfigStore = class {
+  constructor({ configDir, logger } = {}) {
+    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path4.join(os.homedir(), ".codex-relay-plugin");
+    this.configFile = path4.join(this.configDir, "config.json");
+    this.logger = logger;
+    this.secretStore = new SecretStore(this.configDir, logger);
+    this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
+    this.config = null;
+  }
+  async load() {
+    let saved = {};
+    try {
+      saved = JSON.parse(await fs3.readFile(this.configFile, "utf8"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    this.config = mergeConfig(defaultConfig(), migrateSavedConfig(saved));
+    validateConfig(this.config);
+    return this.config;
+  }
+  get() {
+    if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
+    return structuredClone(this.config);
+  }
+  async publicConfig({ includeToken = false } = {}) {
+    const config = this.get();
+    const credential = await this.secretStore.getCredential(relaySpaceId(config.relay));
+    const identity = await this.endpointIdentityStore.get();
+    const credentialConfigured = Boolean(credential?.connectToken || credential?.endpointGrant);
+    return {
+      ...config,
+      relay: {
+        ...config.relay,
+        ...includeToken ? {
+          token: credential?.connectToken || "",
+          ...credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}
+        } : {},
+        tokenConfigured: Boolean(credential?.connectToken),
+        credentialConfigured,
+        tokenExpiresAt: credential?.expiresAt || null,
+        endpointGrantConfigured: Boolean(credential?.endpointGrant),
+        grantExpiresAt: credential?.grantExpiresAt || null,
+        tokenEndpoint: credential?.tokenEndpoint || "",
+        endpointPublicKey: identity.publicKey
+      }
+    };
+  }
+  async update(patch, credentialPatch) {
+    const next = mergeConfig(this.get(), patch || {});
+    validateConfig(next);
+    const nextSpace = relaySpaceId(next.relay);
+    let credentialTouched = false;
+    if (credentialPatch !== void 0) {
+      credentialTouched = true;
+      if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
+      if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
+        throw new Error("Relay Token \u51ED\u8BC1\u5FC5\u987B\u662F\u5BF9\u8C61");
+      }
+      if (Object.hasOwn(credentialPatch, "token")) {
+        throw new Error("Relay Token \u5FC5\u987B\u901A\u8FC7\u5B57\u7B26\u4E32\u6216 connectToken \u5B57\u6BB5\u63D0\u4F9B");
+      }
+      if (Object.keys(credentialPatch).length === 0) credentialTouched = false;
+      const current = credentialTouched ? await this.secretStore.getPersistedCredential(nextSpace) || {} : {};
+      const credential = { ...current };
+      if (Object.hasOwn(credentialPatch, "connectToken")) {
+        const nextToken = credentialPatch.connectToken;
+        if (nextToken === null || nextToken === "" || nextToken === void 0) {
+          delete credential.connectToken;
+          delete credential.expiresAt;
+        } else if (typeof nextToken === "string" && nextToken.trim()) {
+          if (nextToken !== current.connectToken) delete credential.expiresAt;
+          credential.connectToken = nextToken;
+        } else {
+          throw new Error("Connect Token \u683C\u5F0F\u65E0\u6548");
+        }
+      }
+      if (Object.hasOwn(credentialPatch, "expiresAt")) {
+        if (credentialPatch.expiresAt === null || credentialPatch.expiresAt === "" || credentialPatch.expiresAt === void 0) delete credential.expiresAt;
+        else credential.expiresAt = credentialPatch.expiresAt;
+      }
+      for (const name of ["endpointGrant", "grantExpiresAt", "tokenEndpoint"]) {
+        if (!Object.hasOwn(credentialPatch, name)) continue;
+        const value = credentialPatch[name];
+        if (value === "" || value === null || value === void 0) {
+          delete credential[name];
+        } else {
+          if (name === "endpointGrant" && value !== current.endpointGrant && !Object.hasOwn(credentialPatch, "grantExpiresAt")) {
+            delete credential.grantExpiresAt;
+          }
+          credential[name] = value;
+        }
+      }
+      if (Object.keys(credential).length) this.secretStore.validate(credential);
+    }
+    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.configFile}.tmp`;
+    await fs3.writeFile(temporary, `${JSON.stringify(next, null, 2)}
+`, { mode: 384 });
+    await fs3.rename(temporary, this.configFile);
+    await fs3.chmod(this.configFile, 384);
+    this.config = next;
+    if (credentialTouched) {
+      await this.secretStore.update(nextSpace, credentialPatch);
+    }
+    this.logger?.info("config", "\u914D\u7F6E\u5DF2\u4FDD\u5B58", { relayUrl: next.relay.url, spaceId: nextSpace });
+    return this.publicConfig();
+  }
+  async relayCredential(options = {}) {
+    const spaceId = relaySpaceId(this.get().relay);
+    if (options?.ignoreEnvironment === true) {
+      return this.secretStore.getPersistedCredential(spaceId);
+    }
+    return this.secretStore.getCredential(spaceId);
+  }
+  async persistedRelayCredential() {
+    return this.secretStore.getPersistedCredential(relaySpaceId(this.get().relay));
+  }
+  async token() {
+    const credential = await this.relayCredential();
+    return credential?.connectToken || null;
+  }
+  async updateRelayCredential(patch, expectedCredential) {
+    const spaceId = relaySpaceId(this.get().relay);
+    return this.secretStore.update(spaceId, patch, expectedCredential);
+  }
+  async endpointIdentity() {
+    return this.endpointIdentityStore.get();
+  }
+};
+function mergeConfig(base, patch) {
+  const relayPatch = patch.relay || {};
+  const spaceId = relayPatch.spaceId ?? base.relay.spaceId ?? "";
+  return {
+    ...base,
+    ...patch,
+    relay: { ...base.relay, ...relayPatch, spaceId },
+    codex: { ...base.codex, ...patch.codex || {} },
+    permissions: { ...base.permissions, ...patch.permissions || {} },
+    allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects
+  };
+}
+function relaySpaceId(relay) {
+  return String(relay?.spaceId || "");
+}
+function relayEndpointId(relay) {
+  return String(relay?.endpointId || "");
+}
+function migrateSavedConfig(saved) {
+  if (!saved || typeof saved !== "object" || !saved.relay || typeof saved.relay !== "object") return saved;
+  if (Object.hasOwn(saved.relay, "endpointId")) return saved;
+  const legacyDeviceId = typeof saved.relay.deviceId === "string" ? saved.relay.deviceId : "";
+  const endpointId = legacyDeviceId && !legacyDeviceId.startsWith("host_") ? legacyDeviceId : "";
+  return { ...saved, relay: { ...saved.relay, endpointId } };
+}
+function validateConfig(config) {
+  if (!config || typeof config !== "object" || config.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
+  if (!config.relay || typeof config.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
+  if (config.relay.url) {
+    const normalizedRelayUrl = normalizeRelayUrl(config.relay.url);
+    const relayUrl = new URL(normalizedRelayUrl);
+    config.relay.url = normalizedRelayUrl;
+    if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
+      throw new Error("\u975E\u672C\u673A Relay \u5FC5\u987B\u4F7F\u7528 wss:// \u52A0\u5BC6\u8FDE\u63A5");
+    }
+    if (relayUrl.username || relayUrl.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
+    if (relayUrl.search || relayUrl.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
+  }
+  const spaceId = relaySpaceId(config.relay);
+  if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
+    throw new Error("Space ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
+  }
+  const endpointId = relayEndpointId(config.relay);
+  if (typeof config.relay.endpointId !== "string") throw new Error("Relay Endpoint ID \u65E0\u6548");
+  if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID \u65E0\u6548");
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config.relay.deviceId || "")) throw new Error("\u5185\u90E8\u4E3B\u673A\u8EAB\u4EFD ID \u65E0\u6548");
+  const heartbeat = Number(config.relay.heartbeatSeconds);
+  if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
+    throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
+  }
+  const reconnectMax = Number(config.relay.reconnectMaxSeconds);
+  if (!Number.isFinite(reconnectMax) || reconnectMax < 5 || reconnectMax > 600) {
+    throw new Error("\u6700\u5927\u91CD\u8FDE\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 600 \u79D2\u4E4B\u95F4");
+  }
+  if (typeof config.relay.deviceName !== "string" || config.relay.deviceName.length > 128) {
+    throw new Error("\u8BBE\u5907\u540D\u79F0\u65E0\u6548");
+  }
+  if (typeof config.relay.autoConnect !== "boolean") throw new Error("\u81EA\u52A8\u8FDE\u63A5\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!config.codex || typeof config.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
+  if (typeof config.codex.executable !== "string" || !config.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
+  if (typeof config.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
+  if (config.codex.defaultWorkingDirectory && !path4.isAbsolute(config.codex.defaultWorkingDirectory)) {
+    throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
+  }
+  if (typeof config.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!config.permissions || typeof config.permissions !== "object") throw new Error("\u8FDC\u7A0B\u6743\u9650\u914D\u7F6E\u65E0\u6548");
+  for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
+    if (typeof config.permissions[name] !== "boolean") throw new Error(`\u8FDC\u7A0B\u6743\u9650 ${name} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
+  }
+  if (typeof config.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!Array.isArray(config.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
+  for (const project of config.allowedProjects) {
+    if (typeof project !== "string" || !path4.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
+  }
+  return config;
 }
 
 // server/protocol.js
@@ -3353,8 +3348,8 @@ var ConnectorService = class _ConnectorService extends EventEmitter4 {
     }
     return this.status();
   }
-  attachDashboard(dashboard2) {
-    this.dashboard = dashboard2;
+  attachDashboard(dashboard) {
+    this.dashboard = dashboard;
   }
   async stop() {
     this.#pendingEvents.length = 0;
@@ -3866,19 +3861,19 @@ async function getRuntime() {
   const service = new ConnectorService({ configDir: configStore.configDir });
   try {
     await service.start();
-    const dashboard2 = new DashboardServer(service, service.logger);
-    service.attachDashboard(dashboard2);
-    await dashboard2.start();
+    const dashboard = new DashboardServer(service, service.logger);
+    service.attachDashboard(dashboard);
+    await dashboard.start();
     const info = {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
       version: "1.0.0+codex.20260904053012",
       buildId: "1.0.0+codex.20260904053012:1788914631438",
-      ...dashboard2.connectionInfo()
+      ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
-    runtime = { service, dashboard: dashboard2, remote: false, configDir: configStore.configDir, runtimeInfo: info, runtimeLock: lock };
+    runtime = { service, dashboard, remote: false, configDir: configStore.configDir, runtimeInfo: info, runtimeLock: lock };
     return runtime;
   } catch (error) {
     await lock.release().catch(() => {
@@ -4012,70 +4007,23 @@ var RuntimeProxy = class {
   }
 };
 
-// server/agent-launcher.js
-var START_TIMEOUT_MS = 8e3;
-var POLL_INTERVAL_MS = 100;
-async function ensureAgent(options = {}) {
-  const configStore = options.configStore || new ConfigStore();
-  const configDir = configStore.configDir;
-  let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260904053012:1788914631438";
-  if (existing && expectedBuild && existing.buildId !== expectedBuild) {
-    await retireAgent(existing.pid, configDir, options.timeoutMs);
-    existing = null;
+// server/agent-cli.js
+try {
+  const runtime2 = await getRuntime();
+  if (runtime2.remote) {
+    process.exit(0);
   }
-  if (existing) return existing;
-  const agentScript = options.agentScript || path9.join(path9.dirname(fileURLToPath3(import.meta.url)), "agent-cli.js");
-  const child = spawn2(process.execPath, [agentScript], {
-    cwd: options.cwd || process.cwd(),
-    env: { ...process.env, CODEX_RELAY_AGENT: "1" },
-    detached: true,
-    stdio: "ignore"
-  });
-  child.unref();
-  const deadline = Date.now() + (options.timeoutMs ?? START_TIMEOUT_MS);
-  while (Date.now() < deadline) {
-    const info = await readRuntimeInfo(configDir);
-    if (info) return info;
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-  return null;
+} catch (error) {
+  console.error(`[codex-relay-agent] ${error.message}`);
+  process.exit(1);
 }
-async function retireAgent(pid, configDir, timeoutMs) {
-  if (Number.isInteger(Number(pid)) && Number(pid) > 0 && Number(pid) !== process.pid) {
-    try {
-      process.kill(Number(pid), "SIGTERM");
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-    }
-  }
-  const deadline = Date.now() + Math.min(timeoutMs ?? START_TIMEOUT_MS, 5e3);
-  while (Date.now() < deadline) {
-    if (!await readRuntimeInfo(configDir)) return;
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-  if (Number.isInteger(Number(pid)) && Number(pid) > 0) {
-    try {
-      process.kill(Number(pid), "SIGKILL");
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-    }
-  }
-}
-
-// server/dashboard-cli.js
-await ensureAgent();
-var runtime2 = await getRuntime();
-var { dashboard } = runtime2;
-console.log(`Codex Relay dashboard: ${dashboard.url()}`);
-if (runtime2.remote) process.exit(0);
 var shuttingDown = false;
-async function shutdown() {
+async function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  await stopRuntime();
-  process.exit(0);
+  await stopRuntime().catch((error) => console.error(`[codex-relay-agent] shutdown: ${error.message}`));
+  process.exit(code);
 }
-for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, shutdown);
-process.stdin.once("close", shutdown);
-process.stdin.once("end", shutdown);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(signal, () => shutdown(0));
+}

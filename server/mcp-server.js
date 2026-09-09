@@ -2,8 +2,10 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ensureAgent } from "./agent-launcher.js";
 import { getRuntime, stopRuntime } from "./runtime.js";
 
+await ensureAgent();
 const { service, dashboard } = await getRuntime();
 const server = new Server(
   { name: "codex-relay-plugin", version: "1.0.0" },
@@ -119,9 +121,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.once(signal, async () => {
-    await stopRuntime();
-    process.exit(0);
-  });
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await stopRuntime();
+  process.exit(0);
 }
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, shutdown);
+// Codex closes the MCP stdio pipe when it reloads a plugin. Treat that as a
+// real lifecycle event so the owner releases its lock, Dashboard and children.
+process.stdin.once("close", shutdown);
+process.stdin.once("end", shutdown);

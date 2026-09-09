@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { readRuntimeInfo } from "../server/runtime.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.join(projectRoot, "plugins", "codex-relay-plugin");
@@ -48,5 +49,9 @@ try {
   console.log(`生产 MCP 冒烟测试通过（${actualTools.length} 个工具）`);
 } finally {
   await client.close().catch(() => {});
+  const agent = await readRuntimeInfo(configDir);
+  if (agent?.pid && agent.pid !== process.pid) {
+    try { process.kill(agent.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+  }
   await rm(configDir, { recursive: true, force: true });
 }

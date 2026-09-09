@@ -13,6 +13,8 @@ import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js
 
 export class ConnectorService extends EventEmitter {
   #unsupportedNotificationMethods = new Set();
+  static MAX_THREAD_ACCESS_ENTRIES = 1000;
+  static MAX_PENDING_EVENTS = 256;
 
   constructor(options = {}) {
     super();
@@ -21,12 +23,18 @@ export class ConnectorService extends EventEmitter {
     this.instanceLock = options.instanceLock || null;
     this.appServer = options.appServer || new AppServerClient(this.configStore, this.logger);
     this.relay = options.relay || new RelayClient(this.configStore, this.logger);
-    this.eventBuffer = new EventBuffer(options.eventBufferSize || 1000);
+    this.eventBuffer = new EventBuffer(options.eventBufferSize || 1000, {
+      maxBytes: options.eventBufferMaxBytes,
+      maxEventBytes: options.eventMaxBytes,
+    });
     this.dashboard = null;
     this.startedAt = null;
     this.starting = null;
     this.autoConnectStarted = false;
     this.eventQueue = Promise.resolve();
+    this.#pendingEvents = [];
+    this.#eventWorker = null;
+    this.#eventQueueOverflowed = false;
     this.threadAccess = new Map();
     this.router = new CommandRouter({
       configStore: this.configStore,
@@ -64,6 +72,8 @@ export class ConnectorService extends EventEmitter {
   }
 
   async stop() {
+    this.#pendingEvents.length = 0;
+    this.#eventQueueOverflowed = false;
     await this.disconnect("connector stopped");
     await this.appServer.stop();
     await this.dashboard?.stop();
@@ -109,6 +119,74 @@ export class ConnectorService extends EventEmitter {
     return config;
   }
 
+  #rememberThreadAccess(threadId, allowed) {
+    const id = String(threadId || '').trim();
+    if (!id) return;
+    this.threadAccess.delete(id);
+    this.threadAccess.set(id, { allowed: Boolean(allowed), touchedAt: Date.now() });
+    while (this.threadAccess.size > ConnectorService.MAX_THREAD_ACCESS_ENTRIES) {
+      this.threadAccess.delete(this.threadAccess.keys().next().value);
+    }
+  }
+
+  #pendingEvents;
+  #eventWorker;
+  #eventQueueOverflowed;
+
+  #enqueueEvent(event, params = {}) {
+    const context = extractContext(params);
+    const isDelta = event.type.endsWith('.delta') || event.type === 'tool.output';
+    if (this.#pendingEvents.length >= ConnectorService.MAX_PENDING_EVENTS) {
+      if (isDelta) {
+        const dropIndex = this.#pendingEvents.findIndex((entry) => entry.isDelta);
+        if (dropIndex >= 0) this.#pendingEvents.splice(dropIndex, 1);
+        else {
+          this.#eventQueueOverflowed = true;
+          return;
+        }
+        this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId });
+      } else {
+        // Lifecycle/approval events are more important than a stale delta.
+        // If the queue is saturated, retain the lifecycle and discard the
+        // newest delta only; the next snapshot reconciles any missing text.
+        this.#eventQueueOverflowed = true;
+        return;
+      }
+    } else {
+      this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId });
+    }
+    if (!this.#eventWorker) {
+      this.#eventWorker = this.#drainEvents();
+      this.eventQueue = this.#eventWorker.finally(() => { this.#eventWorker = null; });
+    }
+  }
+
+  async #drainEvents() {
+    while (this.#pendingEvents.length) {
+      const entry = this.#pendingEvents.shift();
+      try {
+        await this.#forwardEvent(entry.event, entry.params);
+      } catch (error) {
+        this.logger.warn("connector", "Codex 事件转发失败", { message: error.message });
+      }
+    }
+  }
+
+  #readThreadAccess(threadId) {
+    const id = String(threadId || '').trim();
+    const entry = this.threadAccess.get(id);
+    if (!entry) return undefined;
+    // Access decisions are cheap metadata reads; expire them so project
+    // whitelist changes cannot leave stale authorization in memory forever.
+    if (Date.now() - entry.touchedAt > 15 * 60 * 1000) {
+      this.threadAccess.delete(id);
+      return undefined;
+    }
+    this.threadAccess.delete(id);
+    this.threadAccess.set(id, { ...entry, touchedAt: Date.now() });
+    return entry.allowed;
+  }
+
   async status() {
     const config = await this.configStore.publicConfig();
     return {
@@ -130,6 +208,7 @@ export class ConnectorService extends EventEmitter {
         allowedProjects: config.allowedProjects.length,
         remoteApprovalEnabled: config.permissions.respondToApprovals,
         tokenConfigured: config.relay.tokenConfigured,
+        credentialConfigured: config.relay.credentialConfigured,
         tokenExpiresAt: config.relay.tokenExpiresAt,
         endpointGrantConfigured: config.relay.endpointGrantConfigured,
         grantExpiresAt: config.relay.grantExpiresAt,
@@ -139,6 +218,11 @@ export class ConnectorService extends EventEmitter {
       protocol: {
         version: 1,
         latestSequence: this.eventBuffer.latestSequence(),
+        bufferedEvents: this.eventBuffer.size,
+        bufferedBytes: this.eventBuffer.bytes,
+        threadAccessEntries: this.threadAccess.size,
+        pendingEventQueue: this.#pendingEvents.length,
+        eventQueueOverflowed: this.#eventQueueOverflowed,
       },
       dashboard: this.dashboard?.status() || { state: "stopped", url: null },
     };
@@ -154,13 +238,14 @@ export class ConnectorService extends EventEmitter {
     const config = await this.configStore.publicConfig();
     checks.push({
       name: "configuration",
-      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && relayEndpointId(config.relay) && config.relay.tokenConfigured),
+      ok: Boolean(config.relay.url && relaySpaceId(config.relay) && relayEndpointId(config.relay) && config.relay.credentialConfigured),
       details: {
         relayUrlConfigured: Boolean(config.relay.url),
         spaceConfigured: Boolean(relaySpaceId(config.relay)),
         endpointConfigured: Boolean(relayEndpointId(config.relay)),
         endpointId: relayEndpointId(config.relay),
         tokenConfigured: config.relay.tokenConfigured,
+        credentialConfigured: config.relay.credentialConfigured,
         endpointGrantConfigured: config.relay.endpointGrantConfigured,
         tokenExpiresAt: config.relay.tokenExpiresAt,
         grantExpiresAt: config.relay.grantExpiresAt,
@@ -188,6 +273,10 @@ export class ConnectorService extends EventEmitter {
   }
 
   async syncAfter(lastSequence) {
+    if (this.#eventQueueOverflowed) {
+      this.#eventQueueOverflowed = false;
+      return this.#snapshotSync();
+    }
     const events = this.eventBuffer.after(lastSequence);
     const requestedSequence = Number(lastSequence || 0);
     const latestSequence = this.eventBuffer.latestSequence();
@@ -203,6 +292,10 @@ export class ConnectorService extends EventEmitter {
     ) {
       return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence() };
     }
+    return this.#snapshotSync();
+  }
+
+  async #snapshotSync() {
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
     const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
@@ -266,14 +359,10 @@ export class ConnectorService extends EventEmitter {
         }
         return;
       }
-      this.eventQueue = this.eventQueue
-        .then(() => this.#forwardEvent(event, params))
-        .catch((error) => this.logger.warn("connector", "Codex 事件转发失败", { message: error.message }));
+      this.#enqueueEvent(event, params);
     });
     this.appServer.on("approval", (approval) => {
-      this.eventQueue = this.eventQueue
-        .then(() => this.#forwardEvent({ type: "approval.requested", ...approval }, approval.params))
-        .catch((error) => this.logger.warn("connector", "审批事件转发失败", { message: error.message }));
+      this.#enqueueEvent({ type: "approval.requested", ...approval }, approval.params);
     });
   }
 
@@ -282,7 +371,17 @@ export class ConnectorService extends EventEmitter {
     const config = this.configStore.get();
     const preparedEvent = await this.prepareResourceImages(event);
     const envelope = eventEnvelope(config, this.eventBuffer, preparedEvent, extractContext(params));
-    this.relay.send(envelope);
+    const sent = this.relay.send(envelope);
+    if (!sent) {
+      // Keep the event in EventBuffer so a reconnecting mobile client can
+      // recover it through sync.request instead of treating a closed socket as
+      // a successful delivery.
+      this.logger.warn("connector", "Relay 当前不可用，事件已保留待同步", {
+        eventId: envelope.eventId,
+        sequence: envelope.sequence,
+        type: event.type,
+      });
+    }
     this.emit("event", envelope);
   }
 
@@ -293,11 +392,12 @@ export class ConnectorService extends EventEmitter {
     const cwd = params.cwd || params.thread?.cwd;
     if (cwd) {
       const allowed = Boolean(safeProjectPath(cwd, allowedProjects));
-      if (context.threadId) this.threadAccess.set(context.threadId, allowed);
+      if (context.threadId) this.#rememberThreadAccess(context.threadId, allowed);
       return allowed;
     }
     if (!context.threadId) return false;
-    if (this.threadAccess.has(context.threadId)) return this.threadAccess.get(context.threadId);
+    const cached = this.#readThreadAccess(context.threadId);
+    if (cached !== undefined) return cached;
     try {
       // Access checks only need the thread cwd. A full thread.read can pull
       // megabytes of tool output and, while a turn is running, block the
@@ -309,7 +409,7 @@ export class ConnectorService extends EventEmitter {
       // status command resumes the selected thread and enables live events.
       const result = await this.appServer.readThreadStatus(context.threadId, { ensureResumed: false });
       const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
-      this.threadAccess.set(context.threadId, allowed);
+      this.#rememberThreadAccess(context.threadId, allowed);
       return allowed;
     } catch (error) {
       this.logger.warn("connector", "无法确认事件所属项目，已停止远程转发", { threadId: context.threadId, message: error.message });

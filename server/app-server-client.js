@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 
 export class AppServerClient extends EventEmitter {
   #process = null;
+  #outputLines = null;
   #requests = new Map();
   #serverRequests = new Map();
   #nextId = 1;
@@ -21,6 +22,7 @@ export class AppServerClient extends EventEmitter {
   #resumedThreads = new Set();
   #resumingThreads = new Map();
   #resumeRetryAt = new Map();
+  static MAX_RESUMED_THREADS = 1000;
 
   static APPROVAL_METHODS = new Set([
     "item/commandExecution/requestApproval",
@@ -87,24 +89,42 @@ export class AppServerClient extends EventEmitter {
     child.once("error", (error) => this.#handleExit(child, error));
     child.once("exit", (code, signal) => this.#handleExit(child, new Error(`App Server 已退出 (${code ?? signal})`)));
     const lines = readline.createInterface({ input: child.stdout });
+    this.#outputLines = lines;
     lines.on("line", (line) => this.#handleLine(line));
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString().trim();
       if (text) this.logger.info("app-server", text);
     });
-    await this.request("initialize", {
-      clientInfo: {
-        name: "codex-relay-plugin",
-        title: "Codex Relay Plugin",
-        version: "1.0.0",
-      },
-      capabilities: { experimentalApi: true },
-    }, 15_000);
-    this.notify("initialized", {});
-    this.state = "ready";
-    this.logger.info("app-server", "Codex App Server 已就绪", { version: this.version, pid: child.pid });
-    this.emit("status", this.status());
-    return this.status();
+    try {
+      await this.request("initialize", {
+        clientInfo: {
+          name: "codex-relay-plugin",
+          title: "Codex Relay Plugin",
+          version: "1.0.0",
+        },
+        capabilities: { experimentalApi: true },
+      }, 15_000);
+      this.notify("initialized", {});
+      this.state = "ready";
+      this.logger.info("app-server", "Codex App Server 已就绪", { version: this.version, pid: child.pid });
+      this.emit("status", this.status());
+      return this.status();
+    } catch (error) {
+      if (this.#process === child) this.#process = null;
+      this.state = "error";
+      this.#outputLines?.close();
+      this.#outputLines = null;
+      try { child.kill("SIGTERM"); } catch {}
+      await new Promise((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        child.once("exit", resolve);
+        setTimeout(resolve, 1_000);
+      });
+      if (child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGKILL"); } catch {}
+      }
+      throw error;
+    }
   }
 
   async stop() {
@@ -117,11 +137,23 @@ export class AppServerClient extends EventEmitter {
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
+    this.#outputLines?.close();
+    this.#outputLines = null;
+    const exited = new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      child.once("exit", resolve);
+    });
     child.kill("SIGTERM");
     for (const pending of this.#requests.values()) pending.reject(new RelayError("APP_SERVER_UNAVAILABLE", "App Server 已停止"));
     this.#requests.clear();
     this.#serverRequests.clear();
     this.emit("status", this.status());
+    const timeout = new Promise((resolve) => setTimeout(resolve, 3_000));
+    await Promise.race([exited, timeout]);
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+    }
   }
 
   request(method, params = {}, timeoutMs = 30_000) {
@@ -369,7 +401,7 @@ export class AppServerClient extends EventEmitter {
     if (existing) return existing;
     const pending = this.resumeThread(id)
       .then(() => {
-        this.#resumedThreads.add(id);
+        this.#rememberResumedThread(id);
         this.#resumeRetryAt.delete(id);
       })
       .catch((error) => {
@@ -378,7 +410,7 @@ export class AppServerClient extends EventEmitter {
         // persisted read below is still useful, and retrying after a short
         // cooldown lets the Relay subscribe automatically once that writer
         // releases the thread without flooding App Server with resume calls.
-        this.#resumeRetryAt.set(id, Date.now() + 5_000);
+        this.#rememberResumeRetry(id, Date.now() + 5_000);
         this.logger.warn("app-server", "任务正在其他 Codex 客户端运行，暂以快照同步", {
           threadId: id,
         });
@@ -390,6 +422,22 @@ export class AppServerClient extends EventEmitter {
       });
     this.#resumingThreads.set(id, pending);
     return pending;
+  }
+
+  #rememberResumedThread(id) {
+    this.#resumedThreads.delete(id);
+    this.#resumedThreads.add(id);
+    while (this.#resumedThreads.size > AppServerClient.MAX_RESUMED_THREADS) {
+      this.#resumedThreads.delete(this.#resumedThreads.values().next().value);
+    }
+  }
+
+  #rememberResumeRetry(id, retryAt) {
+    this.#resumeRetryAt.delete(id);
+    this.#resumeRetryAt.set(id, retryAt);
+    while (this.#resumeRetryAt.size > AppServerClient.MAX_RESUMED_THREADS) {
+      this.#resumeRetryAt.delete(this.#resumeRetryAt.keys().next().value);
+    }
   }
 
   async #readPaginatedThread(threadId) {
@@ -460,14 +508,14 @@ export class AppServerClient extends EventEmitter {
   async createThread({ cwd } = {}) {
     const result = await this.request("thread/start", { ...(cwd ? { cwd } : {}) });
     const id = result?.thread?.id || result?.id;
-    if (id) this.#resumedThreads.add(normalizeThreadId(id));
+    if (id) this.#rememberResumedThread(normalizeThreadId(id));
     return result;
   }
 
   async resumeThread(threadId) {
     const id = normalizeThreadId(threadId);
     const result = await this.request("thread/resume", { threadId: id });
-    this.#resumedThreads.add(id);
+    this.#rememberResumedThread(id);
     return result;
   }
 
@@ -482,7 +530,7 @@ export class AppServerClient extends EventEmitter {
     };
     try {
       const result = await this.request("turn/start", params);
-      this.#resumedThreads.add(id);
+      this.#rememberResumedThread(id);
       return result;
     } catch (error) {
       // `thread/list` can expose an on-disk historical task before the App

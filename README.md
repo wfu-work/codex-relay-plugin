@@ -21,16 +21,20 @@
 - 公网 Relay 强制 `wss://`；`ws://` 仅允许 `localhost` / 回环地址
 - 本地控制台固定监听 `127.0.0.1:3210`，API 使用随机 Bearer key，key 只放在 URL fragment 中
 - 状态、诊断和脱敏日志 MCP 工具
+- 独立常驻 Relay Agent：MCP 重载、Dashboard 重开或插件更新不会重复创建 Connector；更新时按构建代际优雅回收旧进程
 
 ## 架构
 
 ```text
 Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server (stdio)
                                      │
-                                     └── 127.0.0.1:3210 配置台
+                                     ├── Relay Agent（runtime.lock 单例）
+                                     │      ├── codex app-server (stdio)
+                                     │      └── 127.0.0.1:3210 配置台
+                                     └── MCP Server / Dashboard CLI（短生命周期代理）
 ```
 
-Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息；图片资源由 Relay 内存短期托管，不落盘。
+Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息；图片资源由 Relay 内存短期托管，不落盘。MCP Server 通过本机受 Bearer key 保护的 Dashboard API 调用 Agent，stdin 关闭只会结束 MCP 代理，不会误杀 Agent 或 App Server。
 
 ## 安装（GitHub，推荐）
 

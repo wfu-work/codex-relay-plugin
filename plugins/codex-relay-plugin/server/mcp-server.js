@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path8) {
-      let input = path8;
+    function removeDotSegments(path10) {
+      let input = path10;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path8, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
+        const [path10, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6898,12 +6898,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs7, exportName) {
+    function addFormats(ajv, list, fs8, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs7[f]);
+        ajv.addFormat(f, fs8[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7152,10 +7152,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path8) {
-  if (!path8)
+function getElementAtPath(obj, path10) {
+  if (!path10)
     return obj;
-  return path8.reduce((acc, key) => acc?.[key], obj);
+  return path10.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7564,11 +7564,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path8, issues) {
+function prefixIssues(path10, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path8);
+    iss.path.unshift(path10);
     return iss;
   });
 }
@@ -7715,16 +7715,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path8 = []) => {
+  const processError = (error3, path10 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path8, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -15483,6 +15483,578 @@ var StdioServerTransport = class {
   }
 };
 
+// server/agent-launcher.js
+import { spawn as spawn2 } from "node:child_process";
+import path9 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+
+// server/config-store.js
+import fs3 from "node:fs/promises";
+import os from "node:os";
+import path4 from "node:path";
+
+// server/utils.js
+import crypto from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+var PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function randomId(prefix) {
+  return `${prefix}_${crypto.randomBytes(12).toString("hex")}`;
+}
+function redact(value) {
+  if (typeof value === "string") {
+    return value.replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]").replace(/("?(?:token|connect[_-]?token|endpoint[_-]?grant|grant|secret|authorization|api[_-]?key|private[_-]?key|signature)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
+  }
+  return JSON.parse(redact(JSON.stringify(value)));
+}
+function normalizeRelayUrl(raw) {
+  const url = new URL(String(raw || ""));
+  if (!["ws:", "wss:"].includes(url.protocol)) {
+    throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 ws:// \u6216 wss://");
+  }
+  if (!url.hostname) throw new Error("Relay \u5730\u5740\u7F3A\u5C11\u4E3B\u673A\u540D");
+  if (url.username || url.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
+  if (url.search || url.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
+  if (url.pathname !== "/v1/connect") throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 /v1/connect");
+  return url.toString();
+}
+function isLoopbackHostname(hostname) {
+  return ["127.0.0.1", "::1", "localhost"].includes(hostname);
+}
+function safeProjectPath(projectPath, allowedProjects) {
+  if (!projectPath) return null;
+  const candidate = path.resolve(projectPath);
+  if (!allowedProjects?.length) return candidate;
+  const allowed = allowedProjects.some((root) => {
+    const normalizedRoot = path.resolve(root);
+    const relative = path.relative(normalizedRoot, candidate);
+    return relative === "" || !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
+  return allowed ? candidate : null;
+}
+function filterThreadList(result, allowedProjects) {
+  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
+  return {
+    ...result,
+    data: result.data.filter((thread) => Boolean(thread?.cwd && safeProjectPath(thread.cwd, allowedProjects)))
+  };
+}
+function filterProjectList(result, allowedProjects) {
+  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
+  return {
+    ...result,
+    data: result.data.filter((project) => {
+      const roots = Array.isArray(project?.roots) ? project.roots : [];
+      return roots.some((root) => {
+        const projectPath = typeof root === "string" ? root : root?.path;
+        return Boolean(projectPath && safeProjectPath(projectPath, allowedProjects));
+      });
+    })
+  };
+}
+
+// server/secret-store.js
+import crypto2 from "node:crypto";
+import fs from "node:fs/promises";
+import path2 from "node:path";
+var SecretStore = class {
+  constructor(configDir, logger) {
+    this.configDir = configDir;
+    this.logger = logger;
+    this.fallbackFile = path2.join(configDir, "secrets.json");
+    this.cache = /* @__PURE__ */ new Map();
+    this.writeQueue = Promise.resolve();
+  }
+  async get(spaceId) {
+    const credential = await this.getCredential(spaceId);
+    return credential?.connectToken || null;
+  }
+  async getCredential(spaceId) {
+    const key = spaceId || "default";
+    const environmentToken = process.env.CODEX_RELAY_TOKEN?.trim();
+    if (environmentToken) {
+      const persisted = await this.getPersistedCredential(key);
+      const candidate = {
+        ...persisted || {},
+        connectToken: environmentToken
+      };
+      if (persisted?.connectToken && persisted.connectToken !== environmentToken) {
+        delete candidate.expiresAt;
+      }
+      const credential = validateCredential(candidate);
+      return cloneCredential(credential);
+    }
+    return this.getPersistedCredential(key);
+  }
+  /**
+   * Read the credential written to disk without applying the optional
+   * CODEX_RELAY_TOKEN runtime override.  Refresh responses must use this view
+   * when they need authoritative expiry metadata; otherwise an environment
+   * token would mask the newly rotated token forever.
+   */
+  async getPersistedCredential(spaceId) {
+    const key = spaceId || "default";
+    if (this.cache.has(key)) return cloneCredential(this.cache.get(key));
+    const values = await this.#readFallback();
+    const credential = values[key] ? validateCredential(values[key]) : null;
+    this.cache.set(key, credential);
+    return cloneCredential(credential);
+  }
+  async set(spaceId, credential) {
+    const key = spaceId || "default";
+    if (!credential) return this.delete(key);
+    const normalized = validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      values[key] = normalized;
+      await this.#writeFallback(values);
+      this.cache.set(key, normalized);
+      return { backend: "file" };
+    });
+  }
+  async update(spaceId, patch, expectedCredential) {
+    const key = spaceId || "default";
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error("Relay \u51ED\u8BC1\u66F4\u65B0\u683C\u5F0F\u65E0\u6548");
+    }
+    if (Object.keys(patch).length === 0) return this.getPersistedCredential(key);
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      const persisted = values[key] ? validateCredential(values[key]) : null;
+      const current = persisted || {};
+      if (expectedCredential && !matchesCredential(current, expectedCredential)) {
+        return null;
+      }
+      const next = { ...current, ...patch };
+      if (Object.hasOwn(patch, "connectToken") && (patch.connectToken === "" || patch.connectToken === null || patch.connectToken === void 0)) {
+        delete next.connectToken;
+        delete next.expiresAt;
+      }
+      if (Object.hasOwn(patch, "endpointGrant") && (patch.endpointGrant === "" || patch.endpointGrant === null || patch.endpointGrant === void 0)) {
+        delete next.endpointGrant;
+        delete next.grantExpiresAt;
+      }
+      if (Object.hasOwn(patch, "connectToken") && typeof patch.connectToken === "string" && patch.connectToken.trim() && patch.connectToken !== current.connectToken && !Object.hasOwn(patch, "expiresAt")) {
+        delete next.expiresAt;
+      }
+      if (Object.hasOwn(patch, "endpointGrant") && typeof patch.endpointGrant === "string" && patch.endpointGrant.trim() && patch.endpointGrant !== current.endpointGrant && !Object.hasOwn(patch, "grantExpiresAt")) {
+        delete next.grantExpiresAt;
+      }
+      for (const name of ["expiresAt", "grantExpiresAt", "tokenEndpoint"]) {
+        if (next[name] === null || next[name] === "" || next[name] === void 0) {
+          delete next[name];
+        }
+      }
+      for (const name of Object.keys(next)) {
+        if (next[name] === void 0) delete next[name];
+      }
+      if (!Object.keys(next).length) {
+        delete values[key];
+        await this.#writeFallback(values);
+        this.cache.set(key, null);
+        return null;
+      }
+      const normalized = validateCredential(next);
+      values[key] = normalized;
+      await this.#writeFallback(values);
+      this.cache.set(key, normalized);
+      return cloneCredential(normalized);
+    });
+  }
+  validate(credential) {
+    return validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
+  }
+  async delete(spaceId) {
+    const key = spaceId || "default";
+    return this.#enqueue(async () => {
+      const values = await this.#readFallback();
+      delete values[key];
+      await this.#writeFallback(values);
+      this.cache.set(key, null);
+    });
+  }
+  async #readFallback() {
+    try {
+      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
+    } catch (error2) {
+      if (error2.code === "ENOENT") return {};
+      throw error2;
+    }
+  }
+  async #writeFallback(values) {
+    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.fallbackFile}.${process.pid}.${crypto2.randomUUID()}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify(values, null, 2)}
+`, { mode: 384 });
+    await fs.rename(temporary, this.fallbackFile);
+    await fs.chmod(this.fallbackFile, 384);
+  }
+  #enqueue(operation) {
+    const next = this.writeQueue.then(operation, operation);
+    this.writeQueue = next.catch(() => void 0);
+    return next;
+  }
+};
+function validateCredential(value) {
+  if (typeof value === "string") value = { connectToken: value };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Relay \u51ED\u8BC1\u683C\u5F0F\u65E0\u6548");
+  }
+  const connectToken = validateSecret(value.connectToken, "Connect Token", false);
+  const endpointGrant = validateSecret(value.endpointGrant, "Endpoint Grant", false);
+  if (!connectToken && !endpointGrant) throw new Error("Connect Token \u6216 Endpoint Grant \u81F3\u5C11\u9700\u8981\u4E00\u4E2A");
+  const expiresAt = validateExpiry(value.expiresAt, "Connect Token");
+  const grantExpiresAt = validateExpiry(value.grantExpiresAt, "Endpoint Grant");
+  const tokenEndpoint = validateTokenEndpoint(value.tokenEndpoint);
+  return {
+    ...connectToken === void 0 ? {} : { connectToken },
+    ...expiresAt === void 0 ? {} : { expiresAt },
+    ...endpointGrant === void 0 ? {} : { endpointGrant },
+    ...grantExpiresAt === void 0 ? {} : { grantExpiresAt },
+    ...tokenEndpoint === void 0 ? {} : { tokenEndpoint }
+  };
+}
+function validateSecret(value, label, required2) {
+  if (value === void 0 || value === null || value === "") {
+    if (required2) throw new Error(`${label} \u4E0D\u80FD\u4E3A\u7A7A`);
+    return void 0;
+  }
+  const minimum = label === "Endpoint Grant" ? 16 : 1;
+  if (typeof value !== "string" || value.length < minimum || value.length > 16384 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${label} \u683C\u5F0F\u65E0\u6548`);
+  }
+  return value;
+}
+function validateExpiry(value, label) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} \u8FC7\u671F\u65F6\u95F4\u65E0\u6548`);
+  return value;
+}
+function validateTokenEndpoint(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (typeof value !== "string" || value.length > 2048) throw new Error("Token Endpoint \u65E0\u6548");
+  const endpoint = new URL(value);
+  if (!endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new Error("Token Endpoint \u4E0D\u80FD\u5305\u542B\u51ED\u8BC1\u3001query \u6216 hash");
+  }
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(endpoint.hostname);
+  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
+    throw new Error("\u975E\u672C\u673A Token Endpoint \u5FC5\u987B\u4F7F\u7528 https://");
+  }
+  return endpoint.toString();
+}
+function cloneCredential(value) {
+  return value ? { ...value } : null;
+}
+function matchesCredential(current, expected) {
+  const candidate = typeof expected === "string" ? { connectToken: expected } : expected;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  for (const field of ["connectToken", "endpointGrant", "tokenEndpoint"]) {
+    if (!Object.hasOwn(candidate, field)) continue;
+    const expectedValue = candidate[field];
+    if (expectedValue === null || expectedValue === void 0) {
+      if (current?.[field] !== void 0) return false;
+    } else if (current?.[field] !== expectedValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// server/endpoint-identity-store.js
+import crypto3 from "node:crypto";
+import fs2 from "node:fs/promises";
+import path3 from "node:path";
+var EndpointIdentityStore = class {
+  constructor(configDir) {
+    this.configDir = configDir;
+    this.file = path3.join(configDir, "endpoint-identity.json");
+    this.identity = null;
+  }
+  async get() {
+    if (this.identity) return { ...this.identity };
+    try {
+      this.identity = this.#validate(JSON.parse(await fs2.readFile(this.file, "utf8")));
+      await fs2.chmod(this.file, 384);
+      return { ...this.identity };
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    const pair = crypto3.generateKeyPairSync("ed25519");
+    const publicDer = pair.publicKey.export({ format: "der", type: "spki" });
+    const privateDer = pair.privateKey.export({ format: "der", type: "pkcs8" });
+    const identity = {
+      schemaVersion: 1,
+      publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
+      privateKey: Buffer.from(privateDer).toString("base64url")
+    };
+    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
+    await fs2.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
+`, { mode: 384 });
+    await fs2.rename(temporary, this.file);
+    await fs2.chmod(this.file, 384);
+    this.identity = identity;
+    return { ...identity };
+  }
+  #validate(value) {
+    if (!value || value.schemaVersion !== 1) throw new Error("Endpoint identity schema is invalid");
+    const publicBytes = Buffer.from(value.publicKey || "", "base64url");
+    const privateBytes = Buffer.from(value.privateKey || "", "base64url");
+    if (publicBytes.length !== 32 || publicBytes.toString("base64url") !== value.publicKey || privateBytes.length < 32 || privateBytes.toString("base64url") !== value.privateKey) {
+      throw new Error("Endpoint identity key material is invalid");
+    }
+    return { schemaVersion: 1, publicKey: value.publicKey, privateKey: value.privateKey };
+  }
+};
+
+// server/config-store.js
+var DEFAULT_PERMISSIONS = Object.freeze({
+  readThreads: true,
+  sendMessages: true,
+  createThreads: true,
+  steerTurns: true,
+  interruptTurns: true,
+  respondToApprovals: false
+});
+function defaultConfig() {
+  return {
+    version: 1,
+    relay: {
+      url: "",
+      spaceId: "",
+      endpointId: "",
+      deviceId: randomId("host"),
+      deviceName: os.hostname(),
+      autoConnect: false,
+      heartbeatSeconds: 20,
+      reconnectMaxSeconds: 30
+    },
+    codex: {
+      executable: "codex",
+      autoStartAppServer: true,
+      defaultWorkingDirectory: ""
+    },
+    permissions: { ...DEFAULT_PERMISSIONS },
+    allowedProjects: [],
+    readOnly: false
+  };
+}
+var ConfigStore = class {
+  constructor({ configDir, logger } = {}) {
+    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path4.join(os.homedir(), ".codex-relay-plugin");
+    this.configFile = path4.join(this.configDir, "config.json");
+    this.logger = logger;
+    this.secretStore = new SecretStore(this.configDir, logger);
+    this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
+    this.config = null;
+  }
+  async load() {
+    let saved = {};
+    try {
+      saved = JSON.parse(await fs3.readFile(this.configFile, "utf8"));
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    this.config = mergeConfig(defaultConfig(), migrateSavedConfig(saved));
+    validateConfig(this.config);
+    return this.config;
+  }
+  get() {
+    if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
+    return structuredClone(this.config);
+  }
+  async publicConfig({ includeToken = false } = {}) {
+    const config2 = this.get();
+    const credential = await this.secretStore.getCredential(relaySpaceId(config2.relay));
+    const identity = await this.endpointIdentityStore.get();
+    const credentialConfigured = Boolean(credential?.connectToken || credential?.endpointGrant);
+    return {
+      ...config2,
+      relay: {
+        ...config2.relay,
+        ...includeToken ? {
+          token: credential?.connectToken || "",
+          ...credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}
+        } : {},
+        tokenConfigured: Boolean(credential?.connectToken),
+        credentialConfigured,
+        tokenExpiresAt: credential?.expiresAt || null,
+        endpointGrantConfigured: Boolean(credential?.endpointGrant),
+        grantExpiresAt: credential?.grantExpiresAt || null,
+        tokenEndpoint: credential?.tokenEndpoint || "",
+        endpointPublicKey: identity.publicKey
+      }
+    };
+  }
+  async update(patch, credentialPatch) {
+    const next = mergeConfig(this.get(), patch || {});
+    validateConfig(next);
+    const nextSpace = relaySpaceId(next.relay);
+    let credentialTouched = false;
+    if (credentialPatch !== void 0) {
+      credentialTouched = true;
+      if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
+      if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
+        throw new Error("Relay Token \u51ED\u8BC1\u5FC5\u987B\u662F\u5BF9\u8C61");
+      }
+      if (Object.hasOwn(credentialPatch, "token")) {
+        throw new Error("Relay Token \u5FC5\u987B\u901A\u8FC7\u5B57\u7B26\u4E32\u6216 connectToken \u5B57\u6BB5\u63D0\u4F9B");
+      }
+      if (Object.keys(credentialPatch).length === 0) credentialTouched = false;
+      const current = credentialTouched ? await this.secretStore.getPersistedCredential(nextSpace) || {} : {};
+      const credential = { ...current };
+      if (Object.hasOwn(credentialPatch, "connectToken")) {
+        const nextToken = credentialPatch.connectToken;
+        if (nextToken === null || nextToken === "" || nextToken === void 0) {
+          delete credential.connectToken;
+          delete credential.expiresAt;
+        } else if (typeof nextToken === "string" && nextToken.trim()) {
+          if (nextToken !== current.connectToken) delete credential.expiresAt;
+          credential.connectToken = nextToken;
+        } else {
+          throw new Error("Connect Token \u683C\u5F0F\u65E0\u6548");
+        }
+      }
+      if (Object.hasOwn(credentialPatch, "expiresAt")) {
+        if (credentialPatch.expiresAt === null || credentialPatch.expiresAt === "" || credentialPatch.expiresAt === void 0) delete credential.expiresAt;
+        else credential.expiresAt = credentialPatch.expiresAt;
+      }
+      for (const name of ["endpointGrant", "grantExpiresAt", "tokenEndpoint"]) {
+        if (!Object.hasOwn(credentialPatch, name)) continue;
+        const value = credentialPatch[name];
+        if (value === "" || value === null || value === void 0) {
+          delete credential[name];
+        } else {
+          if (name === "endpointGrant" && value !== current.endpointGrant && !Object.hasOwn(credentialPatch, "grantExpiresAt")) {
+            delete credential.grantExpiresAt;
+          }
+          credential[name] = value;
+        }
+      }
+      if (Object.keys(credential).length) this.secretStore.validate(credential);
+    }
+    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
+    const temporary = `${this.configFile}.tmp`;
+    await fs3.writeFile(temporary, `${JSON.stringify(next, null, 2)}
+`, { mode: 384 });
+    await fs3.rename(temporary, this.configFile);
+    await fs3.chmod(this.configFile, 384);
+    this.config = next;
+    if (credentialTouched) {
+      await this.secretStore.update(nextSpace, credentialPatch);
+    }
+    this.logger?.info("config", "\u914D\u7F6E\u5DF2\u4FDD\u5B58", { relayUrl: next.relay.url, spaceId: nextSpace });
+    return this.publicConfig();
+  }
+  async relayCredential(options = {}) {
+    const spaceId = relaySpaceId(this.get().relay);
+    if (options?.ignoreEnvironment === true) {
+      return this.secretStore.getPersistedCredential(spaceId);
+    }
+    return this.secretStore.getCredential(spaceId);
+  }
+  async persistedRelayCredential() {
+    return this.secretStore.getPersistedCredential(relaySpaceId(this.get().relay));
+  }
+  async token() {
+    const credential = await this.relayCredential();
+    return credential?.connectToken || null;
+  }
+  async updateRelayCredential(patch, expectedCredential) {
+    const spaceId = relaySpaceId(this.get().relay);
+    return this.secretStore.update(spaceId, patch, expectedCredential);
+  }
+  async endpointIdentity() {
+    return this.endpointIdentityStore.get();
+  }
+};
+function mergeConfig(base, patch) {
+  const relayPatch = patch.relay || {};
+  const spaceId = relayPatch.spaceId ?? base.relay.spaceId ?? "";
+  return {
+    ...base,
+    ...patch,
+    relay: { ...base.relay, ...relayPatch, spaceId },
+    codex: { ...base.codex, ...patch.codex || {} },
+    permissions: { ...base.permissions, ...patch.permissions || {} },
+    allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects
+  };
+}
+function relaySpaceId(relay) {
+  return String(relay?.spaceId || "");
+}
+function relayEndpointId(relay) {
+  return String(relay?.endpointId || "");
+}
+function migrateSavedConfig(saved) {
+  if (!saved || typeof saved !== "object" || !saved.relay || typeof saved.relay !== "object") return saved;
+  if (Object.hasOwn(saved.relay, "endpointId")) return saved;
+  const legacyDeviceId = typeof saved.relay.deviceId === "string" ? saved.relay.deviceId : "";
+  const endpointId = legacyDeviceId && !legacyDeviceId.startsWith("host_") ? legacyDeviceId : "";
+  return { ...saved, relay: { ...saved.relay, endpointId } };
+}
+function validateConfig(config2) {
+  if (!config2 || typeof config2 !== "object" || config2.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
+  if (!config2.relay || typeof config2.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
+  if (config2.relay.url) {
+    const normalizedRelayUrl = normalizeRelayUrl(config2.relay.url);
+    const relayUrl = new URL(normalizedRelayUrl);
+    config2.relay.url = normalizedRelayUrl;
+    if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
+      throw new Error("\u975E\u672C\u673A Relay \u5FC5\u987B\u4F7F\u7528 wss:// \u52A0\u5BC6\u8FDE\u63A5");
+    }
+    if (relayUrl.username || relayUrl.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
+    if (relayUrl.search || relayUrl.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
+  }
+  const spaceId = relaySpaceId(config2.relay);
+  if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
+    throw new Error("Space ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
+  }
+  const endpointId = relayEndpointId(config2.relay);
+  if (typeof config2.relay.endpointId !== "string") throw new Error("Relay Endpoint ID \u65E0\u6548");
+  if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID \u65E0\u6548");
+  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.deviceId || "")) throw new Error("\u5185\u90E8\u4E3B\u673A\u8EAB\u4EFD ID \u65E0\u6548");
+  const heartbeat = Number(config2.relay.heartbeatSeconds);
+  if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
+    throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
+  }
+  const reconnectMax = Number(config2.relay.reconnectMaxSeconds);
+  if (!Number.isFinite(reconnectMax) || reconnectMax < 5 || reconnectMax > 600) {
+    throw new Error("\u6700\u5927\u91CD\u8FDE\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 600 \u79D2\u4E4B\u95F4");
+  }
+  if (typeof config2.relay.deviceName !== "string" || config2.relay.deviceName.length > 128) {
+    throw new Error("\u8BBE\u5907\u540D\u79F0\u65E0\u6548");
+  }
+  if (typeof config2.relay.autoConnect !== "boolean") throw new Error("\u81EA\u52A8\u8FDE\u63A5\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!config2.codex || typeof config2.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
+  if (typeof config2.codex.executable !== "string" || !config2.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
+  if (typeof config2.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
+  if (config2.codex.defaultWorkingDirectory && !path4.isAbsolute(config2.codex.defaultWorkingDirectory)) {
+    throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
+  }
+  if (typeof config2.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!config2.permissions || typeof config2.permissions !== "object") throw new Error("\u8FDC\u7A0B\u6743\u9650\u914D\u7F6E\u65E0\u6548");
+  for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
+    if (typeof config2.permissions[name] !== "boolean") throw new Error(`\u8FDC\u7A0B\u6743\u9650 ${name} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
+  }
+  if (typeof config2.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+  if (!Array.isArray(config2.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
+  for (const project of config2.allowedProjects) {
+    if (typeof project !== "string" || !path4.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
+  }
+  return config2;
+}
+
+// server/runtime.js
+import crypto7 from "node:crypto";
+import fs7 from "node:fs/promises";
+import path8 from "node:path";
+
 // server/connector-service.js
 import { EventEmitter as EventEmitter4 } from "node:events";
 
@@ -15510,6 +16082,7 @@ function asRelayError(error2, fallbackCode = "INTERNAL_ERROR") {
 var execFileAsync = promisify(execFile);
 var AppServerClient = class _AppServerClient extends EventEmitter {
   #process = null;
+  #outputLines = null;
   #requests = /* @__PURE__ */ new Map();
   #serverRequests = /* @__PURE__ */ new Map();
   #nextId = 1;
@@ -15523,6 +16096,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   #resumedThreads = /* @__PURE__ */ new Set();
   #resumingThreads = /* @__PURE__ */ new Map();
   #resumeRetryAt = /* @__PURE__ */ new Map();
+  static MAX_RESUMED_THREADS = 1e3;
   static APPROVAL_METHODS = /* @__PURE__ */ new Set([
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval"
@@ -15583,24 +16157,48 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     child.once("error", (error2) => this.#handleExit(child, error2));
     child.once("exit", (code, signal) => this.#handleExit(child, new Error(`App Server \u5DF2\u9000\u51FA (${code ?? signal})`)));
     const lines = readline.createInterface({ input: child.stdout });
+    this.#outputLines = lines;
     lines.on("line", (line) => this.#handleLine(line));
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString().trim();
       if (text) this.logger.info("app-server", text);
     });
-    await this.request("initialize", {
-      clientInfo: {
-        name: "codex-relay-plugin",
-        title: "Codex Relay Plugin",
-        version: "1.0.0"
-      },
-      capabilities: { experimentalApi: true }
-    }, 15e3);
-    this.notify("initialized", {});
-    this.state = "ready";
-    this.logger.info("app-server", "Codex App Server \u5DF2\u5C31\u7EEA", { version: this.version, pid: child.pid });
-    this.emit("status", this.status());
-    return this.status();
+    try {
+      await this.request("initialize", {
+        clientInfo: {
+          name: "codex-relay-plugin",
+          title: "Codex Relay Plugin",
+          version: "1.0.0"
+        },
+        capabilities: { experimentalApi: true }
+      }, 15e3);
+      this.notify("initialized", {});
+      this.state = "ready";
+      this.logger.info("app-server", "Codex App Server \u5DF2\u5C31\u7EEA", { version: this.version, pid: child.pid });
+      this.emit("status", this.status());
+      return this.status();
+    } catch (error2) {
+      if (this.#process === child) this.#process = null;
+      this.state = "error";
+      this.#outputLines?.close();
+      this.#outputLines = null;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+      }
+      await new Promise((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        child.once("exit", resolve);
+        setTimeout(resolve, 1e3);
+      });
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+      }
+      throw error2;
+    }
   }
   async stop() {
     if (!this.#process) return;
@@ -15612,11 +16210,23 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
+    this.#outputLines?.close();
+    this.#outputLines = null;
+    const exited = new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      child.once("exit", resolve);
+    });
     child.kill("SIGTERM");
     for (const pending of this.#requests.values()) pending.reject(new RelayError("APP_SERVER_UNAVAILABLE", "App Server \u5DF2\u505C\u6B62"));
     this.#requests.clear();
     this.#serverRequests.clear();
     this.emit("status", this.status());
+    const timeout = new Promise((resolve) => setTimeout(resolve, 3e3));
+    await Promise.race([exited, timeout]);
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 1e3))]);
+    }
   }
   request(method, params = {}, timeoutMs = 3e4) {
     if (!this.#process?.stdin?.writable) {
@@ -15825,11 +16435,11 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     const existing = this.#resumingThreads.get(id);
     if (existing) return existing;
     const pending = this.resumeThread(id).then(() => {
-      this.#resumedThreads.add(id);
+      this.#rememberResumedThread(id);
       this.#resumeRetryAt.delete(id);
     }).catch((error2) => {
       if (!isActiveWriterConflict(error2)) throw error2;
-      this.#resumeRetryAt.set(id, Date.now() + 5e3);
+      this.#rememberResumeRetry(id, Date.now() + 5e3);
       this.logger.warn("app-server", "\u4EFB\u52A1\u6B63\u5728\u5176\u4ED6 Codex \u5BA2\u6237\u7AEF\u8FD0\u884C\uFF0C\u6682\u4EE5\u5FEB\u7167\u540C\u6B65", {
         threadId: id
       });
@@ -15840,6 +16450,20 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     });
     this.#resumingThreads.set(id, pending);
     return pending;
+  }
+  #rememberResumedThread(id) {
+    this.#resumedThreads.delete(id);
+    this.#resumedThreads.add(id);
+    while (this.#resumedThreads.size > _AppServerClient.MAX_RESUMED_THREADS) {
+      this.#resumedThreads.delete(this.#resumedThreads.values().next().value);
+    }
+  }
+  #rememberResumeRetry(id, retryAt) {
+    this.#resumeRetryAt.delete(id);
+    this.#resumeRetryAt.set(id, retryAt);
+    while (this.#resumeRetryAt.size > _AppServerClient.MAX_RESUMED_THREADS) {
+      this.#resumeRetryAt.delete(this.#resumeRetryAt.keys().next().value);
+    }
   }
   async #readPaginatedThread(threadId) {
     const metadata = await this.request("thread/read", { threadId });
@@ -15897,13 +16521,13 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
   async createThread({ cwd } = {}) {
     const result = await this.request("thread/start", { ...cwd ? { cwd } : {} });
     const id = result?.thread?.id || result?.id;
-    if (id) this.#resumedThreads.add(normalizeThreadId(id));
+    if (id) this.#rememberResumedThread(normalizeThreadId(id));
     return result;
   }
   async resumeThread(threadId) {
     const id = normalizeThreadId(threadId);
     const result = await this.request("thread/resume", { threadId: id });
-    this.#resumedThreads.add(id);
+    this.#rememberResumedThread(id);
     return result;
   }
   async startTurn({ threadId, text, cwd, model, effort }) {
@@ -15917,7 +16541,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter {
     };
     try {
       const result = await this.request("turn/start", params);
-      this.#resumedThreads.add(id);
+      this.#rememberResumedThread(id);
       return result;
     } catch (error2) {
       if (!isThreadNotLoadedError(error2)) throw error2;
@@ -16129,464 +16753,6 @@ function isThreadNotLoadedError(error2) {
   return error2?.code === "APP_SERVER_ERROR" && typeof error2?.message === "string" && /\bthread\s+not\s+found\b/i.test(error2.message);
 }
 
-// server/utils.js
-import crypto from "node:crypto";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-var PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-function nowIso() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function randomId(prefix) {
-  return `${prefix}_${crypto.randomBytes(12).toString("hex")}`;
-}
-function redact(value) {
-  if (typeof value === "string") {
-    return value.replace(/(bearer\s+)[a-z0-9._~-]+/gi, "$1[REDACTED]").replace(/("?(?:token|connect[_-]?token|endpoint[_-]?grant|grant|secret|authorization|api[_-]?key|private[_-]?key|signature)"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[REDACTED]");
-  }
-  return JSON.parse(redact(JSON.stringify(value)));
-}
-function normalizeRelayUrl(raw) {
-  const url = new URL(String(raw || ""));
-  if (!["ws:", "wss:"].includes(url.protocol)) {
-    throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 ws:// \u6216 wss://");
-  }
-  if (!url.hostname) throw new Error("Relay \u5730\u5740\u7F3A\u5C11\u4E3B\u673A\u540D");
-  if (url.username || url.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
-  if (url.search || url.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
-  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
-  if (url.pathname !== "/v1/connect") throw new Error("Relay \u5730\u5740\u5FC5\u987B\u4F7F\u7528 /v1/connect");
-  return url.toString();
-}
-function isLoopbackHostname(hostname) {
-  return ["127.0.0.1", "::1", "localhost"].includes(hostname);
-}
-function safeProjectPath(projectPath, allowedProjects) {
-  if (!projectPath) return null;
-  const candidate = path.resolve(projectPath);
-  if (!allowedProjects?.length) return candidate;
-  const allowed = allowedProjects.some((root) => {
-    const normalizedRoot = path.resolve(root);
-    const relative = path.relative(normalizedRoot, candidate);
-    return relative === "" || !relative.startsWith("..") && !path.isAbsolute(relative);
-  });
-  return allowed ? candidate : null;
-}
-function filterThreadList(result, allowedProjects) {
-  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
-  return {
-    ...result,
-    data: result.data.filter((thread) => Boolean(thread?.cwd && safeProjectPath(thread.cwd, allowedProjects)))
-  };
-}
-function filterProjectList(result, allowedProjects) {
-  if (!allowedProjects?.length || !Array.isArray(result?.data)) return result;
-  return {
-    ...result,
-    data: result.data.filter((project) => {
-      const roots = Array.isArray(project?.roots) ? project.roots : [];
-      return roots.some((root) => {
-        const projectPath = typeof root === "string" ? root : root?.path;
-        return Boolean(projectPath && safeProjectPath(projectPath, allowedProjects));
-      });
-    })
-  };
-}
-
-// server/config-store.js
-import fs3 from "node:fs/promises";
-import os from "node:os";
-import path4 from "node:path";
-
-// server/secret-store.js
-import crypto2 from "node:crypto";
-import fs from "node:fs/promises";
-import path2 from "node:path";
-var SecretStore = class {
-  constructor(configDir, logger) {
-    this.configDir = configDir;
-    this.logger = logger;
-    this.fallbackFile = path2.join(configDir, "secrets.json");
-    this.cache = /* @__PURE__ */ new Map();
-    this.writeQueue = Promise.resolve();
-  }
-  async get(spaceId) {
-    const credential = await this.getCredential(spaceId);
-    return credential?.connectToken || null;
-  }
-  async getCredential(spaceId) {
-    if (process.env.CODEX_RELAY_TOKEN) {
-      return { connectToken: process.env.CODEX_RELAY_TOKEN };
-    }
-    const key = spaceId || "default";
-    if (this.cache.has(key)) return cloneCredential(this.cache.get(key));
-    const values = await this.#readFallback();
-    const credential = values[key] ? validateCredential(values[key]) : null;
-    this.cache.set(key, credential);
-    return cloneCredential(credential);
-  }
-  async set(spaceId, credential) {
-    const key = spaceId || "default";
-    if (!credential) return this.delete(key);
-    const normalized = validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
-    return this.#enqueue(async () => {
-      const values = await this.#readFallback();
-      values[key] = normalized;
-      await this.#writeFallback(values);
-      this.cache.set(key, normalized);
-      return { backend: "file" };
-    });
-  }
-  async update(spaceId, patch) {
-    const current = await this.getCredential(spaceId) || {};
-    return this.set(spaceId, { ...current, ...patch });
-  }
-  validate(credential) {
-    return validateCredential(typeof credential === "string" ? { connectToken: credential } : credential);
-  }
-  async delete(spaceId) {
-    const key = spaceId || "default";
-    return this.#enqueue(async () => {
-      const values = await this.#readFallback();
-      delete values[key];
-      await this.#writeFallback(values);
-      this.cache.set(key, null);
-    });
-  }
-  async #readFallback() {
-    try {
-      return JSON.parse(await fs.readFile(this.fallbackFile, "utf8"));
-    } catch (error2) {
-      if (error2.code === "ENOENT") return {};
-      throw error2;
-    }
-  }
-  async #writeFallback(values) {
-    await fs.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.fallbackFile}.${process.pid}.${crypto2.randomUUID()}.tmp`;
-    await fs.writeFile(temporary, `${JSON.stringify(values, null, 2)}
-`, { mode: 384 });
-    await fs.rename(temporary, this.fallbackFile);
-    await fs.chmod(this.fallbackFile, 384);
-  }
-  #enqueue(operation) {
-    const next = this.writeQueue.then(operation, operation);
-    this.writeQueue = next.catch(() => void 0);
-    return next;
-  }
-};
-function validateCredential(value) {
-  if (typeof value === "string") value = { connectToken: value };
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Relay \u51ED\u8BC1\u683C\u5F0F\u65E0\u6548");
-  }
-  const connectToken = validateSecret(value.connectToken, "Connect Token", true);
-  const endpointGrant = validateSecret(value.endpointGrant, "Endpoint Grant", false);
-  const expiresAt = validateExpiry(value.expiresAt, "Connect Token");
-  const grantExpiresAt = validateExpiry(value.grantExpiresAt, "Endpoint Grant");
-  const tokenEndpoint = validateTokenEndpoint(value.tokenEndpoint);
-  return {
-    connectToken,
-    ...expiresAt === void 0 ? {} : { expiresAt },
-    ...endpointGrant === void 0 ? {} : { endpointGrant },
-    ...grantExpiresAt === void 0 ? {} : { grantExpiresAt },
-    ...tokenEndpoint === void 0 ? {} : { tokenEndpoint }
-  };
-}
-function validateSecret(value, label, required2) {
-  if (value === void 0 || value === null || value === "") {
-    if (required2) throw new Error(`${label} \u4E0D\u80FD\u4E3A\u7A7A`);
-    return void 0;
-  }
-  const minimum = label === "Endpoint Grant" ? 16 : 1;
-  if (typeof value !== "string" || value.length < minimum || value.length > 16384 || !/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error(`${label} \u683C\u5F0F\u65E0\u6548`);
-  }
-  return value;
-}
-function validateExpiry(value, label) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} \u8FC7\u671F\u65F6\u95F4\u65E0\u6548`);
-  return value;
-}
-function validateTokenEndpoint(value) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (typeof value !== "string" || value.length > 2048) throw new Error("Token Endpoint \u65E0\u6548");
-  const endpoint = new URL(value);
-  if (!endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-    throw new Error("Token Endpoint \u4E0D\u80FD\u5305\u542B\u51ED\u8BC1\u3001query \u6216 hash");
-  }
-  const loopback = ["127.0.0.1", "::1", "localhost"].includes(endpoint.hostname);
-  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
-    throw new Error("\u975E\u672C\u673A Token Endpoint \u5FC5\u987B\u4F7F\u7528 https://");
-  }
-  return endpoint.toString();
-}
-function cloneCredential(value) {
-  return value ? { ...value } : null;
-}
-
-// server/endpoint-identity-store.js
-import crypto3 from "node:crypto";
-import fs2 from "node:fs/promises";
-import path3 from "node:path";
-var EndpointIdentityStore = class {
-  constructor(configDir) {
-    this.configDir = configDir;
-    this.file = path3.join(configDir, "endpoint-identity.json");
-    this.identity = null;
-  }
-  async get() {
-    if (this.identity) return { ...this.identity };
-    try {
-      this.identity = this.#validate(JSON.parse(await fs2.readFile(this.file, "utf8")));
-      await fs2.chmod(this.file, 384);
-      return { ...this.identity };
-    } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
-    }
-    const pair = crypto3.generateKeyPairSync("ed25519");
-    const publicDer = pair.publicKey.export({ format: "der", type: "spki" });
-    const privateDer = pair.privateKey.export({ format: "der", type: "pkcs8" });
-    const identity = {
-      schemaVersion: 1,
-      publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
-      privateKey: Buffer.from(privateDer).toString("base64url")
-    };
-    await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
-    await fs2.writeFile(temporary, `${JSON.stringify(identity, null, 2)}
-`, { mode: 384 });
-    await fs2.rename(temporary, this.file);
-    await fs2.chmod(this.file, 384);
-    this.identity = identity;
-    return { ...identity };
-  }
-  #validate(value) {
-    if (!value || value.schemaVersion !== 1) throw new Error("Endpoint identity schema is invalid");
-    const publicBytes = Buffer.from(value.publicKey || "", "base64url");
-    const privateBytes = Buffer.from(value.privateKey || "", "base64url");
-    if (publicBytes.length !== 32 || publicBytes.toString("base64url") !== value.publicKey || privateBytes.length < 32 || privateBytes.toString("base64url") !== value.privateKey) {
-      throw new Error("Endpoint identity key material is invalid");
-    }
-    return { schemaVersion: 1, publicKey: value.publicKey, privateKey: value.privateKey };
-  }
-};
-
-// server/config-store.js
-var DEFAULT_PERMISSIONS = Object.freeze({
-  readThreads: true,
-  sendMessages: true,
-  createThreads: true,
-  steerTurns: true,
-  interruptTurns: true,
-  respondToApprovals: false
-});
-function defaultConfig() {
-  return {
-    version: 1,
-    relay: {
-      url: "",
-      spaceId: "",
-      endpointId: "",
-      deviceId: randomId("host"),
-      deviceName: os.hostname(),
-      autoConnect: false,
-      heartbeatSeconds: 20,
-      reconnectMaxSeconds: 30
-    },
-    codex: {
-      executable: "codex",
-      autoStartAppServer: true,
-      defaultWorkingDirectory: ""
-    },
-    permissions: { ...DEFAULT_PERMISSIONS },
-    allowedProjects: [],
-    readOnly: false
-  };
-}
-var ConfigStore = class {
-  constructor({ configDir, logger } = {}) {
-    this.configDir = configDir || process.env.CODEX_RELAY_CONFIG_DIR || path4.join(os.homedir(), ".codex-relay-plugin");
-    this.configFile = path4.join(this.configDir, "config.json");
-    this.logger = logger;
-    this.secretStore = new SecretStore(this.configDir, logger);
-    this.endpointIdentityStore = new EndpointIdentityStore(this.configDir);
-    this.config = null;
-  }
-  async load() {
-    let saved = {};
-    try {
-      saved = JSON.parse(await fs3.readFile(this.configFile, "utf8"));
-    } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
-    }
-    this.config = mergeConfig(defaultConfig(), migrateSavedConfig(saved));
-    validateConfig(this.config);
-    return this.config;
-  }
-  get() {
-    if (!this.config) throw new Error("\u914D\u7F6E\u5C1A\u672A\u52A0\u8F7D");
-    return structuredClone(this.config);
-  }
-  async publicConfig({ includeToken = false } = {}) {
-    const config2 = this.get();
-    const credential = await this.secretStore.getCredential(relaySpaceId(config2.relay));
-    const identity = await this.endpointIdentityStore.get();
-    return {
-      ...config2,
-      relay: {
-        ...config2.relay,
-        ...includeToken ? {
-          token: credential?.connectToken || "",
-          ...credential?.endpointGrant ? { endpointGrant: credential.endpointGrant } : {}
-        } : {},
-        tokenConfigured: Boolean(credential?.connectToken),
-        tokenExpiresAt: credential?.expiresAt || null,
-        endpointGrantConfigured: Boolean(credential?.endpointGrant),
-        grantExpiresAt: credential?.grantExpiresAt || null,
-        tokenEndpoint: credential?.tokenEndpoint || "",
-        endpointPublicKey: identity.publicKey
-      }
-    };
-  }
-  async update(patch, credentialPatch) {
-    const next = mergeConfig(this.get(), patch || {});
-    validateConfig(next);
-    const nextSpace = relaySpaceId(next.relay);
-    let nextCredential;
-    if (credentialPatch !== void 0) {
-      if (typeof credentialPatch === "string") credentialPatch = { connectToken: credentialPatch };
-      if (!credentialPatch || typeof credentialPatch !== "object" || Array.isArray(credentialPatch)) {
-        throw new Error("Relay Token \u51ED\u8BC1\u5FC5\u987B\u662F\u5BF9\u8C61");
-      }
-      if (Object.hasOwn(credentialPatch, "token")) {
-        throw new Error("Relay Token \u5FC5\u987B\u901A\u8FC7\u5B57\u7B26\u4E32\u6216 connectToken \u5B57\u6BB5\u63D0\u4F9B");
-      }
-      const current = await this.secretStore.getCredential(nextSpace) || {};
-      const credential = credentialPatch.connectToken ? {
-        connectToken: credentialPatch.connectToken,
-        ...credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {},
-        ...credentialField(credentialPatch, "endpointGrant"),
-        ...credentialField(credentialPatch, "grantExpiresAt"),
-        ...credentialField(credentialPatch, "tokenEndpoint")
-      } : {
-        ...current,
-        ...credentialPatch.expiresAt ? { expiresAt: credentialPatch.expiresAt } : {},
-        ...credentialField(credentialPatch, "endpointGrant"),
-        ...credentialField(credentialPatch, "grantExpiresAt"),
-        ...credentialField(credentialPatch, "tokenEndpoint")
-      };
-      if (Object.keys(credential).length) nextCredential = this.secretStore.validate(credential);
-    }
-    await fs3.mkdir(this.configDir, { recursive: true, mode: 448 });
-    const temporary = `${this.configFile}.tmp`;
-    await fs3.writeFile(temporary, `${JSON.stringify(next, null, 2)}
-`, { mode: 384 });
-    await fs3.rename(temporary, this.configFile);
-    await fs3.chmod(this.configFile, 384);
-    this.config = next;
-    if (nextCredential) await this.secretStore.set(nextSpace, nextCredential);
-    this.logger?.info("config", "\u914D\u7F6E\u5DF2\u4FDD\u5B58", { relayUrl: next.relay.url, spaceId: nextSpace });
-    return this.publicConfig();
-  }
-  async relayCredential() {
-    return this.secretStore.getCredential(relaySpaceId(this.get().relay));
-  }
-  async token() {
-    const credential = await this.relayCredential();
-    return credential?.connectToken || null;
-  }
-  async updateRelayCredential(patch) {
-    const spaceId = relaySpaceId(this.get().relay);
-    await this.secretStore.update(spaceId, patch);
-    return this.secretStore.getCredential(spaceId);
-  }
-  async endpointIdentity() {
-    return this.endpointIdentityStore.get();
-  }
-};
-function credentialField(patch, name) {
-  if (!Object.hasOwn(patch, name)) return {};
-  return patch[name] === "" || patch[name] === null ? { [name]: void 0 } : { [name]: patch[name] };
-}
-function mergeConfig(base, patch) {
-  const relayPatch = patch.relay || {};
-  const spaceId = relayPatch.spaceId ?? base.relay.spaceId ?? "";
-  return {
-    ...base,
-    ...patch,
-    relay: { ...base.relay, ...relayPatch, spaceId },
-    codex: { ...base.codex, ...patch.codex || {} },
-    permissions: { ...base.permissions, ...patch.permissions || {} },
-    allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects
-  };
-}
-function relaySpaceId(relay) {
-  return String(relay?.spaceId || "");
-}
-function relayEndpointId(relay) {
-  return String(relay?.endpointId || "");
-}
-function migrateSavedConfig(saved) {
-  if (!saved || typeof saved !== "object" || !saved.relay || typeof saved.relay !== "object") return saved;
-  if (Object.hasOwn(saved.relay, "endpointId")) return saved;
-  const legacyDeviceId = typeof saved.relay.deviceId === "string" ? saved.relay.deviceId : "";
-  const endpointId = legacyDeviceId && !legacyDeviceId.startsWith("host_") ? legacyDeviceId : "";
-  return { ...saved, relay: { ...saved.relay, endpointId } };
-}
-function validateConfig(config2) {
-  if (!config2 || typeof config2 !== "object" || config2.version !== 1) throw new Error("\u914D\u7F6E\u7248\u672C\u65E0\u6548");
-  if (!config2.relay || typeof config2.relay !== "object") throw new Error("Relay \u914D\u7F6E\u65E0\u6548");
-  if (config2.relay.url) {
-    const normalizedRelayUrl = normalizeRelayUrl(config2.relay.url);
-    const relayUrl = new URL(normalizedRelayUrl);
-    config2.relay.url = normalizedRelayUrl;
-    if (relayUrl.protocol !== "wss:" && !isLoopbackHostname(relayUrl.hostname)) {
-      throw new Error("\u975E\u672C\u673A Relay \u5FC5\u987B\u4F7F\u7528 wss:// \u52A0\u5BC6\u8FDE\u63A5");
-    }
-    if (relayUrl.username || relayUrl.password) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B\u7528\u6237\u540D\u6216\u5BC6\u7801");
-    if (relayUrl.search || relayUrl.hash) throw new Error("Relay \u5730\u5740\u4E0D\u80FD\u5305\u542B query \u6216 hash\uFF1BToken \u5FC5\u987B\u653E\u5728 connect.hello \u9996\u5E27");
-  }
-  const spaceId = relaySpaceId(config2.relay);
-  if (spaceId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(spaceId)) {
-    throw new Error("Space ID \u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u70B9\u3001\u4E0B\u5212\u7EBF\u3001\u5192\u53F7\u548C\u8FDE\u5B57\u7B26");
-  }
-  const endpointId = relayEndpointId(config2.relay);
-  if (typeof config2.relay.endpointId !== "string") throw new Error("Relay Endpoint ID \u65E0\u6548");
-  if (endpointId && !/^[a-zA-Z0-9._:-]{1,128}$/.test(endpointId)) throw new Error("Relay Endpoint ID \u65E0\u6548");
-  if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(config2.relay.deviceId || "")) throw new Error("\u5185\u90E8\u4E3B\u673A\u8EAB\u4EFD ID \u65E0\u6548");
-  const heartbeat = Number(config2.relay.heartbeatSeconds);
-  if (!Number.isFinite(heartbeat) || heartbeat < 5 || heartbeat > 300) {
-    throw new Error("\u5FC3\u8DF3\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 300 \u79D2\u4E4B\u95F4");
-  }
-  const reconnectMax = Number(config2.relay.reconnectMaxSeconds);
-  if (!Number.isFinite(reconnectMax) || reconnectMax < 5 || reconnectMax > 600) {
-    throw new Error("\u6700\u5927\u91CD\u8FDE\u95F4\u9694\u5FC5\u987B\u5728 5 \u5230 600 \u79D2\u4E4B\u95F4");
-  }
-  if (typeof config2.relay.deviceName !== "string" || config2.relay.deviceName.length > 128) {
-    throw new Error("\u8BBE\u5907\u540D\u79F0\u65E0\u6548");
-  }
-  if (typeof config2.relay.autoConnect !== "boolean") throw new Error("\u81EA\u52A8\u8FDE\u63A5\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!config2.codex || typeof config2.codex !== "object") throw new Error("Codex \u914D\u7F6E\u65E0\u6548");
-  if (typeof config2.codex.executable !== "string" || !config2.codex.executable.trim()) throw new Error("Codex \u547D\u4EE4\u65E0\u6548");
-  if (typeof config2.codex.defaultWorkingDirectory !== "string") throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u65E0\u6548");
-  if (config2.codex.defaultWorkingDirectory && !path4.isAbsolute(config2.codex.defaultWorkingDirectory)) {
-    throw new Error("\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84");
-  }
-  if (typeof config2.codex.autoStartAppServer !== "boolean") throw new Error("App Server \u81EA\u52A8\u542F\u52A8\u914D\u7F6E\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!config2.permissions || typeof config2.permissions !== "object") throw new Error("\u8FDC\u7A0B\u6743\u9650\u914D\u7F6E\u65E0\u6548");
-  for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
-    if (typeof config2.permissions[name] !== "boolean") throw new Error(`\u8FDC\u7A0B\u6743\u9650 ${name} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
-  }
-  if (typeof config2.readOnly !== "boolean") throw new Error("\u53EA\u8BFB\u6A21\u5F0F\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-  if (!Array.isArray(config2.allowedProjects)) throw new Error("\u9879\u76EE\u767D\u540D\u5355\u5FC5\u987B\u662F\u6570\u7EC4");
-  for (const project of config2.allowedProjects) {
-    if (typeof project !== "string" || !path4.isAbsolute(project)) throw new Error(`\u9879\u76EE\u8DEF\u5F84\u5FC5\u987B\u662F\u7EDD\u5BF9\u8DEF\u5F84\uFF1A${project}`);
-  }
-  return config2;
-}
-
 // server/protocol.js
 var PROTOCOL_VERSION = 1;
 function validateRelayWelcome(message) {
@@ -16768,7 +16934,7 @@ var CommandRouter = class {
   #inflight = /* @__PURE__ */ new Map();
   #sharedReads = /* @__PURE__ */ new Map();
   #threadReadTails = /* @__PURE__ */ new Map();
-  #threadSnapshotRevisions = /* @__PURE__ */ new Map();
+  #nextSnapshotRevision = 0;
   #selectedThreadId = null;
   constructor({ configStore, appServer, service: service2, logger }) {
     this.configStore = configStore;
@@ -16979,8 +17145,7 @@ var CommandRouter = class {
   #annotateThreadSnapshot(threadId, result, source) {
     const id = String(threadId || "").trim();
     if (!id || !result || typeof result !== "object") return result;
-    const revision = (this.#threadSnapshotRevisions.get(id) || 0) + 1;
-    this.#threadSnapshotRevisions.set(id, revision);
+    const revision = ++this.#nextSnapshotRevision;
     return {
       ...result,
       snapshotRevision: revision,
@@ -17063,20 +17228,35 @@ function compactValue(value, depth = 0) {
 var EventBuffer = class {
   #items = [];
   #sequence = 0;
-  constructor(limit = 1e3) {
-    this.limit = limit;
+  #bytes = 0;
+  #droppedThrough = 0;
+  constructor(limit = 1e3, options = {}) {
+    this.limit = Math.max(1, Number(limit) || 1e3);
+    this.maxBytes = Math.max(1, Number(options.maxBytes) || 32 * 1024 * 1024);
+    this.maxEventBytes = Math.max(1, Number(options.maxEventBytes) || 2 * 1024 * 1024);
   }
   nextSequence() {
     this.#sequence += 1;
     return this.#sequence;
   }
   push(event) {
+    const bytes = byteSize(event);
+    if (bytes > this.maxEventBytes) {
+      this.#droppedThrough = Math.max(this.#droppedThrough, event.sequence || this.#sequence);
+      return event;
+    }
     this.#items.push(event);
-    if (this.#items.length > this.limit) this.#items.shift();
+    this.#bytes += bytes;
+    while (this.#items.length > this.limit || this.#bytes > this.maxBytes) {
+      const removed = this.#items.shift();
+      this.#bytes -= byteSize(removed);
+      this.#droppedThrough = Math.max(this.#droppedThrough, removed.sequence || 0);
+    }
     return event;
   }
   after(lastSequence) {
     const sequence = Number(lastSequence || 0);
+    if (sequence < this.#droppedThrough) return null;
     if (!this.#items.length) return [];
     const first = this.#items[0].sequence;
     if (sequence < first - 1) return null;
@@ -17088,8 +17268,23 @@ var EventBuffer = class {
   clear() {
     this.#items.length = 0;
     this.#sequence = 0;
+    this.#bytes = 0;
+    this.#droppedThrough = 0;
+  }
+  get size() {
+    return this.#items.length;
+  }
+  get bytes() {
+    return this.#bytes;
   }
 };
+function byteSize(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return 0;
+  }
+}
 
 // server/instance-lock.js
 import fs4 from "node:fs/promises";
@@ -17227,35 +17422,81 @@ import crypto5 from "node:crypto";
 // server/relay-token-service.js
 import crypto4 from "node:crypto";
 var REFRESH_LEAD_MS = 6e4;
+var MAX_RETRY_AFTER_MS = 10 * 6e4;
 var RelayTokenService = class {
   #refreshing = null;
+  #refreshingKey = null;
   constructor(configStore, logger, options = {}) {
     this.configStore = configStore;
     this.logger = logger;
     this.fetch = options.fetch || globalThis.fetch;
   }
-  async usableToken({ force = false, credential: suppliedCredential = null } = {}) {
-    const credential = suppliedCredential || await this.#credential();
-    if (!credential?.connectToken) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Connect Token");
-    const expiring = Number.isSafeInteger(credential.expiresAt) && credential.expiresAt <= Date.now() + REFRESH_LEAD_MS;
-    if (!force && !expiring) return credential.connectToken;
-    if (!credential.endpointGrant) {
-      if (!force && credential.expiresAt > Date.now()) return credential.connectToken;
+  /**
+   * Resolve a credential that is safe to use for the next handshake.  The
+   * object-returning variant is useful to connection owners because a refresh
+   * also changes expiry metadata; keeping that metadata alongside the token
+   * prevents a runtime override or a restart from scheduling the next refresh
+   * from stale information.
+   */
+  async usableCredential({
+    force = false,
+    credential: suppliedCredential = null,
+    // Connection tests can validate credentials that are still in an editor
+    // draft.  Such a refresh must remain ephemeral; normal connector startup
+    // and scheduled rotation keep the default durable behavior.
+    persist = true
+  } = {}) {
+    const credential = await this.#resolveCredential(suppliedCredential);
+    const connectToken = typeof credential?.connectToken === "string" ? credential.connectToken : "";
+    const endpointGrant = typeof credential?.endpointGrant === "string" ? credential.endpointGrant : "";
+    if (!connectToken && !endpointGrant) {
+      throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Connect Token \u6216 Endpoint Grant");
+    }
+    const hasExpiry = Number.isSafeInteger(credential.expiresAt) && credential.expiresAt > 0;
+    const expiring = !connectToken || !hasExpiry || credential.expiresAt <= Date.now() + REFRESH_LEAD_MS;
+    if (!force && !expiring) return { ...credential };
+    if (!endpointGrant) {
+      if (!force && connectToken && (!hasExpiry || credential.expiresAt > Date.now())) {
+        return { ...credential };
+      }
       throw new RelayError("auth.grant_required", "Connect Token \u5DF2\u8FC7\u671F\u4E14\u672A\u914D\u7F6E Endpoint Grant");
     }
     if (Number.isSafeInteger(credential.grantExpiresAt) && credential.grantExpiresAt <= Date.now()) {
       throw new RelayError("auth.grant_expired", "Endpoint Grant \u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u7B7E\u53D1\u51ED\u8BC1");
     }
-    if (!this.#refreshing) {
-      this.#refreshing = this.#refresh(credential).finally(() => {
-        this.#refreshing = null;
-      });
+    const refreshKey = `${await this.#refreshContextKey(credential)}\0${persist ? "persist" : "ephemeral"}`;
+    let refreshPromise = this.#refreshing;
+    if (!refreshPromise || this.#refreshingKey !== refreshKey) {
+      refreshPromise = this.#refresh(credential, { persist });
+      this.#refreshing = refreshPromise;
+      this.#refreshingKey = refreshKey;
+      refreshPromise.then(
+        () => this.#clearRefresh(refreshPromise),
+        () => this.#clearRefresh(refreshPromise)
+      );
     }
-    return (await this.#refreshing).connectToken;
+    try {
+      return { ...await refreshPromise };
+    } catch (error2) {
+      if (error2?.code !== "AUTH_CONTEXT_CHANGED" && !force && connectToken && (!hasExpiry || credential.expiresAt > Date.now())) {
+        this.logger?.warn?.("relay", "Connect Token \u5237\u65B0\u6682\u65F6\u5931\u8D25\uFF0C\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u51ED\u8BC1", {
+          code: error2.code,
+          message: error2.message
+        });
+        return { ...credential };
+      }
+      throw error2;
+    }
   }
-  async #refresh(credential) {
+  async usableToken(options = {}) {
+    const credential = await this.usableCredential(options);
+    return credential?.connectToken || null;
+  }
+  async #refresh(credential, { persist = true } = {}) {
+    const initialConfig = this.configStore.get();
+    const initialRelay = initialConfig.relay || {};
     const identity = await this.configStore.endpointIdentity();
-    const tokenEndpoint = credential.tokenEndpoint || deriveTokenEndpoint(this.configStore.get().relay.url);
+    const tokenEndpoint = resolveTokenEndpoint(credential.tokenEndpoint, initialRelay.url);
     if (!tokenEndpoint) throw new RelayError("auth.refresh_invalid", "\u672A\u914D\u7F6E\u6709\u6548\u7684 Token \u5237\u65B0\u5730\u5740");
     const requestId = randomId("refresh");
     const issuedAt = Date.now();
@@ -17276,6 +17517,7 @@ var RelayTokenService = class {
     try {
       response = await this.fetch(tokenEndpoint, {
         method: "POST",
+        redirect: "error",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           endpointGrant: credential.endpointGrant,
@@ -17289,30 +17531,106 @@ var RelayTokenService = class {
         signal: AbortSignal.timeout(1e4)
       });
     } catch (error2) {
-      throw new RelayError("RELAY_UNAVAILABLE", `Connect Token \u5237\u65B0\u5931\u8D25\uFF1A${error2.message}`);
+      throw new RelayError("RELAY_UNAVAILABLE", `Connect Token \u5237\u65B0\u5931\u8D25\uFF1A${error2.message}`, {
+        retryable: true
+      });
     }
     const body = await response.json().catch(() => null);
-    const errorCode = body?.data?.errorCode;
-    if (!response.ok || Number.isInteger(body?.code) && body.code !== 200) {
-      throw new RelayError(errorCode || "auth.refresh_rejected", body?.msg || `Connect Token \u5237\u65B0\u88AB\u62D2\u7EDD\uFF08HTTP ${response.status}\uFF09`);
+    const errorCode = typeof body?.data?.errorCode === "string" ? body.data.errorCode : null;
+    const envelopeCode = Number.isInteger(body?.code) ? body.code : null;
+    if (!response.ok || envelopeCode !== null && envelopeCode !== 200) {
+      const retryable = isRetryableHttpStatus(response.status) || envelopeCode !== null && isRetryableHttpStatus(envelopeCode);
+      const retryAfterMs = retryAfterMilliseconds(response.headers?.get?.("retry-after"));
+      throw new RelayError(
+        retryable ? "RELAY_RETRYABLE" : errorCode || "auth.refresh_rejected",
+        body?.msg || `Connect Token \u5237\u65B0\u88AB\u62D2\u7EDD\uFF08HTTP ${response.status}\uFF09`,
+        {
+          retryable,
+          status: response.status,
+          relayCode: errorCode || envelopeCode,
+          ...retryAfterMs == null ? {} : { retryAfterMs }
+        }
+      );
     }
     const data = body?.data && typeof body.data === "object" ? body.data : body;
-    if (typeof data?.connectToken !== "string" || data.connectToken.length < 32 || !/^[A-Za-z0-9_-]+$/.test(data.connectToken) || !Number.isSafeInteger(data.expiresAt) || data.expiresAt <= Date.now()) {
+    const now = Date.now();
+    if (typeof data?.connectToken !== "string" || data.connectToken.length < 32 || !/^[A-Za-z0-9_-]+$/.test(data.connectToken) || !Number.isSafeInteger(data.expiresAt) || data.expiresAt <= now) {
       throw new RelayError("INVALID_MESSAGE", "Relay \u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u5237\u65B0\u51ED\u8BC1");
     }
-    if (typeof this.configStore.updateRelayCredential !== "function") {
-      throw new RelayError("AUTH_FAILED", "\u5F53\u524D\u51ED\u8BC1\u5B58\u50A8\u4E0D\u652F\u6301\u81EA\u52A8\u7EED\u671F");
+    validateRefreshContext(data, initialRelay, now);
+    const grantExpiresAt = data.grantExpiresAt;
+    if (grantExpiresAt !== void 0 && grantExpiresAt !== null && (!Number.isSafeInteger(grantExpiresAt) || grantExpiresAt <= now)) {
+      throw new RelayError("INVALID_MESSAGE", "Relay \u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u6388\u6743\u51ED\u8BC1\u6709\u6548\u671F");
     }
-    const updated = await this.configStore.updateRelayCredential({
+    const patch = {
       connectToken: data.connectToken,
       expiresAt: data.expiresAt,
       ...credential.tokenEndpoint ? {} : { tokenEndpoint },
-      ...Number.isSafeInteger(data.grantExpiresAt) ? { grantExpiresAt: data.grantExpiresAt } : {}
-    });
+      ...Number.isSafeInteger(grantExpiresAt) ? { grantExpiresAt } : {}
+    };
+    const currentConfig = this.configStore.get();
+    const currentIdentity = await this.configStore.endpointIdentity();
+    const contextChanged = currentConfig.relay?.url !== initialRelay.url || currentConfig.relay?.spaceId !== initialRelay.spaceId || currentConfig.relay?.endpointId !== initialRelay.endpointId || currentConfig.relay?.endpointType !== initialRelay.endpointType || currentIdentity?.publicKey !== identity?.publicKey;
+    if (contextChanged) {
+      throw new RelayError("AUTH_CONTEXT_CHANGED", "Relay \u8FDE\u63A5\u51ED\u8BC1\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u8FDE\u63A5");
+    }
+    let currentCredential = null;
+    let persistenceAvailable = false;
+    if (typeof this.configStore.relayCredential === "function" || typeof this.configStore.persistedRelayCredential === "function") {
+      persistenceAvailable = true;
+      currentCredential = await this.#persistedCredential();
+      if (persist && currentCredential && currentCredential.endpointGrant !== credential.endpointGrant) {
+        throw new RelayError("AUTH_CONTEXT_CHANGED", "Relay \u8FDE\u63A5\u51ED\u8BC1\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u8FDE\u63A5");
+      }
+      if (persist && currentCredential && (currentCredential.tokenEndpoint || "") !== (credential.tokenEndpoint || "")) {
+        throw new RelayError("AUTH_CONTEXT_CHANGED", "Relay \u8FDE\u63A5\u51ED\u8BC1\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u8FDE\u63A5");
+      }
+    }
+    let updatedValue = null;
+    if (persist && (currentCredential || !persistenceAvailable)) {
+      if (typeof this.configStore.updateRelayCredential !== "function") {
+        throw new RelayError("AUTH_FAILED", "\u5F53\u524D\u51ED\u8BC1\u5B58\u50A8\u4E0D\u652F\u6301\u81EA\u52A8\u7EED\u671F");
+      }
+      const expectedCredential = { endpointGrant: credential.endpointGrant };
+      if (currentCredential && Object.hasOwn(currentCredential, "connectToken")) {
+        expectedCredential.connectToken = currentCredential.connectToken;
+      } else if (currentCredential) {
+        expectedCredential.connectToken = null;
+      }
+      if (currentCredential && Object.hasOwn(currentCredential, "tokenEndpoint")) {
+        expectedCredential.tokenEndpoint = currentCredential.tokenEndpoint;
+      } else if (currentCredential) {
+        expectedCredential.tokenEndpoint = null;
+      }
+      updatedValue = await this.configStore.updateRelayCredential(
+        patch,
+        expectedCredential
+      );
+      if (updatedValue === null) {
+        throw new RelayError("AUTH_CONTEXT_CHANGED", "Relay \u8FDE\u63A5\u51ED\u8BC1\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u8FDE\u63A5");
+      }
+    } else {
+      this.logger?.info?.("relay", "\u4F7F\u7528\u672A\u4FDD\u5B58\u7684 Endpoint Grant \u5B8C\u6210\u672C\u6B21\u8FDE\u63A5\u6D4B\u8BD5");
+    }
+    const updated = persist ? {
+      ...credential,
+      ...currentCredential || {},
+      ...updatedValue || {},
+      ...patch
+    } : {
+      ...credential,
+      ...patch
+    };
     this.logger.info("relay", "Connect Token \u5DF2\u901A\u8FC7 Endpoint Grant \u81EA\u52A8\u7EED\u671F", {
       expiresAt: new Date(updated.expiresAt).toISOString()
     });
     return updated;
+  }
+  #clearRefresh(promise) {
+    if (this.#refreshing === promise) {
+      this.#refreshing = null;
+      this.#refreshingKey = null;
+    }
   }
   async #credential() {
     if (typeof this.configStore.relayCredential === "function") {
@@ -17325,10 +17643,66 @@ var RelayTokenService = class {
     }
     return null;
   }
+  async #persistedCredential() {
+    if (typeof this.configStore.persistedRelayCredential === "function") {
+      return this.configStore.persistedRelayCredential();
+    }
+    if (typeof this.configStore.relayCredential === "function") {
+      return this.configStore.relayCredential({ ignoreEnvironment: true });
+    }
+    return this.#credential();
+  }
+  async #refreshContextKey(credential) {
+    let config2;
+    try {
+      config2 = this.configStore.get();
+    } catch {
+      config2 = {};
+    }
+    let identity;
+    try {
+      identity = await this.configStore.endpointIdentity();
+    } catch {
+      identity = {};
+    }
+    return [
+      credential.endpointGrant || "",
+      credential.tokenEndpoint || "",
+      config2.relay?.url || "",
+      config2.relay?.spaceId || "",
+      config2.relay?.endpointId || "",
+      identity?.publicKey || ""
+    ].join("\0");
+  }
+  async #resolveCredential(suppliedCredential) {
+    const stored = await this.#credential();
+    if (suppliedCredential === null || suppliedCredential === void 0) return stored;
+    const supplied = typeof suppliedCredential === "string" ? { connectToken: suppliedCredential } : suppliedCredential;
+    if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) return stored;
+    const hasTokenField = Object.hasOwn(supplied, "connectToken");
+    const hasGrantField = Object.hasOwn(supplied, "endpointGrant");
+    const merged = { ...stored || {}, ...supplied };
+    if (hasGrantField && !hasTokenField) {
+      delete merged.connectToken;
+      delete merged.expiresAt;
+    }
+    if (typeof supplied.connectToken === "string" && supplied.connectToken && stored?.connectToken && supplied.connectToken !== stored.connectToken) {
+      if (!Object.hasOwn(supplied, "expiresAt")) delete merged.expiresAt;
+      if (!hasGrantField) {
+        delete merged.endpointGrant;
+        delete merged.grantExpiresAt;
+      }
+    }
+    if (typeof supplied.endpointGrant === "string" && supplied.endpointGrant && stored?.endpointGrant && supplied.endpointGrant !== stored.endpointGrant && !Object.hasOwn(supplied, "grantExpiresAt")) {
+      delete merged.grantExpiresAt;
+    }
+    return Object.keys(merged).length ? merged : null;
+  }
 };
 function deriveTokenEndpoint(relayUrl) {
   try {
     const url = new URL(relayUrl);
+    if (!["ws:", "wss:"].includes(url.protocol)) return null;
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
     url.pathname = "/api/connect-tokens/refresh";
     url.search = "";
@@ -17336,6 +17710,52 @@ function deriveTokenEndpoint(relayUrl) {
     return url.toString();
   } catch {
     return null;
+  }
+}
+function resolveTokenEndpoint(configured, relayUrl) {
+  const raw = typeof configured === "string" && configured.trim() ? configured.trim() : deriveTokenEndpoint(relayUrl);
+  if (!raw) return null;
+  try {
+    const endpoint = new URL(raw);
+    const loopback = isLoopbackHostname(endpoint.hostname);
+    if (!["http:", "https:"].includes(endpoint.protocol) || !endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.protocol !== "https:" && !loopback) {
+      return null;
+    }
+    return endpoint.toString();
+  } catch {
+    return null;
+  }
+}
+function isRetryableHttpStatus(status) {
+  return Number.isInteger(status) && (status === 408 || status === 425 || status === 429 || status >= 500 && status <= 599);
+}
+function retryAfterMilliseconds(value) {
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const seconds = Number(raw);
+    if (!Number.isSafeInteger(seconds)) return MAX_RETRY_AFTER_MS;
+    return Math.min(MAX_RETRY_AFTER_MS, seconds * 1e3);
+  }
+  const timestamp = Date.parse(raw);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.min(MAX_RETRY_AFTER_MS, Math.max(0, timestamp - Date.now()));
+}
+function validateRefreshContext(data, relay, now = Date.now()) {
+  const expected = {
+    spaceId: typeof relay?.spaceId === "string" ? relay.spaceId : "",
+    endpointId: typeof relay?.endpointId === "string" ? relay.endpointId : "",
+    endpointType: typeof relay?.endpointType === "string" && relay.endpointType ? relay.endpointType : "bridge"
+  };
+  for (const field of ["spaceId", "endpointId", "endpointType"]) {
+    if (data?.[field] === void 0 || data?.[field] === null) continue;
+    if (typeof data[field] !== "string" || !data[field] || data[field] !== expected[field]) {
+      throw new RelayError("AUTH_CONTEXT_CHANGED", `Relay \u5237\u65B0\u54CD\u5E94\u7684 ${field} \u4E0E\u5F53\u524D\u914D\u7F6E\u4E0D\u4E00\u81F4`);
+    }
+  }
+  if (data?.grantExpiresAt !== void 0 && data?.grantExpiresAt !== null && (!Number.isSafeInteger(data.grantExpiresAt) || data.grantExpiresAt <= now)) {
+    throw new RelayError("INVALID_MESSAGE", "Relay \u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u6388\u6743\u51ED\u8BC1\u6709\u6548\u671F");
   }
 }
 
@@ -17359,13 +17779,20 @@ var TERMINAL_RELAY_AUTH_CODES = /* @__PURE__ */ new Set([
   "auth.space_unavailable",
   "auth.endpoint_type_mismatch",
   "auth.revoked",
+  "AUTH_CONTEXT_CHANGED",
   "handshake.invalid",
   "connection.kicked"
 ]);
+var TOKEN_REFRESH_LEAD_MS = 6e4;
+var UNKNOWN_EXPIRY_REFRESH_MS = 5 * 6e4;
+var TOKEN_REFRESH_RETRY_MS = 15e3;
 var RelayClient = class extends EventEmitter3 {
   #socket = null;
   #heartbeat = null;
   #reconnectTimer = null;
+  #tokenRefreshTimer = null;
+  #tokenRefreshInFlight = null;
+  #tokenRefreshContextKey = null;
   #connectPromise = null;
   #socketGeneration = 0;
   #attempt = 0;
@@ -17375,6 +17802,8 @@ var RelayClient = class extends EventEmitter3 {
   #tokenService;
   #maxFrameSize = 10 * 1024 * 1024;
   #forceTokenRefresh = false;
+  #credentialRefreshBlocked = false;
+  #rotationInProgress = false;
   #resourceRequests = /* @__PURE__ */ new Map();
   constructor(configStore, logger, options = {}) {
     super();
@@ -17407,12 +17836,21 @@ var RelayClient = class extends EventEmitter3 {
     if (!config2.relay.url) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Relay \u5730\u5740");
     if (!spaceId) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Space ID");
     if (!relayEndpointId(config2.relay)) throw new RelayError("CONFIG_INCOMPLETE", "\u5C1A\u672A\u914D\u7F6E Relay Endpoint ID");
-    const token = typeof credential === "string" ? credential : credential?.connectToken;
-    if (credential !== void 0 && !token) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Token");
-    if (credential === void 0) this.#credential = null;
-    else if (typeof credential === "string") this.#credential = { connectToken: credential };
-    else if (credential?.connectToken) this.#credential = { ...credential };
+    const token = typeof credential === "string" ? credential.trim() : credential?.connectToken?.trim?.() || "";
+    const grant = credential && typeof credential === "object" ? credential.endpointGrant?.trim?.() || "" : "";
+    if (credential !== void 0 && credential !== null && !token && !grant) {
+      throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Connect Token \u6216 Endpoint Grant");
+    }
+    if (credential === void 0 || credential === null) this.#credential = null;
+    else if (typeof credential === "string") this.#credential = { connectToken: token };
+    else this.#credential = {
+      ...credential,
+      ...token ? { connectToken: token } : {},
+      ...grant ? { endpointGrant: grant } : {}
+    };
     this.#manualClose = false;
+    this.#credentialRefreshBlocked = false;
+    this.#forceTokenRefresh = false;
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     return this.#beginOpen();
@@ -17434,11 +17872,45 @@ var RelayClient = class extends EventEmitter3 {
     if (!config2.relay.url || !relaySpaceId(config2.relay) || !relayEndpointId(config2.relay)) {
       throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Relay \u5730\u5740\u3001Space ID \u548C Relay Endpoint ID");
     }
-    const token = await this.#tokenService.usableToken({ credential: supplied });
-    if (!token) throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Connect Token");
+    let storedCredential = null;
+    if (typeof this.configStore.relayCredential === "function") {
+      try {
+        storedCredential = await this.configStore.relayCredential();
+      } catch {
+      }
+    }
+    const endpointGrant = supplied && typeof supplied === "object" && Object.hasOwn(supplied, "endpointGrant") ? supplied.endpointGrant?.trim?.() || "" : storedCredential?.endpointGrant?.trim?.() || "";
+    const draftCredential = hasDifferentCredentialFields(supplied, storedCredential);
+    const persistRefresh = !draftCredential;
+    let token = await this.#tokenService.usableToken({
+      credential: supplied,
+      persist: persistRefresh
+    });
+    if (!token) throw new RelayError("CONFIG_INCOMPLETE", "\u8BF7\u5148\u586B\u5199 Connect Token \u6216 Endpoint Grant");
+    let refreshAttempted = false;
+    while (true) {
+      try {
+        return await this.#testHandshake(config2, token, timeoutMs);
+      } catch (error2) {
+        if (!refreshAttempted && isRefreshableCredentialFailure(error2) && endpointGrant) {
+          token = await this.#tokenService.usableToken({
+            force: true,
+            credential: typeof supplied === "object" && supplied ? { ...supplied, connectToken: token } : { connectToken: token },
+            persist: persistRefresh
+          });
+          if (!token) throw new RelayError("CONFIG_INCOMPLETE", "\u5237\u65B0\u540E\u4ECD\u672A\u83B7\u5F97\u6709\u6548 Connect Token");
+          refreshAttempted = true;
+          continue;
+        }
+        throw error2;
+      }
+    }
+  }
+  async #testHandshake(config2, token, timeoutMs) {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(config2.relay.url);
       let settled = false;
+      let timeout;
       const finishReject = (error2) => {
         if (settled) return;
         settled = true;
@@ -17451,16 +17923,22 @@ var RelayClient = class extends EventEmitter3 {
         clearTimeout(timeout);
         resolve(value);
       };
-      const timeout = setTimeout(() => {
-        socket.close();
+      const closeAfter = () => {
+        try {
+          socket.close();
+        } catch {
+        }
+      };
+      timeout = setTimeout(() => {
         finishReject(new RelayError("RELAY_TIMEOUT", "Relay \u5728\u6D4B\u8BD5\u65F6\u95F4\u5185\u6CA1\u6709\u786E\u8BA4\u8BA4\u8BC1"));
+        closeAfter();
       }, timeoutMs);
       socket.addEventListener("open", async () => {
         try {
           socket.send(JSON.stringify(await this.#hello(config2, token, true)));
         } catch (error2) {
-          socket.close();
           finishReject(error2);
+          closeAfter();
         }
       });
       socket.addEventListener("message", (event) => {
@@ -17469,22 +17947,22 @@ var RelayClient = class extends EventEmitter3 {
           if (message.type === "connect.welcome") {
             validateRelayWelcome(message);
             validateWelcomeIdentity(message, config2);
-            socket.close(1e3, "test complete");
             finishResolve({ ok: true, connectionId: message.connectionId, protocolVersion: message.version });
+            closeAfter();
           } else if (message.type === "relay.error") {
-            socket.close();
             finishReject(new RelayError(message.code || "AUTH_FAILED", message.message || "Relay \u62D2\u7EDD\u8FDE\u63A5"));
+            closeAfter();
           }
         } catch (error2) {
-          socket.close();
           finishReject(new RelayError("INVALID_MESSAGE", `Relay \u8FD4\u56DE\u4E86\u65E0\u6548\u6D88\u606F\uFF1A${error2.message}`));
+          closeAfter();
         }
       });
       socket.addEventListener("error", () => {
         finishReject(new RelayError("RELAY_UNAVAILABLE", "\u65E0\u6CD5\u8FDE\u63A5 Relay"));
       });
       socket.addEventListener("close", (event) => {
-        finishReject(new RelayError("RELAY_UNAVAILABLE", `Relay \u5728\u8BA4\u8BC1\u524D\u65AD\u5F00\uFF1A${event.code}`));
+        if (!settled) finishReject(new RelayError("RELAY_UNAVAILABLE", `Relay \u5728\u8BA4\u8BC1\u524D\u65AD\u5F00\uFF1A${event.code}`));
       });
     });
   }
@@ -17492,13 +17970,17 @@ var RelayClient = class extends EventEmitter3 {
     this.#manualClose = true;
     clearTimeout(this.#reconnectTimer);
     clearInterval(this.#heartbeat);
+    clearTimeout(this.#tokenRefreshTimer);
     this.#reconnectTimer = null;
     this.#heartbeat = null;
+    this.#tokenRefreshTimer = null;
+    this.#rotationInProgress = false;
     const socket = this.#socket;
     const opening = this.#connectPromise;
     this.#credential = null;
     this.#token = null;
     this.#forceTokenRefresh = false;
+    this.#credentialRefreshBlocked = false;
     for (const pending of this.#resourceRequests.values()) {
       pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00"));
     }
@@ -17619,13 +18101,34 @@ var RelayClient = class extends EventEmitter3 {
   }
   async #open() {
     try {
-      this.#token = await this.#tokenService.usableToken({
+      const usableCredential = await this.#usableCredential({
         force: this.#forceTokenRefresh,
         credential: this.#credential
       });
+      this.#token = usableCredential?.connectToken || null;
+      this.#credential = {
+        ...this.#credential || {},
+        ...usableCredential || {},
+        ...this.#token ? { connectToken: this.#token } : {}
+      };
+      if (!this.#token) throw new RelayError("AUTH_FAILED", "\u5C1A\u672A\u914D\u7F6E Relay Connect Token");
       this.#forceTokenRefresh = false;
-      if (typeof this.configStore.relayCredential === "function") {
-        this.#credential = await this.configStore.relayCredential();
+      const stored = await this.#authoritativeCredential();
+      if (stored) {
+        if (stored?.connectToken === this.#token) {
+          this.#credential = stored;
+        } else {
+          const supplied = this.#credential || {};
+          const tokenChanged = Boolean(
+            supplied.connectToken && supplied.connectToken !== this.#token
+          );
+          this.#credential = {
+            ...stored || {},
+            ...supplied,
+            connectToken: this.#token
+          };
+          if (tokenChanged) delete this.#credential.expiresAt;
+        }
       }
     } catch (error2) {
       if (this.#manualClose) throw error2;
@@ -17711,24 +18214,22 @@ var RelayClient = class extends EventEmitter3 {
         clearTimeout(authenticationTimeout);
         clearInterval(this.#heartbeat);
         this.#heartbeat = null;
+        clearTimeout(this.#tokenRefreshTimer);
+        this.#tokenRefreshTimer = null;
+        const rotating = this.#rotationInProgress;
+        this.#rotationInProgress = false;
         if (!settled) {
           settled = true;
           const error2 = new RelayError("RELAY_UNAVAILABLE", `Relay \u5728\u8BA4\u8BC1\u524D\u65AD\u5F00\uFF1A${event.code}`);
           reportFailure(error2);
           reject(error2);
         }
-        if (established && !failureReported && !this.#manualClose) {
+        if (established && !failureReported && !this.#manualClose && !rotating) {
           reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF1A${event.code}`));
         }
-        this.#socket = null;
-        if (this.#resourceRequests.size) {
-          for (const pending of this.#resourceRequests.values()) {
-            pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00"));
-          }
-          this.#resourceRequests.clear();
-        }
-        if (!this.#manualClose && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
-          this.#scheduleReconnect();
+        this.#detachSocket(socket);
+        if (!this.#manualClose && !this.#credentialRefreshBlocked && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
+          this.#scheduleReconnect(rotating ? 100 : void 0);
         } else {
           this.emit("disconnected", { code: failureCode || event.code });
         }
@@ -17775,6 +18276,7 @@ var RelayClient = class extends EventEmitter3 {
       this.#attempt = 0;
       this.lastError = null;
       this.#startHeartbeat();
+      this.#scheduleTokenRefresh();
       this.logger.info("relay", "Relay \u5DF2\u8FDE\u63A5\u5E76\u5B8C\u6210\u8BA4\u8BC1", { connectionId: this.connectionId });
       this.emit("status", this.status());
       this.emit("connected", message);
@@ -17876,48 +18378,243 @@ var RelayClient = class extends EventEmitter3 {
     }, seconds * 1e3);
   }
   #handleFailure(error2) {
-    if (isTerminalRelayFailure(error2, this.#credential)) this.#manualClose = true;
+    if (isTerminalRelayFailure(error2, this.#credential)) {
+      this.#manualClose = true;
+      this.#credentialRefreshBlocked = true;
+      clearTimeout(this.#tokenRefreshTimer);
+      this.#tokenRefreshTimer = null;
+    }
     this.state = "error";
     this.lastError = error2.message;
     this.logger.error("relay", "Relay \u8FDE\u63A5\u5F02\u5E38", { code: error2.code, message: error2.message });
     this.emit("status", this.status());
   }
-  #scheduleReconnect() {
-    if (this.#manualClose || this.#reconnectTimer) return;
+  #scheduleReconnect(delayOverride = void 0) {
+    if (this.#manualClose || this.#credentialRefreshBlocked || this.#reconnectTimer) return;
     const max = this.configStore.get().relay.reconnectMaxSeconds;
     this.#attempt += 1;
-    const delay = Math.min(max, 2 ** Math.min(this.#attempt, 8)) * 1e3 + Math.floor(Math.random() * 500);
+    const delay = delayOverride ?? Math.min(max, 2 ** Math.min(this.#attempt, 8)) * 1e3 + Math.floor(Math.random() * 500);
     this.state = "reconnecting";
     this.emit("status", this.status());
     this.logger.warn("relay", "Relay \u5DF2\u65AD\u5F00\uFF0C\u8BA1\u5212\u91CD\u8FDE", { attempt: this.#attempt, delayMs: delay });
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
-      if (this.#manualClose) return;
+      if (this.#manualClose || this.#credentialRefreshBlocked) return;
       this.#beginOpen().catch(() => {
       });
     }, delay);
+    this.#reconnectTimer.unref?.();
+  }
+  #scheduleTokenRefresh(delayOverride = void 0) {
+    clearTimeout(this.#tokenRefreshTimer);
+    this.#tokenRefreshTimer = null;
+    if (this.#manualClose || this.#credentialRefreshBlocked || this.state !== "connected" || !this.#credential?.endpointGrant) return;
+    const expiresAt = Number.isSafeInteger(this.#credential.expiresAt) && this.#credential.expiresAt > 0 ? this.#credential.expiresAt : null;
+    const delay = delayOverride ?? (expiresAt == null ? UNKNOWN_EXPIRY_REFRESH_MS : Math.max(1e3, expiresAt - Date.now() - TOKEN_REFRESH_LEAD_MS));
+    this.#tokenRefreshTimer = setTimeout(() => {
+      this.#tokenRefreshTimer = null;
+      this.#runScheduledTokenRefresh().catch(() => {
+      });
+    }, Math.max(250, delay));
+    this.#tokenRefreshTimer.unref?.();
+  }
+  async #runScheduledTokenRefresh() {
+    if (this.#manualClose || this.#credentialRefreshBlocked || this.state !== "connected") return;
+    const socket = this.#socket;
+    const credential = this.#credential;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !credential?.endpointGrant) return;
+    const generation = this.#socketGeneration;
+    const contextKey = this.#tokenRefreshKey(credential, generation);
+    if (this.#tokenRefreshInFlight && this.#tokenRefreshContextKey === contextKey) return;
+    const promise = (async () => {
+      let rotationStarted = false;
+      try {
+        const refreshedCredential = await this.#usableCredential({ force: true, credential });
+        const token = refreshedCredential?.connectToken || null;
+        if (!token) throw new RelayError("AUTH_FAILED", "\u81EA\u52A8\u7EED\u671F\u672A\u8FD4\u56DE\u6709\u6548 Connect Token");
+        if (!this.#isCurrentRefreshContext(socket, generation, credential)) return;
+        let nextCredential = {
+          ...credential,
+          ...refreshedCredential || {},
+          connectToken: token
+        };
+        const stored = await this.#authoritativeCredential();
+        if (stored) {
+          if (!this.#isCurrentRefreshContext(socket, generation, credential)) return;
+          nextCredential = {
+            ...stored || {},
+            ...credential,
+            ...refreshedCredential || {},
+            connectToken: token
+          };
+        }
+        this.#token = token;
+        this.#credential = nextCredential;
+        this.#forceTokenRefresh = false;
+        this.#credentialRefreshBlocked = false;
+        this.#rotationInProgress = true;
+        rotationStarted = true;
+        this.state = "reconnecting";
+        this.emit("status", this.status());
+        await closeSocket(socket, "connect token renewed");
+        if (this.#socket === socket && this.#socketGeneration === generation) {
+          this.#detachSocket(socket);
+          this.#rotationInProgress = false;
+          if (!this.#manualClose && !this.#credentialRefreshBlocked) this.#scheduleReconnect(100);
+        }
+      } catch (error2) {
+        if (rotationStarted) {
+          this.logger.warn("relay", "\u65E7 Relay \u8FDE\u63A5\u5173\u95ED\u5F02\u5E38\uFF0C\u7EE7\u7EED\u91CD\u8FDE", {
+            code: error2.code,
+            message: error2.message
+          });
+          return;
+        }
+        if (isTerminalRelayFailure(error2, credential)) {
+          this.#credentialRefreshBlocked = true;
+          this.#manualClose = true;
+          clearTimeout(this.#tokenRefreshTimer);
+          this.#tokenRefreshTimer = null;
+          this.state = "error";
+          this.connectedAt = null;
+          this.connectionId = null;
+          this.features = [];
+          this.lastError = error2.message;
+          this.logger.error("relay", "Connect Token \u81EA\u52A8\u7EED\u671F\u5DF2\u505C\u6B62", {
+            code: error2.code,
+            message: error2.message
+          });
+          this.emit("status", this.status());
+          this.#rotationInProgress = true;
+          const closed = await closeSocket(socket, "connect token renewal stopped");
+          if (this.#socket === socket) {
+            this.#detachSocket(socket);
+          }
+          this.#rotationInProgress = false;
+          if (!closed) this.emit("disconnected", { code: error2.code || "auth.refresh_rejected" });
+          return;
+        }
+        this.lastError = error2.message;
+        this.logger.warn("relay", "Connect Token \u81EA\u52A8\u7EED\u671F\u6682\u65F6\u5931\u8D25\uFF0C\u7A0D\u540E\u91CD\u8BD5", {
+          code: error2.code,
+          message: error2.message
+        });
+        this.emit("status", this.status());
+        this.#scheduleTokenRefresh(refreshRetryDelay(error2));
+      } finally {
+        if (rotationStarted && this.#rotationInProgress && this.#socket === socket && this.#socketGeneration === generation) {
+          this.#rotationInProgress = false;
+          if (!this.#manualClose && !this.#credentialRefreshBlocked) {
+            this.#detachSocket(socket);
+            this.#scheduleReconnect(100);
+          }
+        }
+      }
+    })();
+    this.#tokenRefreshInFlight = promise;
+    this.#tokenRefreshContextKey = contextKey;
+    try {
+      await promise;
+    } finally {
+      if (this.#tokenRefreshInFlight === promise) {
+        this.#tokenRefreshInFlight = null;
+        this.#tokenRefreshContextKey = null;
+      }
+    }
+  }
+  #isCurrentRefreshContext(socket, generation, credential) {
+    return !this.#manualClose && this.#socket === socket && this.#socketGeneration === generation && this.state === "connected" && this.#credential?.endpointGrant === credential?.endpointGrant;
+  }
+  #tokenRefreshKey(credential, generation) {
+    const config2 = this.configStore.get();
+    return [
+      generation,
+      config2.relay?.url || "",
+      relaySpaceId(config2.relay),
+      relayEndpointId(config2.relay),
+      credential?.endpointGrant || "",
+      credential?.tokenEndpoint || ""
+    ].join("\0");
+  }
+  async #usableCredential(options) {
+    if (typeof this.#tokenService.usableCredential === "function") {
+      return this.#tokenService.usableCredential(options);
+    }
+    const token = await this.#tokenService.usableToken(options);
+    return {
+      ...options?.credential || {},
+      ...token ? { connectToken: token } : {}
+    };
+  }
+  async #authoritativeCredential() {
+    if (typeof this.configStore.persistedRelayCredential === "function") {
+      return this.configStore.persistedRelayCredential();
+    }
+    if (typeof this.configStore.relayCredential === "function") {
+      return this.configStore.relayCredential({ ignoreEnvironment: true });
+    }
+    return null;
+  }
+  #detachSocket(socket) {
+    if (this.#socket !== socket) return;
+    this.#socket = null;
+    clearInterval(this.#heartbeat);
+    this.#heartbeat = null;
+    clearTimeout(this.#tokenRefreshTimer);
+    this.#tokenRefreshTimer = null;
+    for (const pending of this.#resourceRequests.values()) {
+      pending.reject(new RelayError("RELAY_UNAVAILABLE", "Relay \u8FDE\u63A5\u5DF2\u65AD\u5F00"));
+    }
+    this.#resourceRequests.clear();
   }
 };
 function isTerminalRelayFailure(error2, credential) {
   const code = typeof error2 === "string" ? error2 : error2?.code;
+  if (isRetryableRefreshFailure(error2)) return false;
   if (code === "connection.rejected") return true;
   if (isRefreshableCredentialFailure({ code }) && credential?.endpointGrant) return false;
   return TERMINAL_RELAY_AUTH_CODES.has(code);
+}
+function isRetryableRefreshFailure(error2) {
+  return error2?.code === "RELAY_RETRYABLE" || error2?.details?.retryable === true;
+}
+function refreshRetryDelay(error2) {
+  const retryAfterMs = error2?.details?.retryAfterMs;
+  return Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0 ? Math.max(250, retryAfterMs) : TOKEN_REFRESH_RETRY_MS;
 }
 function isRefreshableCredentialFailure(error2) {
   const code = typeof error2 === "string" ? error2 : error2?.code;
   return code === "auth.token_expired" || code === "auth.invalid_token";
 }
+function hasDifferentCredentialFields(supplied, stored) {
+  if (supplied === void 0 || supplied === null) return false;
+  const candidate = typeof supplied === "string" ? { connectToken: supplied.trim() } : supplied;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return true;
+  if (!stored) return Object.keys(candidate).some((field) => [
+    "connectToken",
+    "endpointGrant",
+    "tokenEndpoint",
+    "expiresAt",
+    "grantExpiresAt"
+  ].includes(field));
+  for (const field of ["connectToken", "endpointGrant", "tokenEndpoint", "expiresAt", "grantExpiresAt"]) {
+    if (!Object.hasOwn(candidate, field)) continue;
+    const suppliedValue = candidate[field] == null ? "" : String(candidate[field]).trim();
+    const storedValue = stored[field] == null ? "" : String(stored[field]).trim();
+    if (suppliedValue !== storedValue) return true;
+  }
+  return false;
+}
 function closeSocket(socket, reason) {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = () => {
+    const finish = (closed = true) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve();
+      resolve(closed === false ? false : true);
     };
-    const timer = setTimeout(finish, 3e3);
+    const timer = setTimeout(() => finish(false), 3e3);
     try {
       socket.addEventListener("close", finish, { once: true });
       socket.close(1e3, reason);
@@ -18086,8 +18783,10 @@ async function prepareEventImages(value, upload, seen = /* @__PURE__ */ new Weak
 }
 
 // server/connector-service.js
-var ConnectorService = class extends EventEmitter4 {
+var ConnectorService = class _ConnectorService extends EventEmitter4 {
   #unsupportedNotificationMethods = /* @__PURE__ */ new Set();
+  static MAX_THREAD_ACCESS_ENTRIES = 1e3;
+  static MAX_PENDING_EVENTS = 256;
   constructor(options = {}) {
     super();
     this.logger = options.logger || new Logger();
@@ -18095,12 +18794,18 @@ var ConnectorService = class extends EventEmitter4 {
     this.instanceLock = options.instanceLock || null;
     this.appServer = options.appServer || new AppServerClient(this.configStore, this.logger);
     this.relay = options.relay || new RelayClient(this.configStore, this.logger);
-    this.eventBuffer = new EventBuffer(options.eventBufferSize || 1e3);
+    this.eventBuffer = new EventBuffer(options.eventBufferSize || 1e3, {
+      maxBytes: options.eventBufferMaxBytes,
+      maxEventBytes: options.eventMaxBytes
+    });
     this.dashboard = null;
     this.startedAt = null;
     this.starting = null;
     this.autoConnectStarted = false;
     this.eventQueue = Promise.resolve();
+    this.#pendingEvents = [];
+    this.#eventWorker = null;
+    this.#eventQueueOverflowed = false;
     this.threadAccess = /* @__PURE__ */ new Map();
     this.router = new CommandRouter({
       configStore: this.configStore,
@@ -18135,6 +18840,8 @@ var ConnectorService = class extends EventEmitter4 {
     this.dashboard = dashboard2;
   }
   async stop() {
+    this.#pendingEvents.length = 0;
+    this.#eventQueueOverflowed = false;
     await this.disconnect("connector stopped");
     await this.appServer.stop();
     await this.dashboard?.stop();
@@ -18172,6 +18879,66 @@ var ConnectorService = class extends EventEmitter4 {
     this.emit("status", await this.status());
     return config2;
   }
+  #rememberThreadAccess(threadId, allowed) {
+    const id = String(threadId || "").trim();
+    if (!id) return;
+    this.threadAccess.delete(id);
+    this.threadAccess.set(id, { allowed: Boolean(allowed), touchedAt: Date.now() });
+    while (this.threadAccess.size > _ConnectorService.MAX_THREAD_ACCESS_ENTRIES) {
+      this.threadAccess.delete(this.threadAccess.keys().next().value);
+    }
+  }
+  #pendingEvents;
+  #eventWorker;
+  #eventQueueOverflowed;
+  #enqueueEvent(event, params = {}) {
+    const context = extractContext(params);
+    const isDelta = event.type.endsWith(".delta") || event.type === "tool.output";
+    if (this.#pendingEvents.length >= _ConnectorService.MAX_PENDING_EVENTS) {
+      if (isDelta) {
+        const dropIndex = this.#pendingEvents.findIndex((entry) => entry.isDelta);
+        if (dropIndex >= 0) this.#pendingEvents.splice(dropIndex, 1);
+        else {
+          this.#eventQueueOverflowed = true;
+          return;
+        }
+        this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId });
+      } else {
+        this.#eventQueueOverflowed = true;
+        return;
+      }
+    } else {
+      this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId });
+    }
+    if (!this.#eventWorker) {
+      this.#eventWorker = this.#drainEvents();
+      this.eventQueue = this.#eventWorker.finally(() => {
+        this.#eventWorker = null;
+      });
+    }
+  }
+  async #drainEvents() {
+    while (this.#pendingEvents.length) {
+      const entry = this.#pendingEvents.shift();
+      try {
+        await this.#forwardEvent(entry.event, entry.params);
+      } catch (error2) {
+        this.logger.warn("connector", "Codex \u4E8B\u4EF6\u8F6C\u53D1\u5931\u8D25", { message: error2.message });
+      }
+    }
+  }
+  #readThreadAccess(threadId) {
+    const id = String(threadId || "").trim();
+    const entry = this.threadAccess.get(id);
+    if (!entry) return void 0;
+    if (Date.now() - entry.touchedAt > 15 * 60 * 1e3) {
+      this.threadAccess.delete(id);
+      return void 0;
+    }
+    this.threadAccess.delete(id);
+    this.threadAccess.set(id, { ...entry, touchedAt: Date.now() });
+    return entry.allowed;
+  }
   async status() {
     const config2 = await this.configStore.publicConfig();
     return {
@@ -18193,6 +18960,7 @@ var ConnectorService = class extends EventEmitter4 {
         allowedProjects: config2.allowedProjects.length,
         remoteApprovalEnabled: config2.permissions.respondToApprovals,
         tokenConfigured: config2.relay.tokenConfigured,
+        credentialConfigured: config2.relay.credentialConfigured,
         tokenExpiresAt: config2.relay.tokenExpiresAt,
         endpointGrantConfigured: config2.relay.endpointGrantConfigured,
         grantExpiresAt: config2.relay.grantExpiresAt,
@@ -18201,7 +18969,12 @@ var ConnectorService = class extends EventEmitter4 {
       },
       protocol: {
         version: 1,
-        latestSequence: this.eventBuffer.latestSequence()
+        latestSequence: this.eventBuffer.latestSequence(),
+        bufferedEvents: this.eventBuffer.size,
+        bufferedBytes: this.eventBuffer.bytes,
+        threadAccessEntries: this.threadAccess.size,
+        pendingEventQueue: this.#pendingEvents.length,
+        eventQueueOverflowed: this.#eventQueueOverflowed
       },
       dashboard: this.dashboard?.status() || { state: "stopped", url: null }
     };
@@ -18216,13 +18989,14 @@ var ConnectorService = class extends EventEmitter4 {
     const config2 = await this.configStore.publicConfig();
     checks.push({
       name: "configuration",
-      ok: Boolean(config2.relay.url && relaySpaceId(config2.relay) && relayEndpointId(config2.relay) && config2.relay.tokenConfigured),
+      ok: Boolean(config2.relay.url && relaySpaceId(config2.relay) && relayEndpointId(config2.relay) && config2.relay.credentialConfigured),
       details: {
         relayUrlConfigured: Boolean(config2.relay.url),
         spaceConfigured: Boolean(relaySpaceId(config2.relay)),
         endpointConfigured: Boolean(relayEndpointId(config2.relay)),
         endpointId: relayEndpointId(config2.relay),
         tokenConfigured: config2.relay.tokenConfigured,
+        credentialConfigured: config2.relay.credentialConfigured,
         endpointGrantConfigured: config2.relay.endpointGrantConfigured,
         tokenExpiresAt: config2.relay.tokenExpiresAt,
         grantExpiresAt: config2.relay.grantExpiresAt,
@@ -18248,12 +19022,19 @@ var ConnectorService = class extends EventEmitter4 {
     });
   }
   async syncAfter(lastSequence) {
+    if (this.#eventQueueOverflowed) {
+      this.#eventQueueOverflowed = false;
+      return this.#snapshotSync();
+    }
     const events = this.eventBuffer.after(lastSequence);
     const requestedSequence = Number(lastSequence || 0);
     const latestSequence = this.eventBuffer.latestSequence();
     if (events !== null && requestedSequence <= latestSequence && !(requestedSequence === 0 && events.length === 0)) {
       return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence() };
     }
+    return this.#snapshotSync();
+  }
+  async #snapshotSync() {
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
     const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
@@ -18314,10 +19095,10 @@ var ConnectorService = class extends EventEmitter4 {
         }
         return;
       }
-      this.eventQueue = this.eventQueue.then(() => this.#forwardEvent(event, params)).catch((error2) => this.logger.warn("connector", "Codex \u4E8B\u4EF6\u8F6C\u53D1\u5931\u8D25", { message: error2.message }));
+      this.#enqueueEvent(event, params);
     });
     this.appServer.on("approval", (approval) => {
-      this.eventQueue = this.eventQueue.then(() => this.#forwardEvent({ type: "approval.requested", ...approval }, approval.params)).catch((error2) => this.logger.warn("connector", "\u5BA1\u6279\u4E8B\u4EF6\u8F6C\u53D1\u5931\u8D25", { message: error2.message }));
+      this.#enqueueEvent({ type: "approval.requested", ...approval }, approval.params);
     });
   }
   async #forwardEvent(event, params = {}) {
@@ -18325,7 +19106,14 @@ var ConnectorService = class extends EventEmitter4 {
     const config2 = this.configStore.get();
     const preparedEvent = await this.prepareResourceImages(event);
     const envelope = eventEnvelope(config2, this.eventBuffer, preparedEvent, extractContext(params));
-    this.relay.send(envelope);
+    const sent = this.relay.send(envelope);
+    if (!sent) {
+      this.logger.warn("connector", "Relay \u5F53\u524D\u4E0D\u53EF\u7528\uFF0C\u4E8B\u4EF6\u5DF2\u4FDD\u7559\u5F85\u540C\u6B65", {
+        eventId: envelope.eventId,
+        sequence: envelope.sequence,
+        type: event.type
+      });
+    }
     this.emit("event", envelope);
   }
   async #isEventAllowed(params) {
@@ -18335,15 +19123,16 @@ var ConnectorService = class extends EventEmitter4 {
     const cwd = params.cwd || params.thread?.cwd;
     if (cwd) {
       const allowed = Boolean(safeProjectPath(cwd, allowedProjects));
-      if (context.threadId) this.threadAccess.set(context.threadId, allowed);
+      if (context.threadId) this.#rememberThreadAccess(context.threadId, allowed);
       return allowed;
     }
     if (!context.threadId) return false;
-    if (this.threadAccess.has(context.threadId)) return this.threadAccess.get(context.threadId);
+    const cached2 = this.#readThreadAccess(context.threadId);
+    if (cached2 !== void 0) return cached2;
     try {
       const result = await this.appServer.readThreadStatus(context.threadId, { ensureResumed: false });
       const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
-      this.threadAccess.set(context.threadId, allowed);
+      this.#rememberThreadAccess(context.threadId, allowed);
       return allowed;
     } catch (error2) {
       this.logger.warn("connector", "\u65E0\u6CD5\u786E\u8BA4\u4E8B\u4EF6\u6240\u5C5E\u9879\u76EE\uFF0C\u5DF2\u505C\u6B62\u8FDC\u7A0B\u8F6C\u53D1", { threadId: context.threadId, message: error2.message });
@@ -18393,10 +19182,21 @@ var DashboardServer = class {
         this.#json(response, 500, { error: { code: "INTERNAL_ERROR", message: error2.message } });
       });
     });
-    await new Promise((resolve, reject) => {
-      this.#server.once("error", reject);
-      this.#server.listen(this.#listenPort, "127.0.0.1", resolve);
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        this.#server.once("error", reject);
+        this.#server.listen(this.#listenPort, "127.0.0.1", resolve);
+      });
+    } catch (error2) {
+      if (error2.code !== "EADDRINUSE" || this.#listenPort === 0) {
+        this.#server = null;
+        throw error2;
+      }
+      await new Promise((resolve) => this.#server.close(resolve));
+      this.#server = null;
+      this.#listenPort = 0;
+      return this.start();
+    }
     this.#port = this.#server.address().port;
     this.logger.info("dashboard", "\u672C\u5730\u914D\u7F6E\u63A7\u5236\u53F0\u5DF2\u542F\u52A8", { port: this.#port });
     return this.url();
@@ -18410,6 +19210,9 @@ var DashboardServer = class {
   }
   url() {
     return this.#port ? `http://127.0.0.1:${this.#port}/#key=${this.#accessKey}` : null;
+  }
+  connectionInfo() {
+    return this.#port ? { port: this.#port, accessKey: this.#accessKey, url: this.url() } : null;
   }
   status() {
     return { state: this.#server ? "running" : "stopped" };
@@ -18522,21 +19325,229 @@ var DashboardServer = class {
 var runtime;
 async function getRuntime() {
   if (runtime) return runtime;
-  const service2 = new ConnectorService();
-  await service2.start();
-  const dashboard2 = new DashboardServer(service2, service2.logger);
-  service2.attachDashboard(dashboard2);
-  await dashboard2.start();
-  runtime = { service: service2, dashboard: dashboard2 };
-  return runtime;
+  const configStore = new ConfigStore();
+  const lock = new InstanceLock(configStore.configDir, "runtime.lock");
+  try {
+    await lock.acquire();
+  } catch (error2) {
+    if (error2.code !== "RELAY_INSTANCE_ALREADY_RUNNING") throw error2;
+    let info = await readRuntimeInfo(configStore.configDir);
+    for (let attempt = 0; !info && attempt < 5; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      info = await readRuntimeInfo(configStore.configDir);
+    }
+    if (!info) throw error2;
+    const service3 = new RuntimeProxy(info);
+    runtime = {
+      service: service3,
+      dashboard: { url: () => info.url, status: () => ({ state: "running", ownerPid: info.pid }) },
+      remote: true
+    };
+    return runtime;
+  }
+  await retireLegacyConnector(configStore.configDir, lock);
+  const service2 = new ConnectorService({ configDir: configStore.configDir });
+  try {
+    await service2.start();
+    const dashboard2 = new DashboardServer(service2, service2.logger);
+    service2.attachDashboard(dashboard2);
+    await dashboard2.start();
+    const info = {
+      pid: process.pid,
+      startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      generation: crypto7.randomUUID(),
+      version: "1.0.0+codex.20260904053012",
+      buildId: "1.0.0+codex.20260904053012:1788914631438",
+      ...dashboard2.connectionInfo()
+    };
+    await writeRuntimeInfo(configStore.configDir, info);
+    runtime = { service: service2, dashboard: dashboard2, remote: false, configDir: configStore.configDir, runtimeInfo: info, runtimeLock: lock };
+    return runtime;
+  } catch (error2) {
+    await lock.release().catch(() => {
+    });
+    throw error2;
+  }
 }
 async function stopRuntime() {
   if (!runtime) return;
-  await runtime.service.stop();
+  const current = runtime;
   runtime = null;
+  if (current.remote) return;
+  try {
+    await current.service.stop();
+  } finally {
+    if (current.runtimeLock) await current.runtimeLock.release().catch(() => {
+    });
+    if (current.configDir) await removeRuntimeInfo(current.configDir, current.runtimeInfo?.pid);
+  }
+}
+async function readRuntimeInfo(configDir) {
+  try {
+    const info = JSON.parse(await fs7.readFile(path8.join(configDir, "runtime.json"), "utf8"));
+    if (!Number.isInteger(info?.port) || info.port <= 0 || typeof info.accessKey !== "string" || !info.url) return null;
+    try {
+      process.kill(Number(info.pid), 0);
+    } catch {
+      return null;
+    }
+    return info;
+  } catch {
+    return null;
+  }
+}
+async function writeRuntimeInfo(configDir, info) {
+  await fs7.mkdir(configDir, { recursive: true, mode: 448 });
+  const file = path8.join(configDir, "runtime.json");
+  const temporary = `${file}.${process.pid}.tmp`;
+  await fs7.writeFile(temporary, `${JSON.stringify(info)}
+`, { mode: 384 });
+  await fs7.rename(temporary, file);
+}
+async function removeRuntimeInfo(configDir, pid) {
+  const file = path8.join(configDir, "runtime.json");
+  try {
+    const current = JSON.parse(await fs7.readFile(file, "utf8"));
+    if (pid && Number(current.pid) !== Number(pid)) return;
+  } catch {
+  }
+  await fs7.unlink(file).catch((error2) => {
+    if (error2.code !== "ENOENT") throw error2;
+  });
+}
+async function retireLegacyConnector(configDir, runtimeLock) {
+  const file = path8.join(configDir, "connector.lock");
+  try {
+    const record2 = JSON.parse(await fs7.readFile(file, "utf8"));
+    const pid = Number(record2?.pid);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error3) {
+      if (error3.code !== "ESRCH") throw error3;
+      return;
+    }
+    const deadline = Date.now() + 3e3;
+    while (Date.now() < deadline) {
+      try {
+        await fs7.access(file);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } catch (error3) {
+        if (error3.code === "ENOENT") return;
+        throw error3;
+      }
+    }
+    const error2 = new Error("\u65E7\u7248 Codex Relay \u8FDB\u7A0B\u672A\u80FD\u5728 3 \u79D2\u5185\u9000\u51FA");
+    error2.code = "LEGACY_RUNTIME_STILL_RUNNING";
+    throw error2;
+  } catch (error2) {
+    if (error2.code === "ENOENT") return;
+    await runtimeLock.release().catch(() => {
+    });
+    throw error2;
+  }
+}
+var RuntimeProxy = class {
+  constructor(info) {
+    this.info = info;
+  }
+  async status() {
+    return this.#request("/api/status");
+  }
+  async diagnostics() {
+    return this.#request("/api/diagnostics");
+  }
+  async connect() {
+    return this.#request("/api/connection/connect", "POST");
+  }
+  async disconnect() {
+    return this.#request("/api/connection/disconnect", "POST");
+  }
+  async testConnection() {
+    return this.#request("/api/connection/test", "POST");
+  }
+  async updateConfig(patch, credential) {
+    return this.#request("/api/config", "PUT", { config: patch, credential });
+  }
+  async #request(endpoint, method = "GET", body) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15e3);
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.info.port}${endpoint}`, {
+        method,
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${this.info.accessKey}`,
+          ...body ? { "Content-Type": "application/json" } : {}
+        },
+        ...body ? { body: JSON.stringify(body) } : {}
+      });
+      const value = await response.json();
+      if (!response.ok) {
+        const error2 = new Error(value?.error?.message || `\u672C\u5730 Relay Agent \u8BF7\u6C42\u5931\u8D25 (${response.status})`);
+        error2.code = value?.error?.code || "RUNTIME_PROXY_FAILED";
+        throw error2;
+      }
+      return value;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+};
+
+// server/agent-launcher.js
+var START_TIMEOUT_MS = 8e3;
+var POLL_INTERVAL_MS = 100;
+async function ensureAgent(options = {}) {
+  const configStore = options.configStore || new ConfigStore();
+  const configDir = configStore.configDir;
+  let existing = await readRuntimeInfo(configDir);
+  const expectedBuild = "1.0.0+codex.20260904053012:1788914631438";
+  if (existing && expectedBuild && existing.buildId !== expectedBuild) {
+    await retireAgent(existing.pid, configDir, options.timeoutMs);
+    existing = null;
+  }
+  if (existing) return existing;
+  const agentScript = options.agentScript || path9.join(path9.dirname(fileURLToPath3(import.meta.url)), "agent-cli.js");
+  const child = spawn2(process.execPath, [agentScript], {
+    cwd: options.cwd || process.cwd(),
+    env: { ...process.env, CODEX_RELAY_AGENT: "1" },
+    detached: true,
+    stdio: "ignore"
+  });
+  child.unref();
+  const deadline = Date.now() + (options.timeoutMs ?? START_TIMEOUT_MS);
+  while (Date.now() < deadline) {
+    const info = await readRuntimeInfo(configDir);
+    if (info) return info;
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+  return null;
+}
+async function retireAgent(pid, configDir, timeoutMs) {
+  if (Number.isInteger(Number(pid)) && Number(pid) > 0 && Number(pid) !== process.pid) {
+    try {
+      process.kill(Number(pid), "SIGTERM");
+    } catch (error2) {
+      if (error2.code !== "ESRCH") throw error2;
+    }
+  }
+  const deadline = Date.now() + Math.min(timeoutMs ?? START_TIMEOUT_MS, 5e3);
+  while (Date.now() < deadline) {
+    if (!await readRuntimeInfo(configDir)) return;
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+  if (Number.isInteger(Number(pid)) && Number(pid) > 0) {
+    try {
+      process.kill(Number(pid), "SIGKILL");
+    } catch (error2) {
+      if (error2.code !== "ESRCH") throw error2;
+    }
+  }
 }
 
 // server/mcp-server.js
+await ensureAgent();
 var { service, dashboard } = await getRuntime();
 var server = new Server(
   { name: "codex-relay-plugin", version: "1.0.0" },
@@ -18646,9 +19657,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 var transport = new StdioServerTransport();
 await server.connect(transport);
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.once(signal, async () => {
-    await stopRuntime();
-    process.exit(0);
-  });
+var shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await stopRuntime();
+  process.exit(0);
 }
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, shutdown);
+process.stdin.once("close", shutdown);
+process.stdin.once("end", shutdown);

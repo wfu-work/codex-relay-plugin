@@ -31,11 +31,15 @@ const showToken = ref(false);
 const advancedKeys = ref([]);
 
 const tokenConfigured = computed(() => Boolean(state.status?.security?.tokenConfigured || state.form.token?.trim()));
+const credentialConfigured = computed(() => Boolean(
+  (state.status?.security?.credentialConfigured ?? tokenConfigured.value)
+  || state.form.endpointGrant?.trim(),
+));
 const tokenTail = computed(() => state.form.token?.trim() ? state.form.token.trim().slice(-4) : '未设置');
 
 async function saveAndTest() {
-  if (!state.form.token && !tokenConfigured.value) {
-    message.warning('还缺少连接令牌，请从 Relay 控制台复制后粘贴');
+  if (!state.form.token && !state.form.endpointGrant && !credentialConfigured.value) {
+    message.warning('请填写连接令牌或接入端授权凭证');
     return;
   }
   const saved = await saveConfig();
@@ -65,7 +69,7 @@ async function cancelEditing() {
       <div>
         <div class="eyebrow">CONNECTION</div>
         <h1>连接设置</h1>
-        <p>把 Relay 控制台签发的信息粘贴到这里即可。首次使用只需要填写 4 项内容，其余参数会自动处理。</p>
+        <p>把 Relay 控制台签发的信息粘贴到这里即可。首次使用填写连接令牌和 Endpoint Grant，后续会自动续期。</p>
       </div>
       <a-tag v-if="configReady" color="success" class="setup-state-tag"><CheckCircleFilled /> 已配置</a-tag>
     </div>
@@ -96,7 +100,7 @@ async function cancelEditing() {
       <div class="setup-intro">
         <div class="setup-kicker">{{ configReady ? '编辑连接' : '首次设置 · 约 1 分钟' }}</div>
         <h2>只需要复制 4 项信息</h2>
-        <p>在 Relay 控制台签发连接令牌后，粘贴 Relay 地址、空间 ID、接入端 ID 和连接令牌。设备名称可选，用于在手机端识别这台电脑。</p>
+        <p>在 Relay 控制台签发连接凭证后，粘贴 Relay 地址、空间 ID、接入端 ID 和连接令牌。建议同时填写 Endpoint Grant，这样短期令牌到期后会自动续期。</p>
       </div>
 
       <div class="setup-steps" aria-label="配置步骤">
@@ -148,7 +152,7 @@ async function cancelEditing() {
           <div class="field-help">插件固定以 bridge（网关）类型连接 Relay。</div>
         </a-form-item>
 
-        <a-form-item label="连接令牌" name="token" required>
+        <a-form-item label="连接令牌" name="token">
           <a-input v-model:value="state.form.token" :type="showToken ? 'text' : 'password'" placeholder="粘贴 Relay 控制台签发的连接令牌" autocomplete="off">
             <template #prefix><KeyOutlined /></template>
             <template #suffix>
@@ -158,15 +162,15 @@ async function cancelEditing() {
               </a-button>
             </template>
           </a-input>
-          <div class="field-help"><span v-if="tokenConfigured" class="token-state configured"><CheckCircleFilled /> 已保存，将安全存放在本机</span><span v-else>只在首次认证时发送，不会写入 URL 或日志。</span></div>
+          <div class="field-help"><span v-if="tokenConfigured" class="token-state configured"><CheckCircleFilled /> 已保存，将安全存放在本机</span><span v-else>可与 Endpoint Grant 二选一；只在认证首帧发送，不会写入 URL 或日志。</span></div>
         </a-form-item>
 
         <a-collapse v-model:active-key="advancedKeys" ghost class="advanced-collapse setup-advanced">
           <a-collapse-panel key="credentials" header="高级凭据与自动续期（大多数情况不需要填写）">
-            <p class="advanced-intro">只有 Relay 控制台同时提供了接入端授权凭证时，才需要填写这一部分。留空不会影响基本连接。</p>
+            <p class="advanced-intro">建议填写 Endpoint Grant。它通常有效 30 天，用于在短期 Connect Token 到期前自动换取新令牌；Grant 失效后才需要重新签发。</p>
             <a-row :gutter="[20, 2]">
               <a-col :xs="24" :lg="16">
-                <a-form-item label="接入端授权凭证"><a-input v-model:value="state.form.endpointGrant" placeholder="Relay 控制台提供时再填写" autocomplete="off"><template #prefix><KeyOutlined /></template></a-input></a-form-item>
+                <a-form-item label="接入端授权凭证"><a-input v-model:value="state.form.endpointGrant" placeholder="建议粘贴 Relay 控制台签发的 Grant" autocomplete="off"><template #prefix><KeyOutlined /></template></a-input></a-form-item>
               </a-col>
               <a-col :xs="24" :lg="8">
                 <a-form-item label="授权凭证过期时间（毫秒）"><a-input-number v-model:value="state.form.grantExpiresAt" :min="0" class="full-width" placeholder="由 Relay 返回" /></a-form-item>
@@ -196,7 +200,7 @@ async function cancelEditing() {
       <div class="guidance-intro">
         <span>不确定怎么填？</span>
         <h2 id="connection-guide-title">从 Relay 控制台复制，不需要猜参数</h2>
-        <p>Relay 地址、空间 ID、接入端 ID 和连接令牌必须来自同一次签发。其余信息由本机自动生成或按需续期。</p>
+        <p>Relay 地址、空间 ID、接入端 ID 和连接凭证必须来自同一次签发。保存 Endpoint Grant 后，Connect Token 会在到期前自动续期。</p>
       </div>
       <div class="guidance-list">
         <div><i></i><p><strong>1. 先确认接入端身份</strong><span>在 Relay 控制台找到目标接入端，复制它的接入端 ID，并使用同一个接入端签发连接令牌。</span></p></div>

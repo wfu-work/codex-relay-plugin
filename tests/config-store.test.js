@@ -101,6 +101,144 @@ test("relay credentials keep grant metadata isolated per Space", async (t) => {
   assert.equal((await store.relayCredential()), null);
 });
 
+test("partial credential updates preserve metadata and reset it when a credential rotates", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-partial-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  const tokenExpiry = Date.now() + 600_000;
+  const grantExpiry = Date.now() + 86_400_000;
+  await store.update({ relay: { spaceId: "partial-space" } }, {
+    connectToken: "token-old",
+    expiresAt: tokenExpiry,
+    endpointGrant: "grant-old-0123456789",
+    grantExpiresAt: grantExpiry,
+  });
+
+  await store.update({}, { connectToken: "token-old" });
+  let credential = await store.relayCredential();
+  assert.equal(credential.expiresAt, tokenExpiry);
+  assert.equal(credential.endpointGrant, "grant-old-0123456789");
+  assert.equal(credential.grantExpiresAt, grantExpiry);
+
+  await store.update({}, { endpointGrant: "grant-new-0123456789" });
+  credential = await store.relayCredential();
+  assert.equal(credential.endpointGrant, "grant-new-0123456789");
+  assert.equal(credential.grantExpiresAt, undefined);
+  assert.equal(credential.expiresAt, tokenExpiry);
+});
+
+test("an empty partial credential update preserves the saved pairing", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-empty-patch-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await store.update({ relay: { spaceId: "empty-patch-space" } }, {
+    connectToken: "empty-patch-token",
+    endpointGrant: "empty-patch-grant-0123456789",
+    expiresAt: Date.now() + 600_000,
+    grantExpiresAt: Date.now() + 86_400_000,
+  });
+
+  await store.update({ relay: { deviceName: "renamed-host" } }, {});
+  const credential = await store.relayCredential();
+  assert.equal(credential.connectToken, "empty-patch-token");
+  assert.equal(credential.endpointGrant, "empty-patch-grant-0123456789");
+  assert.ok(credential.expiresAt > Date.now());
+  assert.ok(credential.grantExpiresAt > Date.now());
+});
+
+test("undefined credential fields can clear a token, grant, and its metadata", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-undefined-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await store.update({ relay: { spaceId: "undefined-space" } }, {
+    connectToken: "token-undefined",
+    expiresAt: Date.now() + 600_000,
+    endpointGrant: "grant-undefined-0123456789",
+    grantExpiresAt: Date.now() + 86_400_000,
+  });
+
+  await store.update({}, { connectToken: undefined, expiresAt: undefined });
+  let credential = await store.relayCredential();
+  assert.equal(credential.connectToken, undefined);
+  assert.equal(credential.expiresAt, undefined);
+  assert.equal(credential.endpointGrant, "grant-undefined-0123456789");
+
+  await store.update({}, {
+    endpointGrant: undefined,
+    grantExpiresAt: undefined,
+    tokenEndpoint: undefined,
+  });
+  credential = await store.relayCredential();
+  assert.equal(credential, null);
+});
+
+test("optional credential metadata can be cleared when no secret remains", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-metadata-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await store.update({ relay: { spaceId: "metadata-space" } }, {
+    connectToken: "metadata-token",
+  });
+  await store.update({}, { connectToken: null, expiresAt: null, grantExpiresAt: null, tokenEndpoint: null });
+  assert.equal(await store.relayCredential(), null);
+});
+
+test("environment token overrides keep the grant and return rotated credentials", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-env-"));
+  t.after(async () => {
+    delete process.env.CODEX_RELAY_TOKEN;
+    await fs.rm(configDir, { recursive: true, force: true });
+  });
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await store.update({ relay: { spaceId: "env-space" } }, {
+    connectToken: "persisted-token",
+    expiresAt: Date.now() + 600_000,
+    endpointGrant: "grant-env-0123456789",
+    grantExpiresAt: Date.now() + 86_400_000,
+  });
+  process.env.CODEX_RELAY_TOKEN = "environment-token";
+
+  const overridden = await store.relayCredential();
+  assert.equal(overridden.connectToken, "environment-token");
+  assert.equal(overridden.endpointGrant, "grant-env-0123456789");
+  assert.equal(overridden.expiresAt, undefined);
+
+  const rotated = await store.updateRelayCredential({
+    connectToken: "rotated-token",
+    expiresAt: Date.now() + 900_000,
+  });
+  assert.equal(rotated.connectToken, "rotated-token");
+  assert.ok(rotated.expiresAt > Date.now());
+  assert.equal(rotated.endpointGrant, "grant-env-0123456789");
+});
+
+test("rejects a refresh write when the Endpoint Grant was replaced", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-context-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const store = new ConfigStore({ configDir });
+  await store.load();
+  await store.update({ relay: { spaceId: "context-space" } }, {
+    connectToken: "token-before",
+    endpointGrant: "grant-before-0123456789",
+  });
+  await store.update({}, { endpointGrant: "grant-after-0123456789" });
+
+  const result = await store.updateRelayCredential({
+    connectToken: "stale-refresh-token",
+    expiresAt: Date.now() + 600_000,
+  }, { endpointGrant: "grant-before-0123456789" });
+  assert.equal(result, null);
+  const credential = await store.relayCredential();
+  assert.equal(credential.endpointGrant, "grant-after-0123456789");
+  assert.equal(credential.connectToken, "token-before");
+  assert.equal(credential.expiresAt, undefined);
+});
+
 test("relay credential rejects public HTTP refresh endpoints", async (t) => {
   const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-credential-invalid-"));
   t.after(() => fs.rm(configDir, { recursive: true, force: true }));

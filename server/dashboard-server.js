@@ -44,10 +44,24 @@ export class DashboardServer {
         this.#json(response, 500, { error: { code: "INTERNAL_ERROR", message: error.message } });
       });
     });
-    await new Promise((resolve, reject) => {
-      this.#server.once("error", reject);
-      this.#server.listen(this.#listenPort, "127.0.0.1", resolve);
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        this.#server.once("error", reject);
+        this.#server.listen(this.#listenPort, "127.0.0.1", resolve);
+      });
+    } catch (error) {
+      // A previous plugin process may still own the legacy fixed port while
+      // its MCP transport is draining. Use an ephemeral local port so the new
+      // owner can start immediately; runtime.json publishes the actual port.
+      if (error.code !== "EADDRINUSE" || this.#listenPort === 0) {
+        this.#server = null;
+        throw error;
+      }
+      await new Promise((resolve) => this.#server.close(resolve));
+      this.#server = null;
+      this.#listenPort = 0;
+      return this.start();
+    }
     this.#port = this.#server.address().port;
     this.logger.info("dashboard", "本地配置控制台已启动", { port: this.#port });
     return this.url();
@@ -63,6 +77,12 @@ export class DashboardServer {
 
   url() {
     return this.#port ? `http://127.0.0.1:${this.#port}/#key=${this.#accessKey}` : null;
+  }
+
+  connectionInfo() {
+    return this.#port
+      ? { port: this.#port, accessKey: this.#accessKey, url: this.url() }
+      : null;
   }
 
   status() {

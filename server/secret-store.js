@@ -17,9 +17,37 @@ export class SecretStore {
   }
 
   async getCredential(spaceId) {
-    if (process.env.CODEX_RELAY_TOKEN) {
-      return { connectToken: process.env.CODEX_RELAY_TOKEN };
+    const key = spaceId || "default";
+    // An environment token is an intentional token override, but it must not
+    // hide the proof-bound Endpoint Grant persisted for the same Space. Keep
+    // the grant/expiry metadata so a rotated environment token can still be
+    // renewed automatically.
+    const environmentToken = process.env.CODEX_RELAY_TOKEN?.trim();
+    if (environmentToken) {
+      const persisted = await this.getPersistedCredential(key);
+      const candidate = {
+        ...(persisted || {}),
+        connectToken: environmentToken,
+      };
+      // Expiry metadata belongs to the persisted token. If an environment
+      // override replaces that token, discard the old expiry so the client
+      // cannot mistake a stale override for a still-valid credential.
+      if (persisted?.connectToken && persisted.connectToken !== environmentToken) {
+        delete candidate.expiresAt;
+      }
+      const credential = validateCredential(candidate);
+      return cloneCredential(credential);
     }
+    return this.getPersistedCredential(key);
+  }
+
+  /**
+   * Read the credential written to disk without applying the optional
+   * CODEX_RELAY_TOKEN runtime override.  Refresh responses must use this view
+   * when they need authoritative expiry metadata; otherwise an environment
+   * token would mask the newly rotated token forever.
+   */
+  async getPersistedCredential(spaceId) {
     const key = spaceId || "default";
     if (this.cache.has(key)) return cloneCredential(this.cache.get(key));
     const values = await this.#readFallback();
@@ -41,9 +69,80 @@ export class SecretStore {
     });
   }
 
-  async update(spaceId, patch) {
-    const current = (await this.getCredential(spaceId)) || {};
-    return this.set(spaceId, { ...current, ...patch });
+  async update(spaceId, patch, expectedCredential) {
+    const key = spaceId || "default";
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error("Relay 凭证更新格式无效");
+    }
+    // Treat an empty partial update as a no-op.  Callers use partial patches
+    // for dashboard saves, and an empty object must never delete an existing
+    // credential by accident.
+    if (Object.keys(patch).length === 0) return this.getPersistedCredential(key);
+    return this.#enqueue(async () => {
+      // Read and write inside the same queue entry.  A refresh response can
+      // arrive after the user has replaced a pairing; checking the current
+      // file immediately before writing prevents that stale response from
+      // overwriting the newly selected Grant.
+      const values = await this.#readFallback();
+      const persisted = values[key] ? validateCredential(values[key]) : null;
+      const current = persisted || {};
+      if (expectedCredential && !matchesCredential(current, expectedCredential)) {
+        return null;
+      }
+
+      const next = { ...current, ...patch };
+      if (Object.hasOwn(patch, "connectToken") && (patch.connectToken === "" || patch.connectToken === null || patch.connectToken === undefined)) {
+        delete next.connectToken;
+        delete next.expiresAt;
+      }
+      if (Object.hasOwn(patch, "endpointGrant") && (patch.endpointGrant === "" || patch.endpointGrant === null || patch.endpointGrant === undefined)) {
+        delete next.endpointGrant;
+        delete next.grantExpiresAt;
+      }
+      if (
+        Object.hasOwn(patch, "connectToken")
+        && typeof patch.connectToken === "string"
+        && patch.connectToken.trim()
+        && patch.connectToken !== current.connectToken
+        && !Object.hasOwn(patch, "expiresAt")
+      ) {
+        delete next.expiresAt;
+      }
+      if (
+        Object.hasOwn(patch, "endpointGrant")
+        && typeof patch.endpointGrant === "string"
+        && patch.endpointGrant.trim()
+        && patch.endpointGrant !== current.endpointGrant
+        && !Object.hasOwn(patch, "grantExpiresAt")
+      ) {
+        delete next.grantExpiresAt;
+      }
+      for (const name of ["expiresAt", "grantExpiresAt", "tokenEndpoint"]) {
+        if (next[name] === null || next[name] === "" || next[name] === undefined) {
+          delete next[name];
+        }
+      }
+      // A dashboard/API caller may explicitly send undefined optional fields.
+      // Remove those properties before deciding whether the credential is
+      // empty; otherwise an undefined tokenEndpoint would keep an otherwise
+      // cleared entry alive and make validateCredential reject the update.
+      for (const name of Object.keys(next)) {
+        if (next[name] === undefined) delete next[name];
+      }
+      if (!Object.keys(next).length) {
+        delete values[key];
+        await this.#writeFallback(values);
+        this.cache.set(key, null);
+        return null;
+      }
+      const normalized = validateCredential(next);
+      values[key] = normalized;
+      await this.#writeFallback(values);
+      this.cache.set(key, normalized);
+      // Return the value written to disk, not getCredential(), because an
+      // environment override may intentionally mask that value on reads.
+      return cloneCredential(normalized);
+    });
   }
 
   validate(credential) {
@@ -89,13 +188,14 @@ function validateCredential(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Relay 凭证格式无效");
   }
-  const connectToken = validateSecret(value.connectToken, "Connect Token", true);
+  const connectToken = validateSecret(value.connectToken, "Connect Token", false);
   const endpointGrant = validateSecret(value.endpointGrant, "Endpoint Grant", false);
+  if (!connectToken && !endpointGrant) throw new Error("Connect Token 或 Endpoint Grant 至少需要一个");
   const expiresAt = validateExpiry(value.expiresAt, "Connect Token");
   const grantExpiresAt = validateExpiry(value.grantExpiresAt, "Endpoint Grant");
   const tokenEndpoint = validateTokenEndpoint(value.tokenEndpoint);
   return {
-    connectToken,
+    ...(connectToken === undefined ? {} : { connectToken }),
     ...(expiresAt === undefined ? {} : { expiresAt }),
     ...(endpointGrant === undefined ? {} : { endpointGrant }),
     ...(grantExpiresAt === undefined ? {} : { grantExpiresAt }),
@@ -137,4 +237,23 @@ function validateTokenEndpoint(value) {
 
 function cloneCredential(value) {
   return value ? { ...value } : null;
+}
+
+function matchesCredential(current, expected) {
+  const candidate = typeof expected === "string" ? { connectToken: expected } : expected;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  for (const field of ["connectToken", "endpointGrant", "tokenEndpoint"]) {
+    if (!Object.hasOwn(candidate, field)) continue;
+    const expectedValue = candidate[field];
+    // `null`/`undefined` explicitly means that the field was absent when the
+    // caller read the credential. This lets refresh use compare-and-swap even
+    // for a Grant-only pairing, where a concurrent refresh may add the first
+    // Connect Token between the read and the write.
+    if (expectedValue === null || expectedValue === undefined) {
+      if (current?.[field] !== undefined) return false;
+    } else if (current?.[field] !== expectedValue) {
+      return false;
+    }
+  }
+  return true;
 }

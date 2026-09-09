@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 
 import { defaultConfig } from "../server/config-store.js";
+import { RelayError } from "../server/errors.js";
 import { RelayClient } from "../server/relay-client.js";
 
 test("blocks targeted sends when Relay does not advertise directed routing", async (t) => {
@@ -328,4 +329,285 @@ test("refreshes a stale token after auth.invalid_token when an Endpoint Grant is
   assert.equal(refreshRequested, true);
   assert.equal(client.status().state, "connected");
   assert.equal(hellos.at(-1).token, "refreshed-token");
+});
+
+test("connection tests refresh once when Relay rejects an otherwise-future token", async (t) => {
+  const previousWebSocket = globalThis.WebSocket;
+  let socketCount = 0;
+  const hellos = [];
+  class FakeWebSocket {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 0;
+    #listeners = new Map();
+
+    constructor() {
+      socketCount += 1;
+      queueMicrotask(() => this.#emit("open", {}));
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.#listeners.get(type) || [];
+      listeners.push(listener);
+      this.#listeners.set(type, listeners);
+    }
+
+    send(payload) {
+      const hello = JSON.parse(payload);
+      hellos.push(hello);
+      queueMicrotask(() => {
+        this.readyState = FakeWebSocket.OPEN;
+        if (socketCount === 1) {
+          this.#emit("message", {
+            data: JSON.stringify({
+              version: 1,
+              type: "relay.error",
+              code: "auth.invalid_token",
+              message: "connect token is unavailable",
+            }),
+          });
+          this.close();
+          return;
+        }
+        this.#emit("message", {
+          data: JSON.stringify({
+            version: 1,
+            type: "connect.welcome",
+            requestId: hello.requestId,
+            connectionId: "connection-test-refreshed",
+            sessionId: "session-test-refreshed",
+            spaceId: hello.spaceId,
+            endpointId: hello.endpointId,
+            maxFrameSize: 1024 * 1024,
+          }),
+        });
+      });
+    }
+
+    close() {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.#emit("close", { code: 1000 });
+    }
+
+    #emit(type, event) {
+      for (const listener of this.#listeners.get(type) || []) listener(event);
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  t.after(() => {
+    globalThis.WebSocket = previousWebSocket;
+  });
+
+  const pair = generateKeyPairSync("ed25519");
+  const publicKey = Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).subarray(-32).toString("base64url");
+  const privateKey = Buffer.from(pair.privateKey.export({ format: "der", type: "pkcs8" })).toString("base64url");
+  const config = defaultConfig();
+  config.relay.url = "ws://127.0.0.1:8788/v1/connect";
+  config.relay.spaceId = "space-test";
+  config.relay.endpointId = "cli-endpoint-test";
+  const grant = "test-refresh-grant-0123456789";
+  const store = {
+    get: () => structuredClone(config),
+    endpointIdentity: async () => ({ publicKey, privateKey }),
+    relayCredential: async () => ({ connectToken: "future-but-stale-token", endpointGrant: grant }),
+  };
+  const forceCalls = [];
+  const tokenService = {
+    usableToken: async ({ force, credential }) => {
+      forceCalls.push(force);
+      return force ? "test-refreshed-token" : credential?.connectToken || "future-but-stale-token";
+    },
+  };
+  const client = new RelayClient(store, { info() {}, warn() {}, error() {} }, { tokenService });
+
+  const result = await client.test({ connectToken: "future-but-stale-token", endpointGrant: grant });
+  assert.equal(result.ok, true);
+  assert.equal(socketCount, 2);
+  assert.deepEqual(hellos.map((hello) => hello.token), ["future-but-stale-token", "test-refreshed-token"]);
+  assert.ok(forceCalls.includes(true));
+});
+
+test("renews a connected token before expiry and reconnects with the rotated value", async (t) => {
+  const previousWebSocket = globalThis.WebSocket;
+  let socketCount = 0;
+  const hellos = [];
+  class FakeWebSocket {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 0;
+    #listeners = new Map();
+
+    constructor() {
+      socketCount += 1;
+      queueMicrotask(() => this.#emit("open", {}));
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.#listeners.get(type) || [];
+      listeners.push(listener);
+      this.#listeners.set(type, listeners);
+    }
+
+    send(payload) {
+      const hello = JSON.parse(payload);
+      hellos.push(hello);
+      queueMicrotask(() => {
+        this.readyState = FakeWebSocket.OPEN;
+        this.#emit("message", {
+          data: JSON.stringify({
+            version: 1,
+            type: "connect.welcome",
+            requestId: hello.requestId,
+            connectionId: `connection-${socketCount}`,
+            sessionId: `session-${socketCount}`,
+            spaceId: hello.spaceId,
+            endpointId: hello.endpointId,
+            maxFrameSize: 1024 * 1024,
+          }),
+        });
+      });
+    }
+
+    close() {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.#emit("close", { code: 1000 });
+    }
+
+    #emit(type, event) {
+      for (const listener of this.#listeners.get(type) || []) listener(event);
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  t.after(() => {
+    globalThis.WebSocket = previousWebSocket;
+  });
+
+  const pair = generateKeyPairSync("ed25519");
+  const publicKey = Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).subarray(-32).toString("base64url");
+  const privateKey = Buffer.from(pair.privateKey.export({ format: "der", type: "pkcs8" })).toString("base64url");
+  const config = defaultConfig();
+  config.relay.url = "ws://127.0.0.1:8788/v1/connect";
+  config.relay.spaceId = "space-refresh-scheduled";
+  config.relay.endpointId = "cli-endpoint-scheduled";
+  const initialExpiry = Date.now() + 1_100;
+  const store = {
+    get: () => structuredClone(config),
+    endpointIdentity: async () => ({ publicKey, privateKey }),
+    relayCredential: async () => ({
+      connectToken: "scheduled-old-token",
+      expiresAt: initialExpiry,
+      endpointGrant: "scheduled-grant",
+      grantExpiresAt: Date.now() + 86_400_000,
+    }),
+  };
+  const forceCalls = [];
+  const tokenService = {
+    usableToken: async ({ force, credential }) => {
+      forceCalls.push(force);
+      return force ? "scheduled-new-token" : credential.connectToken;
+    },
+  };
+  const client = new RelayClient(store, { info() {}, warn() {}, error() {} }, { tokenService });
+  t.after(() => client.disconnect("test complete"));
+
+  await client.connect(await store.relayCredential());
+  await new Promise((resolve) => setTimeout(resolve, 1_400));
+  assert.ok(forceCalls.includes(true));
+  assert.ok(socketCount >= 2);
+  assert.equal(hellos.at(-1).token, "scheduled-new-token");
+  assert.equal(client.status().state, "connected");
+});
+
+test("marks the Relay client as errored when scheduled renewal is rejected", async (t) => {
+  const previousWebSocket = globalThis.WebSocket;
+  let socketCount = 0;
+  class FakeWebSocket {
+    static OPEN = 1;
+    static CLOSED = 3;
+    readyState = 0;
+    #listeners = new Map();
+
+    constructor() {
+      socketCount += 1;
+      queueMicrotask(() => this.#emit("open", {}));
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.#listeners.get(type) || [];
+      listeners.push(listener);
+      this.#listeners.set(type, listeners);
+    }
+
+    send(payload) {
+      const hello = JSON.parse(payload);
+      queueMicrotask(() => {
+        this.readyState = FakeWebSocket.OPEN;
+        this.#emit("message", {
+          data: JSON.stringify({
+            version: 1,
+            type: "connect.welcome",
+            requestId: hello.requestId,
+            connectionId: "connection-renewal-rejected",
+            sessionId: "session-renewal-rejected",
+            spaceId: hello.spaceId,
+            endpointId: hello.endpointId,
+            maxFrameSize: 1024 * 1024,
+          }),
+        });
+      });
+    }
+
+    close() {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.#emit("close", { code: 1000 });
+    }
+
+    #emit(type, event) {
+      for (const listener of this.#listeners.get(type) || []) listener(event);
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  t.after(() => {
+    globalThis.WebSocket = previousWebSocket;
+  });
+
+  const pair = generateKeyPairSync("ed25519");
+  const publicKey = Buffer.from(pair.publicKey.export({ format: "der", type: "spki" })).subarray(-32).toString("base64url");
+  const privateKey = Buffer.from(pair.privateKey.export({ format: "der", type: "pkcs8" })).toString("base64url");
+  const config = defaultConfig();
+  config.relay.url = "ws://127.0.0.1:8788/v1/connect";
+  config.relay.spaceId = "space-renewal-rejected";
+  config.relay.endpointId = "cli-endpoint-renewal-rejected";
+  const store = {
+    get: () => structuredClone(config),
+    endpointIdentity: async () => ({ publicKey, privateKey }),
+    relayCredential: async () => ({
+      connectToken: "scheduled-rejected-token",
+      expiresAt: Date.now() + 1_100,
+      endpointGrant: "scheduled-rejected-grant",
+      grantExpiresAt: Date.now() + 86_400_000,
+    }),
+  };
+  const tokenService = {
+    usableToken: async ({ force, credential }) => {
+      if (force) throw new RelayError("auth.grant_expired", "Endpoint Grant 已过期");
+      return credential?.connectToken;
+    },
+  };
+  const client = new RelayClient(store, { info() {}, warn() {}, error() {} }, { tokenService });
+  t.after(() => client.disconnect("test complete"));
+
+  await client.connect(await store.relayCredential());
+  await new Promise((resolve) => setTimeout(resolve, 1_400));
+
+  const status = client.status();
+  assert.equal(socketCount, 1);
+  assert.equal(status.state, "error");
+  assert.equal(status.lastError, "Endpoint Grant 已过期");
+  assert.equal(status.connectedAt, null);
+  assert.equal(status.connectionId, null);
+  assert.deepEqual(status.features, []);
 });

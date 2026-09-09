@@ -17,7 +17,7 @@ export class CommandRouter {
   #inflight = new Map();
   #sharedReads = new Map();
   #threadReadTails = new Map();
-  #threadSnapshotRevisions = new Map();
+  #nextSnapshotRevision = 0;
   #selectedThreadId = null;
 
   constructor({ configStore, appServer, service, logger }) {
@@ -251,8 +251,9 @@ export class CommandRouter {
   #annotateThreadSnapshot(threadId, result, source) {
     const id = String(threadId || '').trim();
     if (!id || !result || typeof result !== 'object') return result;
-    const revision = (this.#threadSnapshotRevisions.get(id) || 0) + 1;
-    this.#threadSnapshotRevisions.set(id, revision);
+    // One process-local monotonic clock avoids a per-thread map that grows
+    // forever and never reuses a revision when an old thread is revisited.
+    const revision = ++this.#nextSnapshotRevision;
     return {
       ...result,
       snapshotRevision: revision,

@@ -39,6 +39,10 @@ const sharedBuildOptions = {
   minify: false,
   legalComments: "none",
   logLevel: "info",
+  define: {
+    "process.env.CODEX_RELAY_PLUGIN_VERSION": JSON.stringify(manifest.version),
+    "process.env.CODEX_RELAY_PLUGIN_BUILD_ID": JSON.stringify(`${manifest.version}:${Date.now()}`),
+  },
 };
 
 await Promise.all([
@@ -51,6 +55,11 @@ await Promise.all([
     ...sharedBuildOptions,
     entryPoints: ["server/dashboard-cli.js"],
     outfile: path.join(outputRoot, "server", "dashboard-cli.js"),
+  }),
+  build({
+    ...sharedBuildOptions,
+    entryPoints: ["server/agent-cli.js"],
+    outfile: path.join(outputRoot, "server", "agent-cli.js"),
   }),
 ]);
 

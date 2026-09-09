@@ -3666,6 +3666,8 @@ var CONTENT_TYPES = {
   ".json": "application/json; charset=utf-8"
 };
 var DASHBOARD_PORT = 3210;
+var DASHBOARD_COOKIE = "codex_relay_session";
+var DASHBOARD_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 function configuredDashboardPort() {
   const raw = process.env.CODEX_RELAY_DASHBOARD_PORT?.trim();
   if (!raw) return DASHBOARD_PORT;
@@ -3678,16 +3680,20 @@ function configuredDashboardPort() {
 var DashboardServer = class {
   #server = null;
   #accessKey = crypto6.randomBytes(24).toString("base64url");
+  #sessionTokenHashes = [];
   #port = null;
   #listenPort;
+  #sessionFile;
   constructor(service, logger, options = {}) {
     this.service = service;
     this.logger = logger;
     this.uiRoot = path7.join(PLUGIN_ROOT, "ui");
     this.#listenPort = options.port ?? configuredDashboardPort();
+    this.#sessionFile = path7.join(service.configStore.configDir, "dashboard-session.json");
   }
   async start() {
     if (this.#server) return this.url();
+    await this.#loadOrCreateSession();
     this.#server = http.createServer((request, response) => {
       this.#handle(request, response).catch((error) => {
         this.logger.error("dashboard", "\u63A7\u5236\u53F0\u8BF7\u6C42\u5931\u8D25", { message: error.message });
@@ -3733,7 +3739,9 @@ var DashboardServer = class {
     const url = new URL(request.url, "http://127.0.0.1");
     this.#securityHeaders(response);
     if (url.pathname.startsWith("/api/")) {
-      if (!this.#authorized(request)) return this.#json(response, 401, { error: { code: "UNAUTHORIZED", message: "\u63A7\u5236\u53F0\u8BBF\u95EE\u5BC6\u94A5\u65E0\u6548" } });
+      const auth = this.#authorized(request);
+      if (!auth.ok) return this.#json(response, 401, { error: { code: "UNAUTHORIZED", message: "\u63A7\u5236\u53F0\u8BBF\u95EE\u5BC6\u94A5\u65E0\u6548" } });
+      if (auth.viaBootstrap) this.#setSessionCookie(response);
       return this.#api(request, response, url);
     }
     if (!["GET", "HEAD"].includes(request.method)) return this.#json(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "\u65B9\u6CD5\u4E0D\u5141\u8BB8" } });
@@ -3806,7 +3814,37 @@ var DashboardServer = class {
     const supplied = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
     const expected = Buffer.from(this.#accessKey);
     const actual = Buffer.from(supplied);
-    return expected.length === actual.length && crypto6.timingSafeEqual(expected, actual);
+    const viaBootstrap = expected.length === actual.length && crypto6.timingSafeEqual(expected, actual);
+    if (viaBootstrap) return { ok: true, viaBootstrap };
+    const cookies = request.headers.cookie || "";
+    const session = cookies.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${DASHBOARD_COOKIE}=`));
+    const cookieValue = session ? decodeURIComponent(session.slice(DASHBOARD_COOKIE.length + 1)) : "";
+    const suppliedHash = crypto6.createHash("sha256").update(cookieValue).digest("hex");
+    const actualHash = Buffer.from(suppliedHash, "hex");
+    const viaCookie = this.#sessionTokenHashes.some((expected2) => {
+      const expectedHash = Buffer.from(expected2, "hex");
+      return expectedHash.length === actualHash.length && crypto6.timingSafeEqual(expectedHash, actualHash);
+    });
+    return { ok: viaCookie, viaBootstrap: false };
+  }
+  #setSessionCookie(response) {
+    response.setHeader("Set-Cookie", `${DASHBOARD_COOKIE}=${this.#sessionToken}; Max-Age=${DASHBOARD_COOKIE_MAX_AGE}; Path=/; HttpOnly; SameSite=Strict`);
+  }
+  #sessionToken;
+  async #loadOrCreateSession() {
+    let hashes = [];
+    try {
+      const saved = JSON.parse(await fs6.readFile(this.#sessionFile, "utf8"));
+      hashes = Array.isArray(saved?.tokenHashes) ? saved.tokenHashes : [];
+      if (typeof saved?.token === "string" && saved.token.length >= 32) hashes.push(crypto6.createHash("sha256").update(saved.token).digest("hex"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    this.#sessionToken = crypto6.randomBytes(32).toString("base64url");
+    this.#sessionTokenHashes = [.../* @__PURE__ */ new Set([...hashes.filter((value) => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value)), crypto6.createHash("sha256").update(this.#sessionToken).digest("hex")])].slice(-8);
+    await fs6.mkdir(path7.dirname(this.#sessionFile), { recursive: true, mode: 448 });
+    await fs6.writeFile(this.#sessionFile, `${JSON.stringify({ version: 1, tokenHashes: this.#sessionTokenHashes })}
+`, { mode: 384 });
   }
   async #body(request) {
     let size = 0;
@@ -3868,8 +3906,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260909031424",
-      buildId: "1.0.0+codex.20260909031424:1788923726836",
+      version: "1.0.0+codex.20260909042739",
+      buildId: "1.0.0+codex.20260909042739:1788928073272",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);

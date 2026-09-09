@@ -12,6 +12,8 @@ const CONTENT_TYPES = {
   ".json": "application/json; charset=utf-8",
 };
 const DASHBOARD_PORT = 3210;
+const DASHBOARD_COOKIE = "codex_relay_session";
+const DASHBOARD_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
 function configuredDashboardPort() {
   const raw = process.env.CODEX_RELAY_DASHBOARD_PORT?.trim();
@@ -26,18 +28,22 @@ function configuredDashboardPort() {
 export class DashboardServer {
   #server = null;
   #accessKey = crypto.randomBytes(24).toString("base64url");
+  #sessionTokenHashes = [];
   #port = null;
   #listenPort;
+  #sessionFile;
 
   constructor(service, logger, options = {}) {
     this.service = service;
     this.logger = logger;
     this.uiRoot = path.join(PLUGIN_ROOT, "ui");
     this.#listenPort = options.port ?? configuredDashboardPort();
+    this.#sessionFile = path.join(service.configStore.configDir, "dashboard-session.json");
   }
 
   async start() {
     if (this.#server) return this.url();
+    await this.#loadOrCreateSession();
     this.#server = http.createServer((request, response) => {
       this.#handle(request, response).catch((error) => {
         this.logger.error("dashboard", "控制台请求失败", { message: error.message });
@@ -93,7 +99,9 @@ export class DashboardServer {
     const url = new URL(request.url, "http://127.0.0.1");
     this.#securityHeaders(response);
     if (url.pathname.startsWith("/api/")) {
-      if (!this.#authorized(request)) return this.#json(response, 401, { error: { code: "UNAUTHORIZED", message: "控制台访问密钥无效" } });
+      const auth = this.#authorized(request);
+      if (!auth.ok) return this.#json(response, 401, { error: { code: "UNAUTHORIZED", message: "控制台访问密钥无效" } });
+      if (auth.viaBootstrap) this.#setSessionCookie(response);
       return this.#api(request, response, url);
     }
     if (!['GET', 'HEAD'].includes(request.method)) return this.#json(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "方法不允许" } });
@@ -172,7 +180,40 @@ export class DashboardServer {
     const supplied = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
     const expected = Buffer.from(this.#accessKey);
     const actual = Buffer.from(supplied);
-    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+    const viaBootstrap = expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+    if (viaBootstrap) return { ok: true, viaBootstrap };
+
+    const cookies = request.headers.cookie || "";
+    const session = cookies.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${DASHBOARD_COOKIE}=`));
+    const cookieValue = session ? decodeURIComponent(session.slice(DASHBOARD_COOKIE.length + 1)) : "";
+    const suppliedHash = crypto.createHash("sha256").update(cookieValue).digest("hex");
+    const actualHash = Buffer.from(suppliedHash, "hex");
+    const viaCookie = this.#sessionTokenHashes.some((expected) => {
+      const expectedHash = Buffer.from(expected, "hex");
+      return expectedHash.length === actualHash.length && crypto.timingSafeEqual(expectedHash, actualHash);
+    });
+    return { ok: viaCookie, viaBootstrap: false };
+  }
+
+  #setSessionCookie(response) {
+    response.setHeader("Set-Cookie", `${DASHBOARD_COOKIE}=${this.#sessionToken}; Max-Age=${DASHBOARD_COOKIE_MAX_AGE}; Path=/; HttpOnly; SameSite=Strict`);
+  }
+
+  #sessionToken;
+
+  async #loadOrCreateSession() {
+    let hashes = [];
+    try {
+      const saved = JSON.parse(await fs.readFile(this.#sessionFile, "utf8"));
+      hashes = Array.isArray(saved?.tokenHashes) ? saved.tokenHashes : [];
+      if (typeof saved?.token === "string" && saved.token.length >= 32) hashes.push(crypto.createHash("sha256").update(saved.token).digest("hex"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    this.#sessionToken = crypto.randomBytes(32).toString("base64url");
+    this.#sessionTokenHashes = [...new Set([...hashes.filter((value) => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value)), crypto.createHash("sha256").update(this.#sessionToken).digest("hex")])].slice(-8);
+    await fs.mkdir(path.dirname(this.#sessionFile), { recursive: true, mode: 0o700 });
+    await fs.writeFile(this.#sessionFile, `${JSON.stringify({ version: 1, tokenHashes: this.#sessionTokenHashes })}\n`, { mode: 0o600 });
   }
 
   async #body(request) {

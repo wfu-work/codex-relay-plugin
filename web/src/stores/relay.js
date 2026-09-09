@@ -160,13 +160,16 @@ function setTheme(value) {
 
 async function api(path, options = {}) {
   const accessKey = getDashboardAccessKey();
-  if (!accessKey) throw new Error('控制台访问密钥缺失。请从 Codex 中重新打开 Relay 控制台。');
+  const headers = {
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.headers || {}),
+  };
+  if (accessKey) headers.Authorization = 'Bearer ' + accessKey;
   const response = await fetch(path, {
     ...options,
+    credentials: 'same-origin',
     headers: {
-      Authorization: 'Bearer ' + accessKey,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
+      ...headers,
     },
   });
   const body = await response.json().catch(() => ({}));
@@ -354,7 +357,6 @@ async function start() {
   };
   window.addEventListener('beforeunload', beforeUnloadHandler);
   try {
-    if (!getDashboardAccessKey()) throw new Error('访问密钥缺失，请从 Codex 插件重新打开控制台');
     const [config, nextStatus] = await Promise.all([api('/api/config'), api('/api/status')]);
     applyConfig(config);
     relayState.status = nextStatus;

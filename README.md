@@ -19,7 +19,7 @@
 - 图片事件采用“缩略图 + 短期受控资源 URL”：原图通过认证数据通道上传到 Relay，移动端点击预览时再按过期时间读取
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
 - 公网 Relay 强制 `wss://`；`ws://` 仅允许 `localhost` / 回环地址
-- 本地控制台固定监听 `127.0.0.1:3210`，API 使用随机 Bearer key，key 只放在 URL fragment 中
+- 本地控制台固定监听 `127.0.0.1:3210`，首次配对使用只放在 URL fragment 中的随机 Bearer key，随后换成本机 `HttpOnly` 会话 Cookie
 - 状态、诊断和脱敏日志 MCP 工具
 - 独立常驻 Relay Agent：MCP 重载、Dashboard 重开或插件更新不会重复创建 Connector；更新时按构建代际优雅回收旧进程
 
@@ -88,7 +88,7 @@ codex plugin marketplace add https://github.com/wfu-work/codex-relay-plugin.git 
 安装完成后退出当前 Codex 进程并新建一个任务（例如重新运行 `codex`，或在会话中执行
 `/new`）。插件的 skill 和 MCP Server 会在新任务启动时加载。进入 `/plugins` 可以查看
 `Codex Relay` 的启用状态；首次使用时打开配置台，填写 Relay 地址、Space ID、设备名称和
-Connect Token，再按需开启自动连接及远程权限。
+Connect Token，再按需开启自动连接及远程权限。首次由 Codex 打开的控制台链接会完成浏览器配对；之后在同一浏览器中直接访问 `http://127.0.0.1:3210` 即可，配对会话会跨 Connector 重启保留。
 
 ### 更新或卸载
 
@@ -138,7 +138,7 @@ UI 源码位于 `web/`，生产静态文件位于 `ui/`。请修改 `web/src/`�
 - `#/advanced`：Codex App Server、工作目录、心跳、重连和自动启动
 - `#/diagnostics`：环境诊断、本地日志、刷新和清空操作
 
-Dashboard 启动链接中的 `#key=...` 会在首次加载时转存到 `sessionStorage` 并从地址栏清除，随后由 `#/页面` 路由接管 hash；刷新任意页面都不会回到长页面或丢失连接状态。
+Dashboard 启动链接中的 `#key=...` 会在首次 API 请求时兑换成本机 `HttpOnly` 会话 Cookie，并从地址栏清除；前端仍短暂保留 Bearer key 以兼容首次配对，之后直接打开根地址也能恢复配置。Cookie 会话有效期为 30 天，刷新或重启 Connector 不会丢失；更换浏览器或清除 Cookie 后，再从 Codex 重新打开一次控制台即可。
 
 常用目标：
 

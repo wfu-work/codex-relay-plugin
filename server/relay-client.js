@@ -5,6 +5,8 @@ import { nowIso, randomId } from "./utils.js";
 import { PROTOCOL_VERSION, unwrapRelayFrame, validateRelayWelcome, wrapRelayFrame } from "./protocol.js";
 import { relayEndpointId, relaySpaceId } from "./config-store.js";
 import { RelayTokenService } from "./relay-token-service.js";
+import { OutboundQueue } from "./outbound-queue.js";
+import { ResourceCache } from "./resource-cache.js";
 
 const TERMINAL_RELAY_AUTH_CODES = new Set([
   "auth.token_expired",
@@ -53,12 +55,17 @@ export class RelayClient extends EventEmitter {
   #credentialRefreshBlocked = false;
   #rotationInProgress = false;
   #resourceRequests = new Map();
+  #outbound;
+  #resourceCache = new ResourceCache();
+  #rateLimitUntil = 0;
+  #connectionError = null;
 
   constructor(configStore, logger, options = {}) {
     super();
     this.configStore = configStore;
     this.logger = logger;
     this.#tokenService = options.tokenService || new RelayTokenService(configStore, logger, options);
+    this.#outbound = new OutboundQueue(options.outbound);
     this.state = "disconnected";
     this.lastError = null;
     this.lastHeartbeat = null;
@@ -76,6 +83,8 @@ export class RelayClient extends EventEmitter {
       connectionId: this.connectionId,
       features: [...this.features],
       reconnectAttempt: this.#attempt,
+      transfer: this.#outbound.status(),
+      retryAfterMs: Math.max(0, this.#rateLimitUntil - Date.now()),
     };
   }
 
@@ -241,6 +250,7 @@ export class RelayClient extends EventEmitter {
   }
 
   async disconnect(reason = "manual disconnect") {
+    this.#outbound.clear();
     this.#manualClose = true;
     clearTimeout(this.#reconnectTimer);
     clearInterval(this.#heartbeat);
@@ -304,20 +314,39 @@ export class RelayClient extends EventEmitter {
       this.emit("status", this.status());
       return false;
     }
-    this.#socket.send(encoded);
-    return true;
+    const socket = this.#socket;
+    // Keepalives must not wait behind images. During a rate-limit cooldown
+    // even application pings consume the server's quota.
+    if (message.type === "ping") {
+      if (Date.now() < this.#rateLimitUntil) return false;
+      try { socket.send(encoded); return true; } catch { return false; }
+    }
+    return this.#outbound.enqueue(encoded, (payload) => {
+      if (this.#socket !== socket || socket.readyState !== WebSocket.OPEN) {
+        throw new RelayError("RELAY_UNAVAILABLE", "Relay 连接已更换，旧响应已丢弃");
+      }
+      socket.send(payload);
+    }, (error) => {
+      this.logger.warn("relay", "Relay 数据未发送，需要重新同步", { code: error.code, type: message?.type });
+    });
   }
 
   /** Upload an image over the authenticated data channel and receive a
    * short-lived capability URL from Relay. */
   uploadResource({ mime, data, ttlSeconds } = {}) {
+    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
+    const relay = this.configStore.get().relay;
+    const context = [relay.url, relaySpaceId(relay), relayEndpointId(relay), ttlSeconds];
+    return this.#resourceCache.get(context, mime, bytes, () => this.#uploadResource({ mime, bytes, ttlSeconds }));
+  }
+
+  #uploadResource({ mime, bytes, ttlSeconds }) {
     if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN || this.state !== "connected") {
       return Promise.reject(new RelayError("RELAY_UNAVAILABLE", "Relay 尚未连接，无法上传图片"));
     }
     if (!this.features.includes("resources-v1")) {
       return Promise.reject(new RelayError("RESOURCE_UNSUPPORTED", "当前 Relay 不支持受控图片资源"));
     }
-    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
     const frameBudget = Math.max(0, this.#maxFrameSize - 1024);
     const maxByFrame = Math.floor(frameBudget * 3 / 4);
     if (!bytes.length || bytes.length > Math.min(6 * 1024 * 1024, maxByFrame)) {
@@ -341,21 +370,25 @@ export class RelayClient extends EventEmitter {
       },
     };
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#resourceRequests.delete(requestId);
-        reject(new RelayError("RESOURCE_TIMEOUT", "Relay 图片资源上传超时"));
-      }, 15_000);
-      this.#resourceRequests.set(requestId, {
-        resolve: (value) => { clearTimeout(timer); resolve(value); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
-      });
-      try {
-        this.#socket.send(JSON.stringify(frame));
-      } catch (error) {
+      let timer;
+      const fail = (error) => {
         this.#resourceRequests.delete(requestId);
         clearTimeout(timer);
         reject(error);
-      }
+      };
+      this.#resourceRequests.set(requestId, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: fail,
+      });
+      const socket = this.#socket;
+      this.#outbound.enqueue(JSON.stringify(frame), (payload) => {
+        if (this.#socket !== socket || socket.readyState !== WebSocket.OPEN) {
+          throw new RelayError("RELAY_UNAVAILABLE", "Relay 连接已更换，图片上传已取消");
+        }
+        // Start the response timeout on transmission, not during pacing.
+        timer = setTimeout(() => fail(new RelayError("RESOURCE_TIMEOUT", "Relay 图片资源上传超时")), 15_000);
+        socket.send(payload);
+      }, fail);
     });
   }
 
@@ -468,7 +501,7 @@ export class RelayClient extends EventEmitter {
         markEstablished: () => { established = true; },
       }));
       socket.addEventListener("error", () => {
-        const error = new RelayError("RELAY_UNAVAILABLE", "Relay WebSocket 连接失败");
+        const error = this.#connectionError || new RelayError("RELAY_UNAVAILABLE", "Relay WebSocket 连接失败");
         reportFailure(error);
         if (!settled) {
           settled = true;
@@ -492,7 +525,7 @@ export class RelayClient extends EventEmitter {
           reject(error);
         }
         if (established && !failureReported && !this.#manualClose && !rotating) {
-          reportFailure(new RelayError("RELAY_UNAVAILABLE", `Relay 连接已断开：${event.code}`));
+          reportFailure(this.#connectionError || new RelayError("RELAY_UNAVAILABLE", `Relay 连接已断开：${event.code}`));
         }
         this.#detachSocket(socket);
         if (!this.#manualClose && !this.#credentialRefreshBlocked && !isTerminalRelayFailure({ code: failureCode }, this.#credential)) {
@@ -543,6 +576,7 @@ export class RelayClient extends EventEmitter {
       if (Number.isInteger(message.maxFrameSize) && message.maxFrameSize > 0) this.#maxFrameSize = message.maxFrameSize;
       this.#attempt = 0;
       this.lastError = null;
+      this.#connectionError = null;
       this.#startHeartbeat();
       this.#scheduleTokenRefresh();
       this.logger.info("relay", "Relay 已连接并完成认证", { connectionId: this.connectionId });
@@ -570,6 +604,24 @@ export class RelayClient extends EventEmitter {
       // request-level failures.
       const requestLevel = ["resource.", "message.too_large", "rate.limited", "frame.invalid"]
         .some((prefix) => error.code === prefix || error.code.startsWith(prefix));
+      if (!authenticating && error.code === "rate.limited") {
+        this.#connectionError = error;
+        this.lastError = `Relay 数据限流：${error.message}`;
+        // Old Relays close after this error; others may stay connected.
+        // Respect the quota window either way and retain the actual cause.
+        this.#rateLimitUntil = Date.now() + 60_000;
+        this.#outbound.bytesPerSecond = Math.max(16 * 1024, Math.floor(this.#outbound.bytesPerSecond / 2));
+        this.#outbound.clear(error);
+        this.#outbound.pause(60_000);
+        for (const pending of this.#resourceRequests.values()) pending.reject(error);
+        this.#resourceRequests.clear();
+        this.logger.warn("relay", "Relay 数据限流，暂停发送并降低速率", {
+          code: error.code, message: error.message, retryAfterMs: 60_000,
+          bytesPerSecond: this.#outbound.bytesPerSecond,
+        });
+        this.emit("status", this.status());
+        return;
+      }
       if (!authenticating && requestLevel) {
         this.logger.warn("relay", "Relay 拒绝了单个数据请求，保持连接", {
           code: error.code,
@@ -685,10 +737,10 @@ export class RelayClient extends EventEmitter {
     if (this.#manualClose || this.#credentialRefreshBlocked || this.#reconnectTimer) return;
     const max = this.configStore.get().relay.reconnectMaxSeconds;
     this.#attempt += 1;
-    const delay = delayOverride ?? (
+    const delay = Math.max(this.#rateLimitUntil - Date.now(), delayOverride ?? (
       Math.min(max, 2 ** Math.min(this.#attempt, 8)) * 1000
       + Math.floor(Math.random() * 500)
-    );
+    ));
     this.state = "reconnecting";
     this.emit("status", this.status());
     this.logger.warn("relay", "Relay 已断开，计划重连", { attempt: this.#attempt, delayMs: delay });
@@ -901,6 +953,7 @@ export class RelayClient extends EventEmitter {
   #detachSocket(socket) {
     if (this.#socket !== socket) return;
     this.#socket = null;
+    this.#outbound.clear();
     clearInterval(this.#heartbeat);
     this.#heartbeat = null;
     clearTimeout(this.#tokenRefreshTimer);

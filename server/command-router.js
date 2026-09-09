@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { asRelayError, RelayError } from "./errors.js";
 import { commandError, commandResult, validateRelayCommand } from "./protocol.js";
 import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
@@ -75,7 +76,7 @@ export class CommandRouter {
   }
 
   async #executeSharedRead(command, envelope) {
-    if (!['project.list', 'thread.list', 'thread.read', 'thread.status'].includes(command.type)) {
+    if (!['project.list', 'thread.list', 'thread.read', 'thread.status', 'thread.resume', 'sync.request'].includes(command.type)) {
       return this.#execute(command, envelope);
     }
     const key = JSON.stringify({
@@ -144,10 +145,17 @@ export class CommandRouter {
           ),
         );
         this.#assertThreadResultAllowed(result);
+        // Hash the persisted content before replacing images with expiring
+        // resource URLs. Clients can reconcile without downloading the same
+        // history (or uploading its images) on every poll.
+        const snapshotHash = createHash("sha256").update(JSON.stringify(result)).digest("hex");
+        if (command.snapshotHash === snapshotHash) {
+          return { threadId, snapshotHash, unchanged: true };
+        }
         const prepared = this.service.prepareResourceImages
           ? this.service.prepareResourceImages(result)
           : result;
-        return this.#annotateThreadSnapshot(threadId, await prepared, "read");
+        return { ...this.#annotateThreadSnapshot(threadId, compactThreadReadResult(await prepared), "read"), snapshotHash };
       }
       case "thread.status": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
@@ -164,10 +172,15 @@ export class CommandRouter {
       }
       case "thread.resume": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
-        await this.#assertThreadAllowed(threadId);
-        const result = await this.appServer.resumeThread(threadId);
+        // Legacy mobile clients use resume as a read subscription. Acquiring
+        // a writer here conflicts with the desktop App Server. Reading must
+        // remain side-effect free; turn.start owns any actual resume needed
+        // for writing. Return a compact success so old clients stop retrying.
+        const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
+        const result = await readStatus.call(this.appServer, threadId, { ensureResumed: false });
+        this.#assertThreadResultAllowed(result);
         this.#selectedThreadId = threadId;
-        return result;
+        return { ...result, syncMode: "snapshot" };
       }
       case "thread.select": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");

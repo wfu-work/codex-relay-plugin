@@ -26,10 +26,10 @@ test("App Server client initializes and uses expectedTurnId for steering", async
   const threadStatus = await client.readThreadStatus("thread-1");
   assert.equal(threadStatus.thread.status.type, "active");
   assert.equal(threadStatus.thread.statusProbe, true);
-  assert.equal(threadStatus.thread.resumed, true);
+  assert.equal(threadStatus.thread.resumed, false);
   const hydrated = await client.readThread("thread-1");
-  assert.equal(hydrated.thread.resumed, true);
-  assert.equal(hydrated.thread.resumeCount, 1);
+  assert.equal(hydrated.thread.resumed, false);
+  assert.equal(hydrated.thread.resumeCount, 0);
   const started = await client.startTurn({
     threadId: "thread-1",
     text: "hello",

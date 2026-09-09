@@ -4,6 +4,25 @@ import test from "node:test";
 import { ConnectorService } from "../server/connector-service.js";
 import { defaultConfig } from "../server/config-store.js";
 
+test("a command from a retired connection cannot send its response after reconnect", async () => {
+  const config = defaultConfig();
+  const relay = new EventEmitter();
+  relay.connectionId = "old";
+  const sent = [];
+  relay.send = (message) => { sent.push(message); return true; };
+  const service = new ConnectorService({
+    configStore: { get: () => config }, appServer: new EventEmitter(), relay,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  let finish;
+  service.router.handle = () => new Promise((resolve) => { finish = resolve; });
+  relay.emit("command", { requestId: "old-request" });
+  relay.connectionId = "new";
+  finish({ requestId: "old-request" });
+  await new Promise(setImmediate);
+  assert.deepEqual(sent, []);
+});
+
 test("event access checks use the metadata status read without blocking deltas", async () => {
   const config = defaultConfig();
   config.allowedProjects = ["/workspace/allowed"];

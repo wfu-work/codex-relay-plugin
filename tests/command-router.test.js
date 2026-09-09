@@ -57,7 +57,7 @@ function setup({ readOnly = false, threadCwd = "/workspace/allowed/demo", thread
     service: { status: async () => ({ ok: true }), syncAfter: async () => ({ mode: "snapshot" }) },
     logger: { warn() {} },
   });
-  return { config, calls, router };
+  return { config, calls, router, appServer };
 }
 
 function envelope(command, requestId = "req-1") {
@@ -72,6 +72,44 @@ function envelope(command, requestId = "req-1") {
     command,
   };
 }
+
+test("legacy resume polling never acquires the desktop writer and enforces access", async () => {
+  const { router, appServer, calls, config } = setup({ readOnly: true });
+  appServer.resumeThread = async () => { throw new Error("must not acquire a writer"); };
+  for (let i = 0; i < 20; i++) {
+    const response = await router.handle(envelope({ type: "thread.resume", threadId: "thread-active" }, `resume-${i}`));
+    assert.equal(response.success, true);
+    assert.equal(response.result.syncMode, "snapshot");
+    assert.equal(response.result.thread.id, "thread-active");
+  }
+  assert.equal(calls.filter(([name]) => name === "readThread").length, 0);
+  config.allowedProjects = ["/private"];
+  const denied = await router.handle(envelope({ type: "thread.resume", threadId: "thread-active" }, "denied"));
+  assert.equal(denied.error.code, "PROJECT_NOT_ALLOWED");
+});
+
+test("unchanged snapshots skip history and image uploads but changed/forced reads hydrate", async () => {
+  const { router, appServer, config } = setup();
+  const thread = { id: "thread-1", cwd: "/workspace/allowed/demo", turns: [{ items: [{ text: "hello" }] }] };
+  appServer.readThreadSnapshot = async () => ({ thread: structuredClone(thread) });
+  let uploads = 0;
+  router.service.prepareResourceImages = async (result) => { uploads++; return result; };
+  const read = (id, snapshotHash) => router.handle(envelope({ type: "thread.read", threadId: thread.id, snapshotHash }, id));
+  const first = await read("first");
+  const unchanged = await read("unchanged", first.result.snapshotHash);
+  assert.equal(unchanged.result.unchanged, true);
+  assert.equal(unchanged.result.thread, undefined);
+  assert.equal(uploads, 1);
+  thread.turns[0].items[0].text += " world";
+  const changed = await read("changed", first.result.snapshotHash);
+  assert.notEqual(changed.result.snapshotHash, first.result.snapshotHash);
+  assert.equal(changed.result.thread.turns[0].items[0].text, "hello world");
+  const forced = await read("forced");
+  assert.ok(forced.result.thread);
+  assert.equal(uploads, 3);
+  config.allowedProjects = ["/private"];
+  assert.equal((await read("denied-hash", changed.result.snapshotHash)).error.code, "PROJECT_NOT_ALLOWED");
+});
 
 test("thread listing is constrained by the project whitelist", async () => {
   const { calls, router } = setup();

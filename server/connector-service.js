@@ -323,7 +323,11 @@ export class ConnectorService extends EventEmitter {
 
   #wireEvents() {
     this.relay.on("command", async (message) => {
+      const connectionId = this.relay.connectionId;
       const response = await this.router.handle(message);
+      // An in-flight history read can outlive a disconnect. Its old request
+      // must not be sent into the new connection alongside recovery reads.
+      if (connectionId !== this.relay.connectionId) return;
       if (!this.relay.send(response)) {
         this.logger.warn("connector", "Relay 未接受定向命令响应，消息未发送", {
           requestId: message?.requestId,
@@ -405,8 +409,8 @@ export class ConnectorService extends EventEmitter {
       // the remote client. The current App Server contract exposes the
       // metadata-only status read, so use it as the single source of truth.
       // This is only an access-control probe. Do not resume an untrusted
-      // historical thread before its cwd has been checked; the normal remote
-      // status command resumes the selected thread and enables live events.
+      // historical thread before its cwd has been checked. Only a write may
+      // acquire the thread writer; reads remain persisted snapshots.
       const result = await this.appServer.readThreadStatus(context.threadId, { ensureResumed: false });
       const allowed = Boolean(result?.thread?.cwd && safeProjectPath(result.thread.cwd, allowedProjects));
       this.#rememberThreadAccess(context.threadId, allowed);

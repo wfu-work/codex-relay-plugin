@@ -2802,6 +2802,15 @@ var RelayClient = class extends EventEmitter3 {
       if (isRefreshableCredentialFailure(error) && this.#credential?.endpointGrant) {
         this.#forceTokenRefresh = true;
       }
+      const requestLevel = ["resource.", "message.too_large", "rate.limited", "frame.invalid"].some((prefix) => error.code === prefix || error.code.startsWith(prefix));
+      if (!authenticating && requestLevel) {
+        this.logger.warn("relay", "Relay \u62D2\u7EDD\u4E86\u5355\u4E2A\u6570\u636E\u8BF7\u6C42\uFF0C\u4FDD\u6301\u8FDE\u63A5", {
+          code: error.code,
+          message: error.message
+        });
+        this.emit("status", this.status());
+        return;
+      }
       handshake.reportFailure?.(error);
       if (authenticating) {
         clearTimeout(handshake.authenticationTimeout);
@@ -3906,8 +3915,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260909042739",
-      buildId: "1.0.0+codex.20260909042739:1788928073272",
+      version: "1.0.0+codex.20260909084758",
+      buildId: "1.0.0+codex.20260909084758:1788943691369",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);

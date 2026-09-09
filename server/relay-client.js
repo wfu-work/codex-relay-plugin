@@ -562,6 +562,22 @@ export class RelayClient extends EventEmitter {
         // the same stale token forever.
         this.#forceTokenRefresh = true;
       }
+      // Resource uploads and individual data frames are best-effort. The
+      // server may reject one image because its short-lived resource cache is
+      // full (or reject one oversized/rate-limited frame), but that must not
+      // tear down the authenticated control channel and restart the whole
+      // connector. The caller already has an inline/fallback path for these
+      // request-level failures.
+      const requestLevel = ["resource.", "message.too_large", "rate.limited", "frame.invalid"]
+        .some((prefix) => error.code === prefix || error.code.startsWith(prefix));
+      if (!authenticating && requestLevel) {
+        this.logger.warn("relay", "Relay 拒绝了单个数据请求，保持连接", {
+          code: error.code,
+          message: error.message,
+        });
+        this.emit("status", this.status());
+        return;
+      }
       handshake.reportFailure?.(error);
       if (authenticating) {
         clearTimeout(handshake.authenticationTimeout);

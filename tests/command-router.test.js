@@ -88,6 +88,38 @@ test("legacy resume polling never acquires the desktop writer and enforces acces
   assert.equal(denied.error.code, "PROJECT_NOT_ALLOWED");
 });
 
+test("shared reads subscribe only after project authorization, including unchanged snapshots", async () => {
+  const { router, appServer, config } = setup({ readOnly: true });
+  const subscriptions = [];
+  appServer.isShared = () => true;
+  appServer.subscribeThread = async id => subscriptions.push(id);
+  for (const [i, type] of ["thread.read", "thread.status", "thread.resume", "thread.select"].entries()) {
+    const response = await router.handle(envelope({ type, threadId: "thread-1" }, `shared-${i}`));
+    assert.equal(response.success, true);
+    if (type === "thread.resume") assert.equal(response.result.syncMode, "live");
+  }
+  assert.equal(subscriptions.length, 4);
+  config.allowedProjects = ["/private"];
+  for (const [i, type] of ["thread.read", "thread.status", "thread.resume", "thread.select"].entries()) {
+    const response = await router.handle(envelope({ type, threadId: "thread-1" }, `denied-shared-${i}`));
+    assert.equal(response.error.code, "PROJECT_NOT_ALLOWED");
+  }
+  assert.equal(subscriptions.length, 4);
+});
+
+test("first shared status read returns runtime state after subscribing, not the old notLoaded snapshot", async () => {
+  const { router, appServer } = setup();
+  let subscribed = false;
+  let reads = 0;
+  appServer.readThreadStatus = async id => { reads++; return { thread: { id, cwd: "/workspace/allowed", status: { type: subscribed ? "active" : "notLoaded" } } }; };
+  appServer.subscribeThread = async () => { const changed = !subscribed; subscribed = true; return changed; };
+  const first = await router.handle(envelope({ type: "thread.status", threadId: "thread-1" }, "first-shared-status"));
+  assert.equal(first.result.thread.status.type, "active");
+  assert.equal(reads, 2);
+  await router.handle(envelope({ type: "thread.status", threadId: "thread-1" }, "next-shared-status"));
+  assert.equal(reads, 3, "already subscribed polls should not double-read");
+});
+
 test("unchanged snapshots skip history and image uploads but changed/forced reads hydrate", async () => {
   const { router, appServer, config } = setup();
   const thread = { id: "thread-1", cwd: "/workspace/allowed/demo", turns: [{ items: [{ text: "hello" }] }] };
@@ -313,4 +345,20 @@ test("whitelisted mode requires a cwd when creating a thread", async () => {
   assert.equal(response.success, false);
   assert.equal(response.error.code, "PROJECT_REQUIRED");
   assert.equal(calls.some(([name]) => name === "createThread"), false);
+});
+
+test('remote answers require approval permission and authorize the registry thread, never an untrusted envelope', async () => {
+  const { router, config, appServer } = setup();
+  let answered = 0;
+  appServer.getInteraction = () => ({ params: { threadId: 'real-thread' } });
+  appServer.respondToUserInput = async () => { answered++; return { status: 'submitted' }; };
+  const command = { type: 'userInput.respond', approvalId: 'interaction', answers: { q: { answers: ['yes'] } } };
+  config.permissions.respondToApprovals = false;
+  assert.equal((await router.handle(envelope(command, 'disabled'))).error.code, 'COMMAND_NOT_ALLOWED');
+  config.permissions.respondToApprovals = true;
+  assert.equal((await router.handle({ ...envelope(command, 'wrong-thread'), threadId: 'claimed-thread' })).error.code, 'PROJECT_NOT_ALLOWED');
+  assert.equal((await router.handle({ ...envelope(command, 'allowed'), threadId: 'real-thread' })).success, true);
+  config.allowedProjects = ['/other'];
+  assert.equal((await router.handle({ ...envelope(command, 'revoked'), threadId: 'real-thread' })).error.code, 'PROJECT_NOT_ALLOWED');
+  assert.equal(answered, 1);
 });

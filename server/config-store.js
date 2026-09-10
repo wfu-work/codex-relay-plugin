@@ -4,6 +4,7 @@ import path from "node:path";
 import { isLoopbackHostname, randomId, normalizeRelayUrl } from "./utils.js";
 import { SecretStore } from "./secret-store.js";
 import { EndpointIdentityStore } from "./endpoint-identity-store.js";
+import { parseAppServerEndpoint } from "./app-server-transport.js";
 
 export const DEFAULT_PERMISSIONS = Object.freeze({
   readThreads: true,
@@ -28,6 +29,8 @@ export function defaultConfig() {
       reconnectMaxSeconds: 30,
     },
     codex: {
+      connectionMode: "managed",
+      appServerEndpoint: "",
       executable: "codex",
       autoStartAppServer: true,
       defaultWorkingDirectory: "",
@@ -65,6 +68,12 @@ export class ConfigStore {
     return structuredClone(this.config);
   }
 
+  preview(patch) {
+    const next = mergeConfig(this.get(), patch || {});
+    validateConfig(next);
+    return next;
+  }
+
   async publicConfig({ includeToken = false } = {}) {
     const config = this.get();
     const credential = await this.secretStore.getCredential(relaySpaceId(config.relay));
@@ -90,8 +99,7 @@ export class ConfigStore {
   }
 
   async update(patch, credentialPatch) {
-    const next = mergeConfig(this.get(), patch || {});
-    validateConfig(next);
+    const next = this.preview(patch);
     const nextSpace = relaySpaceId(next.relay);
     let credentialTouched = false;
     if (credentialPatch !== undefined) {
@@ -265,6 +273,11 @@ export function validateConfig(config) {
   }
   if (typeof config.relay.autoConnect !== "boolean") throw new Error("自动连接配置必须是布尔值");
   if (!config.codex || typeof config.codex !== "object") throw new Error("Codex 配置无效");
+  if (!["managed", "shared"].includes(config.codex.connectionMode)) throw new Error("App Server 连接模式无效");
+  if (typeof config.codex.appServerEndpoint !== "string") throw new Error("共享 App Server 地址无效");
+  if (config.codex.connectionMode === "shared" || config.codex.appServerEndpoint) {
+    config.codex.appServerEndpoint = parseAppServerEndpoint(config.codex.appServerEndpoint).endpoint;
+  }
   if (typeof config.codex.executable !== "string" || !config.codex.executable.trim()) throw new Error("Codex 命令无效");
   if (typeof config.codex.defaultWorkingDirectory !== "string") throw new Error("默认工作目录无效");
   if (config.codex.defaultWorkingDirectory && !path.isAbsolute(config.codex.defaultWorkingDirectory)) {

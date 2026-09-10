@@ -14,7 +14,7 @@
 - Vue 3 + Ant Design Vue 本机配置台：Relay 地址、Space、Connect Token、设备名、自动连接、重连参数
 - 与 Codex 视觉语言一致的浅色 / 深色主题和响应式布局
 - Token 存入用户目录下的本地 `secrets.json`（Unix 使用 `0600` 权限），并在本机配置台回显
-- Codex App Server stdio 客户端：会话列表/读取/创建/恢复、发送/调整/中断 turn、审批响应
+- Codex App Server 客户端：插件管理的 stdio 进程，或连接已有的本机 WebSocket / Unix Socket 共享后端
 - App Server 通知实时转换为 Relay 事件，并提供 1000 条内存重放缓冲
 - 图片事件采用“缩略图 + 短期受控资源 URL”：原图通过认证数据通道上传到 Relay，移动端点击预览时再按过期时间读取
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
@@ -35,6 +35,53 @@ Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server
 ```
 
 Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息；图片资源由 Relay 内存短期托管，不落盘。MCP Server 通过本机受 Bearer key 保护的 Dashboard API 调用 Agent，stdin 关闭只会结束 MCP 代理，不会误杀 Agent 或 App Server。
+
+### 共享执行后端
+
+控制台“高级设置 → 执行后端”提供两种模式：
+
+- **由插件管理进程（默认）**：保持旧版行为，按需启动 `codex app-server`；插件退出时结束自己的子进程。
+- **连接共享后端**：仅连接已经运行的 App Server。插件退出、升级或断开连接不会结束共享服务；服务不可用时自动退避重连，绝不退回启动另一个执行进程。
+
+共享配置示例（通过控制台保存，或使用 `relay_update_config` 的 `connectionMode` / `appServerEndpoint`）：
+
+```json
+{
+  "codex": {
+    "connectionMode": "shared",
+    "appServerEndpoint": "ws://127.0.0.1:4500"
+  }
+}
+```
+
+也支持 `unix:///绝对路径/app-server.sock`；`unix://` 表示当前 `CODEX_HOME` 下的默认 control socket。WebSocket 只允许 `localhost`、`127.0.0.1` 或 `[::1]`，地址不可包含凭据、query 或 hash。当前连接层没有 bearer token 配置；需要认证的后端应先采用本机 Unix Socket 路线。
+
+共享模式会在用户读取/选择已授权任务后订阅实时事件；底层只读快照方法本身不取得订阅。断线恢复先初始化、恢复原订阅，再报告就绪；事件重放出现缺口时要求快照补齐。连接中断或超时的写命令不会自动重发，调用方需要核对任务实际状态。重连去重仍是进程内保证，跨插件进程的持久化命令回执属于后续工作。
+
+总览显示真实连接方式、地址和独立的后端连接状态。共享模式下 PID 为 `null`，避免把客户端进程误报成执行后端。保存后端地址/模式会断开旧连接并应用新配置；修改共享模式的访问范围会清除原订阅，后续读取重新校验白名单。
+
+**桌面也必须连接同一个后端。** macOS 已提供共享服务、桌面启动代理和切换/回滚工具。代理保留桌面 stdio 启动时的工具配置，连接本机 Unix Socket；无需修改官方应用包。直接设置 `CODEX_APP_SERVER_WS_URL` 会跳过当前桌面的 `codex_app` 启动配置，不建议作为日常启动方式。
+
+先构建，再生成一个尚未启用的启动包：
+
+```bash
+npm run build
+npm run shared:prepare -- \
+  --relay-agent /已安装插件目录/server/agent-cli.js \
+  --original-icon
+```
+
+默认目录为 `~/Library/Application Support/Recodex Shared Backend`，包含“启用共享后端.command”“恢复独立后端.command”“查看共享状态.command”及 `Codex Shared.app`。`--original-icon` 让启用后的 macOS GUI 启动环境指向代理，保留原图标的使用习惯；回滚会恢复原环境。显式启动器仍可用于诊断登录时的启动先后问题。
+
+启用前完成运行中的任务、退出桌面并停止旧 Relay；安装器检查冲突进程，备份历史/配置/插件，再替换为本次构建并安装 LaunchAgent。使用原 `CODEX_HOME`，不会把历史移到新账户或空目录。`--desktop-profile /原桌面配置目录` 可把 Electron 配置也纳入备份。回滚只恢复连接字段、启动环境和本次替换的插件，保留切换后的任务记录及其他设置修改。准备启动包不会改变运行配置。
+
+当前兼容版本为桌面 **26.901.51231 / CLI 0.153.4**；启动包记录 CLI 哈希，升级后会拒绝启动，需重新验证。共享传输及相关桌面内部入口仍具有实验性。第四阶段已增加审批和用户提问的共享处理、恢复与关闭同步、持久命令去重、事件流代际和停止确认。Flutter 可在执行时编辑独立草稿，并明确补充到当前轮次；桌面仍不展示同一套队列 UI。正式桌面启动入口与全部宿主功能仍需切换后验收。
+
+开发验证：`npm run smoke:desktop` 使用临时 home、Relay 配置、插件副本和独立 LaunchAgent，验证真实 Codex 后端、官方桌面 MCP 程序、模拟桌面工具 Socket、桌面代理退出/重开、后端崩溃恢复与回滚。不读取正式认证、不发送模型请求。
+
+交互验证可运行 `npm run smoke:interactions`：真实 Codex 与 MCP 夹具验证桌面延迟接受不会被旁观 Relay 拒绝、两端关闭同步，以及断线重新订阅时的待处理请求恢复。Flutter 侧新增交互卡片、停止确认和真实 WebSocket 断线恢复回归。默认远程审批权限保持关闭；只有启用 `respondToApprovals` 后才能从 Flutter 回答。详细证据见 `docs/shared-backend-stage4.md`。
+
+开发验证可运行 `npm run smoke:shared -- /绝对路径/codex`：启动隔离的真实 App Server，验证两客户端订阅、停止客户端后服务存活和重新连接；测试不发送模型请求，不读取正式会话或认证文件。
 
 ## 安装（GitHub，推荐）
 

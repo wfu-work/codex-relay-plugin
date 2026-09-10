@@ -35,6 +35,7 @@ const sharedBuildOptions = {
   format: "esm",
   target: "node22",
   packages: "bundle",
+  banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
   sourcemap: false,
   minify: false,
   legalComments: "none",
@@ -60,6 +61,11 @@ await Promise.all([
     ...sharedBuildOptions,
     entryPoints: ["server/agent-cli.js"],
     outfile: path.join(outputRoot, "server", "agent-cli.js"),
+  }),
+  build({
+    ...sharedBuildOptions,
+    entryPoints: ["server/shared-backend-cli.js"],
+    outfile: path.join(outputRoot, "server", "shared-backend-cli.js"),
   }),
 ]);
 

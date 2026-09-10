@@ -1,8 +1,10 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { AppServerClient } from "./app-server-client.js";
 import { CommandRouter } from "./command-router.js";
 import { ConfigStore } from "./config-store.js";
 import { relayEndpointId, relaySpaceId } from "./config-store.js";
+import { RelayError } from "./errors.js";
 import { EventBuffer } from "./event-buffer.js";
 import { InstanceLock } from "./instance-lock.js";
 import { Logger } from "./logger.js";
@@ -36,6 +38,7 @@ export class ConnectorService extends EventEmitter {
     this.#eventWorker = null;
     this.#eventQueueOverflowed = false;
     this.threadAccess = new Map();
+    this.eventStreamId = randomUUID();
     this.router = new CommandRouter({
       configStore: this.configStore,
       appServer: this.appServer,
@@ -53,6 +56,7 @@ export class ConnectorService extends EventEmitter {
         this.instanceLock ||= new InstanceLock(this.configStore.configDir);
         this.startedAt = new Date().toISOString();
         this.logger.info("connector", "Codex Relay Connector 已启动");
+        await this.router.journal.prune();
       })();
     }
     try {
@@ -87,7 +91,14 @@ export class ConnectorService extends EventEmitter {
     const credential = await this.configStore.relayCredential();
     await this.instanceLock.acquire();
     try {
-      if (config.codex.autoStartAppServer) await this.appServer.start();
+      if (config.codex.autoStartAppServer || config.codex.connectionMode === "shared") {
+        try { await this.appServer.start(); }
+        catch (error) {
+          if (config.codex.connectionMode !== "shared" || this.appServer.state !== "reconnecting") throw error;
+          // Keep Relay reachable so the phone can see backend recovery state.
+          this.logger.warn("connector", "共享后端暂不可用，保持 Relay 连接等待恢复", { message: error.message });
+        }
+      }
       return await this.relay.connect(credential);
     } catch (error) {
       // A transient socket failure schedules an internal reconnect, so retain
@@ -110,9 +121,22 @@ export class ConnectorService extends EventEmitter {
   }
 
   async updateConfig(patch, credentialPatch) {
+    const previous = this.configStore.get();
+    this.configStore.preview?.(patch); // Reject invalid endpoints before disconnecting a working session.
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
     if (wasConnected) await this.disconnect("configuration changed");
     const config = await this.configStore.update(patch, credentialPatch);
+    const backendChanged = ["connectionMode", "appServerEndpoint", "executable", "defaultWorkingDirectory"]
+      .some(key => previous.codex[key] !== config.codex[key]);
+    const accessChanged = JSON.stringify([previous.allowedProjects, previous.permissions, previous.readOnly])
+      !== JSON.stringify([config.allowedProjects, config.permissions, config.readOnly]);
+    if (backendChanged || (previous.codex.connectionMode === "shared" && accessChanged)) {
+      await this.appServer.stop();
+      this.#pendingEvents.length = 0;
+      await this.eventQueue.catch(() => {});
+      this.#resetEventStream();
+      this.router = new CommandRouter({ configStore: this.configStore, appServer: this.appServer, service: this, logger: this.logger });
+    }
     this.threadAccess.clear();
     if (wasConnected || config.relay.autoConnect) await this.connect();
     this.emit("status", await this.status());
@@ -133,28 +157,22 @@ export class ConnectorService extends EventEmitter {
   #eventWorker;
   #eventQueueOverflowed;
 
+  #resetEventStream() {
+    this.eventBuffer.invalidateReplay();
+    this.eventStreamId = randomUUID();
+    this.#pendingEvents.length = 0;
+  }
+
   #enqueueEvent(event, params = {}) {
     const context = extractContext(params);
     const isDelta = event.type.endsWith('.delta') || event.type === 'tool.output';
     if (this.#pendingEvents.length >= ConnectorService.MAX_PENDING_EVENTS) {
-      if (isDelta) {
-        const dropIndex = this.#pendingEvents.findIndex((entry) => entry.isDelta);
-        if (dropIndex >= 0) this.#pendingEvents.splice(dropIndex, 1);
-        else {
-          this.#eventQueueOverflowed = true;
-          return;
-        }
-        this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId });
-      } else {
-        // Lifecycle/approval events are more important than a stale delta.
-        // If the queue is saturated, retain the lifecycle and discard the
-        // newest delta only; the next snapshot reconciles any missing text.
-        this.#eventQueueOverflowed = true;
-        return;
-      }
-    } else {
-      this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId });
+      // A full queue cannot promise lossless deltas. Invalidate every client's
+      // cursor and retain the newest event so a snapshot closes the gap.
+      this.#eventQueueOverflowed = true;
+      this.#resetEventStream();
     }
+    this.#pendingEvents.push({ event, params, isDelta, threadId: context.threadId, eventStreamId: this.eventStreamId });
     if (!this.#eventWorker) {
       this.#eventWorker = this.#drainEvents();
       this.eventQueue = this.#eventWorker.finally(() => { this.#eventWorker = null; });
@@ -165,8 +183,9 @@ export class ConnectorService extends EventEmitter {
     while (this.#pendingEvents.length) {
       const entry = this.#pendingEvents.shift();
       try {
-        await this.#forwardEvent(entry.event, entry.params);
+        await this.#forwardEvent(entry.event, entry.params, entry.eventStreamId);
       } catch (error) {
+        this.#resetEventStream();
         this.logger.warn("connector", "Codex 事件转发失败", { message: error.message });
       }
     }
@@ -196,6 +215,7 @@ export class ConnectorService extends EventEmitter {
       },
       relay: this.relay.status(),
       appServer: this.appServer.status(),
+      eventStreamId: this.eventStreamId,
       space: {
         spaceId: relaySpaceId(config.relay),
         endpointId: relayEndpointId(config.relay),
@@ -272,7 +292,9 @@ export class ConnectorService extends EventEmitter {
     });
   }
 
-  async syncAfter(lastSequence) {
+  async syncAfter(lastSequence, eventStreamId) {
+    if (lastSequence == null) return this.#snapshotSync();
+    if (eventStreamId && eventStreamId !== this.eventStreamId) return this.#snapshotSync();
     if (this.#eventQueueOverflowed) {
       this.#eventQueueOverflowed = false;
       return this.#snapshotSync();
@@ -288,14 +310,16 @@ export class ConnectorService extends EventEmitter {
     if (
       events !== null
       && requestedSequence <= latestSequence
-      && !(requestedSequence === 0 && events.length === 0)
+      && !(requestedSequence === 0 && events.length === 0 && !eventStreamId)
     ) {
-      return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence() };
+      return { mode: "events", events, latestSequence: this.eventBuffer.latestSequence(), eventStreamId: this.eventStreamId };
     }
     return this.#snapshotSync();
   }
 
-  async #snapshotSync() {
+  async #snapshotSync(attempt = 0) {
+    const latestSequence = this.eventBuffer.latestSequence();
+    const eventStreamId = this.eventStreamId;
     await this.appServer.start();
     const allowedProjects = this.configStore.get().allowedProjects;
     const threads = filterThreadList(await this.appServer.listThreads({ limit: 100 }), allowedProjects);
@@ -312,12 +336,18 @@ export class ConnectorService extends EventEmitter {
         });
       }
     }
+    const status = await this.status();
+    if (eventStreamId !== this.eventStreamId) {
+      if (attempt < 2) return this.#snapshotSync(attempt + 1);
+      throw new RelayError("APP_SERVER_UNAVAILABLE", "后端正在重新连接，请稍后刷新任务");
+    }
     return {
       mode: "snapshot",
-      status: await this.status(),
+      status,
       threads,
       projects,
-      latestSequence: this.eventBuffer.latestSequence(),
+      latestSequence,
+      eventStreamId,
     };
   }
 
@@ -351,7 +381,16 @@ export class ConnectorService extends EventEmitter {
         this.logger.warn("connector", "释放 Connector 实例锁失败", { message: error.message });
       });
     });
-    this.appServer.on("status", (status) => this.emit("status", status));
+    this.appServer.on("status", (status) => {
+      this.emit("status", status);
+      if (status.state === "reconnecting") this.#resetEventStream();
+      if (this.relay.state === "connected") {
+        this.status().then(current => this.relay.send({
+          version: 1, type: "host.snapshot", spaceId: relaySpaceId(this.configStore.get().relay),
+          deviceId: this.configStore.get().relay.deviceId, timestamp: new Date().toISOString(), status: current,
+        })).catch(error => this.logger.warn("connector", "后端连接状态同步失败", { message: error.message }));
+      }
+    });
     this.appServer.on("notification", (method, params) => {
       const event = normalizeCodexNotification(method, params);
       if (!event) {
@@ -368,13 +407,18 @@ export class ConnectorService extends EventEmitter {
     this.appServer.on("approval", (approval) => {
       this.#enqueueEvent({ type: "approval.requested", ...approval }, approval.params);
     });
+    this.appServer.on("interactionResolved", (interaction) => {
+      this.#enqueueEvent({ type: "interaction.resolved", ...interaction }, interaction.params);
+    });
   }
 
-  async #forwardEvent(event, params = {}) {
+  async #forwardEvent(event, params = {}, eventStreamId = this.eventStreamId) {
     if (!(await this.#isEventAllowed(params))) return;
     const config = this.configStore.get();
     const preparedEvent = await this.prepareResourceImages(event);
+    if (eventStreamId !== this.eventStreamId) return;
     const envelope = eventEnvelope(config, this.eventBuffer, preparedEvent, extractContext(params));
+    envelope.eventStreamId = this.eventStreamId;
     const sent = this.relay.send(envelope);
     if (!sent) {
       // Keep the event in EventBuffer so a reconnecting mobile client can

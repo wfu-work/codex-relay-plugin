@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { asRelayError, RelayError } from "./errors.js";
 import { commandError, commandResult, validateRelayCommand } from "./protocol.js";
 import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
+import { CommandJournal } from "./command-journal.js";
 
 // A thread can contain unbounded command output. Returning that complete
 // history through a Relay frame can exceed the authenticated connection's
@@ -26,6 +27,7 @@ export class CommandRouter {
     this.appServer = appServer;
     this.service = service;
     this.logger = logger;
+    this.journal = new CommandJournal(configStore.configDir);
   }
 
   async handle(message) {
@@ -39,6 +41,7 @@ export class CommandRouter {
         if (completed.fingerprint !== fingerprint) {
           throw new RelayError("REQUEST_ID_REUSED", "requestId 已被另一条命令使用");
         }
+        await this.#authorizeReplay(message, completed.response);
         return completed.response;
       }
 
@@ -65,14 +68,33 @@ export class CommandRouter {
   }
 
   async #run(config, message, fingerprint) {
+    let entry;
     try {
+      entry = await this.journal.begin(config, message, fingerprint);
+      if (entry?.response) {
+        await this.#authorizeReplay(message, entry.response);
+        return entry.response;
+      }
       const result = await this.#executeSharedRead(message.command, message);
       const response = commandResult(config, message.requestId, result ?? {}, message.deviceId);
+      try { await this.journal.finish(entry, response); }
+      catch { throw new RelayError("COMMAND_OUTCOME_UNKNOWN", "后端可能已执行命令，但回执未能保存；请刷新任务核对结果"); }
       this.#remember(message.requestId, fingerprint, response);
       return response;
     } catch (error) {
-      return this.#failure(config, message, fingerprint, error);
+      const uncertain = entry && ["APP_SERVER_UNAVAILABLE", "APP_SERVER_TIMEOUT"].includes(error.code);
+      const response = this.#failure(config, message, fingerprint, uncertain ? new RelayError("COMMAND_OUTCOME_UNKNOWN", "连接中断或超时，命令结果尚未确认；请刷新任务，勿重复发送", { cause: error.code, threadId: message.threadId, command: message.command.type }) : error);
+      if (entry && error.code !== "COMMAND_OUTCOME_UNKNOWN") await this.journal.finish(entry, response).catch(() => {});
+      return response;
     }
+  }
+
+  async #authorizeReplay(message, response) {
+    if (!response.success) return;
+    const command = message.command;
+    if (command.type === "thread.create") this.#allowedCwd(command.cwd, true);
+    const threadId = command.threadId || message.threadId;
+    if (threadId) await this.#assertThreadAllowed(threadId);
   }
 
   async #executeSharedRead(command, envelope) {
@@ -125,7 +147,7 @@ export class CommandRouter {
     if (command.type === "ping") return { pong: true };
     if (command.type === "host.get_status") return this.service.status();
     if (command.type === "sync.request") {
-      return this.service.syncAfter(Object.hasOwn(command, "lastSequence") ? command.lastSequence : null);
+      return this.service.syncAfter(Object.hasOwn(command, "lastSequence") ? command.lastSequence : null, command.eventStreamId);
     }
     await this.appServer.start();
     switch (command.type) {
@@ -139,18 +161,14 @@ export class CommandRouter {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         const readThread = this.appServer.readThreadSnapshot || this.appServer.readThread;
         const result = compactThreadReadResult(
-          await readThread.call(
-            this.appServer,
-            threadId,
-          ),
+          await this.#readSubscribedThread(threadId, readThread),
         );
-        this.#assertThreadResultAllowed(result);
         // Hash the persisted content before replacing images with expiring
         // resource URLs. Clients can reconcile without downloading the same
         // history (or uploading its images) on every poll.
         const snapshotHash = createHash("sha256").update(JSON.stringify(result)).digest("hex");
         if (command.snapshotHash === snapshotHash) {
-          return { threadId, snapshotHash, unchanged: true };
+          return { threadId, snapshotHash, unchanged: true, pendingInteractions: this.appServer.pendingInteractions?.(threadId) || [] };
         }
         const prepared = this.service.prepareResourceImages
           ? this.service.prepareResourceImages(result)
@@ -160,8 +178,7 @@ export class CommandRouter {
       case "thread.status": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
-        const result = await readStatus.call(this.appServer, threadId);
-        this.#assertThreadResultAllowed(result);
+        const result = await this.#readSubscribedThread(threadId, readStatus);
         return this.#annotateThreadSnapshot(threadId, result, "status");
       }
       case "thread.create": {
@@ -172,19 +189,17 @@ export class CommandRouter {
       }
       case "thread.resume": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
-        // Legacy mobile clients use resume as a read subscription. Acquiring
-        // a writer here conflicts with the desktop App Server. Reading must
-        // remain side-effect free; turn.start owns any actual resume needed
-        // for writing. Return a compact success so old clients stop retrying.
+        // Legacy clients use resume as a subscription. Managed mode keeps
+        // snapshot-only behavior; shared mode subscribes after authorization.
         const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
-        const result = await readStatus.call(this.appServer, threadId, { ensureResumed: false });
-        this.#assertThreadResultAllowed(result);
+        const result = await this.#readSubscribedThread(threadId, readStatus);
         this.#selectedThreadId = threadId;
-        return { ...result, syncMode: "snapshot" };
+        return { ...result, syncMode: this.appServer.isShared?.() ? "live" : "snapshot" };
       }
       case "thread.select": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         await this.#assertThreadAllowed(threadId);
+        await this.appServer.subscribeThread?.(threadId);
         this.#selectedThreadId = threadId;
         return { threadId: this.#selectedThreadId };
       }
@@ -219,7 +234,14 @@ export class CommandRouter {
       case "approval.respond": {
         const allowed = new Set(["accept", "acceptForSession", "decline", "cancel"]);
         if (!allowed.has(command.decision)) throw new RelayError("INVALID_MESSAGE", "审批决定无效");
-        return this.appServer.respondToApproval(requireString(command.approvalId, "approvalId"), command.decision);
+        const id = requireString(command.approvalId, "approvalId");
+        await this.#assertInteractionAllowed(id, envelope);
+        return this.appServer.respondToApproval(id, command.decision);
+      }
+      case "userInput.respond": {
+        const id = requireString(command.approvalId, "approvalId");
+        await this.#assertInteractionAllowed(id, envelope);
+        return this.appServer.respondToUserInput(id, command.answers);
       }
       default:
         throw new RelayError("COMMAND_NOT_ALLOWED", `不支持的命令：${command.type}`);
@@ -238,6 +260,25 @@ export class CommandRouter {
     const safe = safeProjectPath(candidate, config.allowedProjects);
     if (!safe) throw new RelayError("PROJECT_NOT_ALLOWED", "该项目不在远程访问白名单中");
     return safe;
+  }
+
+  async #assertInteractionAllowed(id, envelope) {
+    const entry = this.appServer.getInteraction(id);
+    const threadId = entry.params.threadId;
+    if (!threadId || (envelope.threadId && envelope.threadId !== threadId)) throw new RelayError("PROJECT_NOT_ALLOWED", "交互请求不属于当前任务");
+    await this.#assertThreadAllowed(threadId);
+  }
+
+  async #readSubscribedThread(threadId, read) {
+    let result = await read.call(this.appServer, threadId, { ensureResumed: false });
+    this.#assertThreadResultAllowed(result);
+    if (await this.appServer.subscribeThread?.(threadId)) {
+      // Loading a thread changes runtime status. Do not return the older
+      // notLoaded snapshot after its live subscription has already started.
+      result = await read.call(this.appServer, threadId, { ensureResumed: false });
+      this.#assertThreadResultAllowed(result);
+    }
+    return result;
   }
 
   async #assertThreadAllowed(threadId) {
@@ -272,6 +313,7 @@ export class CommandRouter {
       snapshotRevision: revision,
       snapshotSource: source,
       snapshotObservedAt: new Date().toISOString(),
+      pendingInteractions: this.appServer.pendingInteractions?.(id) || [],
     };
   }
 }

@@ -1,0 +1,250 @@
+{
+  "date": "2026-09-10",
+  "desktopVersion": "26.901.51231",
+  "cliVersion": "0.153.4",
+  "scope": "Isolated official desktop + unchanged Relay AppServerClient via a test-only stdio/WebSocket adapter; no Flutter/remote Relay migration.",
+  "desktopPid": 48181,
+  "backendPid": 48130,
+  "originalDesktopPid": 49189,
+  "originalBackendPid": 49675,
+  "threadId": "01a08a81-4c3a-7372-a969-e34c7506b6cf",
+  "desktopClient": {
+    "name": "Codex Desktop",
+    "title": "Codex Desktop",
+    "version": "26.901.51231"
+  },
+  "desktopConnectionCount": 1,
+  "desktopInitialized": true,
+  "userConfirmation": "正常发送、看到了 RELAY_SHARED_OK",
+  "controls": {
+    "at": "2026-09-10T08:54:47.980Z",
+    "completedMarkerTurns": [
+      {
+        "turnId": "01a08a81-e09c-7342-8034-4bd004377005",
+        "markers": [
+          "RELAY_SHARED_OK"
+        ]
+      },
+      {
+        "turnId": "01a08a82-c68a-7471-92bb-94f517284eb7",
+        "markers": []
+      },
+      {
+        "turnId": "01a08a83-0e85-7a62-8ef4-0a46b7f9deb1",
+        "markers": [
+          "DESKTOP_SHARED_OK"
+        ]
+      },
+      {
+        "turnId": "01a08a83-b467-71c3-9629-746cb8a3a611",
+        "markers": [
+          "RELAY_ROUNDTRIP_OK"
+        ]
+      },
+      {
+        "turnId": "01a08a84-5b2a-7bf0-af40-c354d1d3436d",
+        "markers": [
+          "QUEUE_PARENT_OK"
+        ]
+      },
+      {
+        "turnId": "01a08a84-7617-76c2-bf03-90e73d55dcf7",
+        "markers": [
+          "QUEUE_SHARED_OK"
+        ]
+      },
+      {
+        "turnId": "01a08a86-1cca-7331-9027-d716b61e0a22",
+        "markers": []
+      }
+    ],
+    "queueDrained": true,
+    "turnId": "01a08a86-d723-77e0-8bd6-f7f64f928a84",
+    "steerAccepted": true,
+    "interruptStatus": "interrupted",
+    "startupCancelRace": "A prior attempt to interrupt immediately after the start response returned no active turn to interrupt; this attempt waited for item/started."
+  },
+  "perTurnEventCounts": {
+    "01a08a81-e09c-7342-8034-4bd004377005": {
+      "desktop": {},
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 4,
+        "thread/tokenUsage/updated": 2,
+        "turn/completed": 1
+      }
+    },
+    "01a08a82-c68a-7471-92bb-94f517284eb7": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 13,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 13,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      }
+    },
+    "01a08a83-0e85-7a62-8ef4-0a46b7f9deb1": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 4,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 4,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      }
+    },
+    "01a08a83-b467-71c3-9629-746cb8a3a611": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 7,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 7,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      }
+    },
+    "01a08a84-5b2a-7bf0-af40-c354d1d3436d": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 3,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 3,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      }
+    },
+    "01a08a84-7617-76c2-bf03-90e73d55dcf7": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 3,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 2,
+        "item/completed": 2,
+        "item/agentMessage/delta": 3,
+        "thread/tokenUsage/updated": 1,
+        "turn/completed": 1
+      }
+    },
+    "01a08a86-1cca-7331-9027-d716b61e0a22": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 4,
+        "item/completed": 4,
+        "item/agentMessage/delta": 6,
+        "thread/tokenUsage/updated": 2,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 4,
+        "item/completed": 4,
+        "item/agentMessage/delta": 6,
+        "thread/tokenUsage/updated": 2,
+        "turn/completed": 1
+      }
+    },
+    "01a08a86-d723-77e0-8bd6-f7f64f928a84": {
+      "desktop": {
+        "turn/started": 1,
+        "item/started": 1,
+        "item/completed": 1,
+        "turn/completed": 1
+      },
+      "plugin": {
+        "turn/started": 1,
+        "item/started": 1,
+        "item/completed": 1,
+        "turn/completed": 1
+      }
+    }
+  },
+  "desktopTurnStarts": [
+    {
+      "at": "2026-09-10T08:50:21.454Z",
+      "event": "desktop.response",
+      "connection": 1,
+      "method": "turn/start",
+      "turnId": "01a08a82-c68a-7471-92bb-94f517284eb7"
+    },
+    {
+      "at": "2026-09-10T08:50:39.883Z",
+      "event": "desktop.response",
+      "connection": 1,
+      "method": "turn/start",
+      "turnId": "01a08a83-0e85-7a62-8ef4-0a46b7f9deb1"
+    }
+  ],
+  "pluginReconnect": {
+    "name": "plugin.reconnected",
+    "at": "2026-09-10T08:50:23.724Z",
+    "backendPid": 48130,
+    "transportPid": 49694
+  },
+  "queueNotifications": {
+    "desktop": 0,
+    "plugin": 3
+  },
+  "limitations": [
+    "Desktop opts out of thread/queue/changed; queue execution passed but shared queue UI did not.",
+    "Immediate interrupt after turn/start can race runtime startup.",
+    "Approvals, tool/user-input ownership, Git, browser/MCP host integration, long outages and version upgrades were not exercised.",
+    "CODEX_APP_SERVER_WS_URL is present in this installed build; public/stable support is not established."
+  ],
+  "sourceSha256": {
+    "src-VqXTPopo.js": "8d056524ea3f5714e5e0a254afd88f018d58465bc6ea026adee3c80ff7799e29",
+    "main-BT6ViFC-.js": "ff6dac303dd188bddfdbfbfa43d0b04507dcf5136b773114970d73f9c2a9af01"
+  },
+  "cleanup": {
+    "testProcessesRemaining": 0,
+    "testListenerPortsClosed": true,
+    "isolatedAuthAndDesktopProfileRemoved": true,
+    "originalDesktopAndBackendStillRunning": true,
+    "completedAt": "2026-09-10T08:57:13.800Z"
+  },
+  "checks": {
+    "pairedCompletedOrInterruptedTurns": 7,
+    "matchingDeltaCounts": true,
+    "matchingCompletionCounts": true
+  }
+}

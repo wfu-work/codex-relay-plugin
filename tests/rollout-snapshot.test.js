@@ -189,3 +189,56 @@ test("ignores invalid and unrelated usage, and does not reuse accounting after f
   await fs.writeFile(newFile, header + start("retry") + tokenEvent(tokens(20, 2), tokens(20, 2)));
   assert.equal((await reader.read(thread)).currentTurn.turnUsage.totalTokens, 22);
 });
+
+test("context window and latest model call survive live, completed and historical reads", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("current"));
+  await reader.read(thread);
+  const update = tokenEvent(tokens(900000, 10000), tokens(207000, 1000, 200000), {
+    info: { total_token_usage: tokens(900000, 10000),
+      last_token_usage: tokens(207000, 1000, 200000), model_context_window: 258400 },
+  });
+  await fs.appendFile(oldFile, update + update);
+  const live = await reader.read(thread);
+  assert.equal(live.notifications.length, 1);
+  const usage = live.notifications[0][1].tokenUsage;
+  assert.equal(usage.modelContextWindow, 258400);
+  assert.equal(usage.last.totalTokens, 208000);
+  assert.equal(usage.total.totalTokens, 910000);
+  assert.equal(usage.updatedAt, "2026-09-09T12:40:00Z");
+  await fs.appendFile(oldFile, event({ type: "task_complete", turn_id: "current" }));
+  const completed = await reader.read(thread);
+  assert.deepEqual(completed.notifications[0][1].turn.tokenUsage, usage);
+  assert.deepEqual(applyRolloutSnapshot(thread, completed, { includeTurns: true }).turns[0].tokenUsage, usage);
+});
+
+test("context uses the current turn's window and follows compaction or model changes", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + event({ type: "task_started", turn_id: "current", model_context_window: 258400 })
+    + tokenEvent(tokens(207000, 1000), tokens(207000, 1000)));
+  assert.equal((await reader.read(thread)).currentTurn.tokenUsage.modelContextWindow, 258400);
+  const compacted = { type: "token_count", info: {
+    total_token_usage: tokens(246000, 2000), last_token_usage: tokens(39000, 1000),
+    model_context_window: 128000,
+  } };
+  await fs.appendFile(oldFile, JSON.stringify({ type: "event_msg", payload: compacted,
+    timestamp: "2026-09-09T12:41:00Z" }) + "\n");
+  const next = await reader.read(thread);
+  assert.equal(next.currentTurn.tokenUsage.last.totalTokens, 40000);
+  assert.equal(next.currentTurn.tokenUsage.modelContextWindow, 128000);
+  assert.equal(next.currentTurn.tokenUsage.updatedAt, "2026-09-09T12:41:00Z");
+  await fs.appendFile(oldFile, event({ type: "task_complete", turn_id: "current" }) + start("new")
+    + tokenEvent(tokens(247000, 2100), tokens(1000, 100)));
+  assert.equal((await reader.read(thread)).currentTurn.tokenUsage.modelContextWindow, undefined);
+});
+
+test("invalid context limits are not published as usable capacity", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("current"));
+  for (const limit of [0, -1, 1.5, "258400"]) {
+    await fs.appendFile(oldFile, event({ type: "token_count", info: {
+      total_token_usage: tokens(100, 10), last_token_usage: tokens(100, 10), model_context_window: limit,
+    } }));
+    assert.equal((await reader.read(thread)).currentTurn.tokenUsage.modelContextWindow, undefined);
+  }
+});

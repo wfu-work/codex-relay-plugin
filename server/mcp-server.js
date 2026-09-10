@@ -25,7 +25,7 @@ const tools = [
   },
   {
     name: "relay_connect",
-    description: "Start the local Codex App Server if configured and connect this host to Relay.",
+    description: "Prepare the configured managed or shared Codex App Server connection and connect this host to Relay.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -49,6 +49,8 @@ const tools = [
         endpointId: { type: "string", description: "Relay Endpoint ID bound to the Connect Token." },
         deviceName: { type: "string" },
         autoConnect: { type: "boolean" },
+        connectionMode: { type: "string", enum: ["managed", "shared"], description: "Manage a private process or attach to an existing shared backend." },
+        appServerEndpoint: { type: "string", description: "Local shared App Server ws://, wss:// or unix:// endpoint; no credentials." },
         readOnly: { type: "boolean" },
         allowedProjects: { type: "array", items: { type: "string" } },
       },
@@ -88,6 +90,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "relay_update_config":
         result = await service.updateConfig({
+          ...(args.connectionMode !== undefined || args.appServerEndpoint !== undefined ? { codex: {
+            ...(args.connectionMode !== undefined ? { connectionMode: args.connectionMode } : {}),
+            ...(args.appServerEndpoint !== undefined ? { appServerEndpoint: args.appServerEndpoint } : {}),
+          } } : {}),
           ...(args.relayUrl !== undefined || args.spaceId !== undefined || args.endpointId !== undefined || args.deviceName !== undefined || args.autoConnect !== undefined
             ? {
                 relay: {

@@ -136,7 +136,7 @@ function projectRow(record, row, notifications, threadId) {
       completedAt: null, durationMs: null, items: [] };
     record.turns.push(turn);
     record.current = turn;
-    record.usage.start(turn);
+    record.usage.start(turn, event.model_context_window);
     if (record.turns.length > 12) {
       record.itemCount -= record.turns.shift().items.length;
     }
@@ -146,7 +146,7 @@ function projectRow(record, row, notifications, threadId) {
     if (event.turn_id && !turn) return;
     // Unscoped counters cannot be attributed while two turns overlap.
     if (!event.turn_id && record.turns.filter((turn) => turn.status === "inProgress").length > 1) return;
-    if (record.usage.update(turn, event.info) && turn) {
+    if (record.usage.update(turn, event.info, row.timestamp) && turn) {
       notifications.push(["thread/tokenUsage/updated", {
         threadId, turnId: turn.id, tokenUsage: turn.tokenUsage,
         ...(turn.turnUsage ? { turnUsage: turn.turnUsage } : {}),

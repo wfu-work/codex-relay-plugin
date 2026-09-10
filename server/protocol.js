@@ -71,6 +71,7 @@ export const COMMAND_PERMISSIONS = Object.freeze({
   "turn.steer": "steerTurns",
   "turn.interrupt": "interruptTurns",
   "approval.respond": "respondToApprovals",
+  "userInput.respond": "respondToApprovals",
   "sync.request": "readThreads",
   ping: null,
 });

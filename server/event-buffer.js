@@ -47,6 +47,12 @@ export class EventBuffer {
     return this.#sequence;
   }
 
+  invalidateReplay() {
+    this.#items.length = 0;
+    this.#bytes = 0;
+    this.#droppedThrough = this.nextSequence();
+  }
+
   clear() {
     this.#items.length = 0;
     this.#sequence = 0;

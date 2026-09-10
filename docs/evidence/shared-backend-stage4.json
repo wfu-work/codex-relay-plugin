@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-10",
+  "stage": 4,
+  "codexCliVersion": "0.153.4",
+  "desktopVersion": "26.901.51231",
+  "nodeTestsPassed": 151,
+  "flutterTestsPassed": 128,
+  "flutterAnalyze": "no issues",
+  "productionFilesValidated": 14,
+  "mcpToolsSmokePassed": 7,
+  "realBackendInteractionSmoke": {
+    "desktopAcceptancePreserved": true,
+    "relayObserved": true,
+    "resolvedOnBothClients": true,
+    "pendingReplayedAfterReconnect": true,
+    "newPublicRequestIdAfterReconnect": true,
+    "modelRequests": 0
+  },
+  "preparedBundleUpdated": true,
+  "formalActivation": false,
+  "formalDesktopPid": 49189,
+  "formalBackendPid": 49675,
+  "remaining": ["Formal migration and official desktop GUI acceptance", "Install the updated Flutter build", "Shared desktop queue UI is not supported"]
+}

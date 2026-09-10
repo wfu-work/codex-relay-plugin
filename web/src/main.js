@@ -12,6 +12,7 @@ import {
   InputNumber,
   Layout,
   Row,
+  Select,
   Switch,
   Tag,
 } from "ant-design-vue";
@@ -34,6 +35,7 @@ createApp(App)
   .use(Card)
   .use(Form)
   .use(Row)
+  .use(Select)
   .use(Col)
   .use(Input)
   .use(InputNumber)

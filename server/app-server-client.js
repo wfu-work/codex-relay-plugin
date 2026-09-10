@@ -1,17 +1,24 @@
 import { EventEmitter } from "node:events";
-import { execFile, spawn } from "node:child_process";
-import readline from "node:readline";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
+import { SharedAppServerTransport, StdioAppServerTransport, parseAppServerEndpoint } from "./app-server-transport.js";
 import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
+import { PendingInteractions } from "./pending-interactions.js";
 
 const execFileAsync = promisify(execFile);
 
 export class AppServerClient extends EventEmitter {
-  #process = null;
-  #outputLines = null;
+  #transport = null;
+  #generation = 0;
+  #wanted = false;
+  #retryTimer = null;
+  #retryAttempt = 0;
+  #subscriptions = new Set();
+  #connectionConfig = null;
   #requests = new Map();
-  #serverRequests = new Map();
+  #interactions = new PendingInteractions();
+  #interrupts = new Map();
   #nextId = 1;
   #starting = null;
   #paginatedThreads = null;
@@ -34,8 +41,9 @@ export class AppServerClient extends EventEmitter {
     "item/fileChange/requestApproval",
   ]);
 
-  constructor(configStore, logger) {
+  constructor(configStore, logger, options = {}) {
     super();
+    this.options = options;
     this.configStore = configStore;
     this.logger = logger;
     this.state = "stopped";
@@ -44,129 +52,176 @@ export class AppServerClient extends EventEmitter {
   }
 
   status() {
+    const config = this.#connectionConfig || this.configStore.get().codex;
+    const shared = config.connectionMode === "shared";
     return {
       state: this.state,
       version: this.version,
-      pid: this.#process?.pid || null,
+      pid: this.#transport?.pid || null,
+      connectionMode: config.connectionMode || "managed",
+      transport: shared ? parseAppServerEndpoint(config.appServerEndpoint).kind : "stdio",
+      ownsProcess: !shared && Boolean(this.#transport?.pid),
+      endpoint: shared ? config.appServerEndpoint : null,
+      reconnectAttempt: this.#retryAttempt,
+      nextRetryAt: this.nextRetryAt || null,
+      subscribedThreads: this.#resumedThreads.size,
       lastError: this.lastError,
       pendingRequests: this.#requests.size,
-      pendingApprovals: this.#serverRequests.size,
+      pendingApprovals: this.#interactions.entries.size,
     };
   }
 
   async checkAvailability() {
+    const config = this.configStore.get().codex;
+    if (config.connectionMode === "shared") {
+      const probe = new SharedAppServerTransport(config.appServerEndpoint, this.options);
+      // A transport probe does not initialize, subscribe, or stop the server.
+      probe.on("closed", () => {});
+      try { await probe.open(); return { connectionMode: "shared", endpoint: probe.address.endpoint, version: this.version }; }
+      finally { await probe.close(); }
+    }
     const executable = this.configStore.get().codex.executable || "codex";
     const { stdout, stderr } = await execFileAsync(executable, ["--version"], { timeout: 10_000 });
     this.version = (stdout || stderr).trim();
     return { executable, version: this.version };
   }
 
-  async start() {
-    if (this.state === "ready") return this.status();
-    if (this.#starting) return this.#starting;
-    this.#starting = this.#startInternal();
-    try {
-      return await this.#starting;
-    } finally {
-      this.#starting = null;
-    }
+  isShared() {
+    return (this.#connectionConfig || this.configStore.get().codex).connectionMode === "shared";
   }
 
-  async #startInternal() {
-    const config = this.configStore.get();
-    this.state = "starting";
-    this.lastError = null;
+  async start() {
+    this.#wanted = true;
+    if (this.#starting) return this.#starting;
+    if (this.state === "ready") return this.status();
+    if (this.#retryTimer) throw new RelayError("APP_SERVER_UNAVAILABLE", "共享 App Server 正在重连，请稍后重试");
+    const generation = ++this.#generation;
+    const pending = this.#startInternal(generation);
+    this.#starting = pending;
+    try { return await pending; }
+    finally { if (this.#starting === pending) this.#starting = null; }
+  }
+
+  #resetConnectionState() {
     this.#paginatedThreads = null;
     this.#threadListSortMode = null;
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
-    await this.checkAvailability();
-    this.logger.info("app-server", "正在启动 Codex App Server", {
-      executable: config.codex.executable,
-    });
-    const child = spawn(config.codex.executable || "codex", ["app-server"], {
-      cwd: config.codex.defaultWorkingDirectory || process.cwd(),
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
-    });
-    this.#process = child;
-    child.once("error", (error) => this.#handleExit(child, error));
-    child.once("exit", (code, signal) => this.#handleExit(child, new Error(`App Server 已退出 (${code ?? signal})`)));
-    const lines = readline.createInterface({ input: child.stdout });
-    this.#outputLines = lines;
-    lines.on("line", (line) => this.#handleLine(line));
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString().trim();
-      if (text) this.logger.info("app-server", text);
-    });
+  }
+
+  async #startInternal(generation) {
+    const config = this.configStore.get().codex;
+    this.#connectionConfig = { ...config, connectionMode: config.connectionMode || "managed" };
+    this.state = "starting";
+    this.lastError = null;
+    this.version = null;
+    this.#resetConnectionState();
+    let transport;
     try {
-      await this.request("initialize", {
-        clientInfo: {
-          name: "codex-relay-plugin",
-          title: "Codex Relay Plugin",
-          version: "1.0.0",
-        },
+      if (this.isShared()) {
+        // No availability probe or spawn: a missing shared server must never
+        // silently create another writer, even if a local CLI is installed.
+        transport = new SharedAppServerTransport(config.appServerEndpoint, this.options);
+      } else {
+        await this.checkAvailability();
+        transport = new StdioAppServerTransport(config);
+      }
+      if (generation !== this.#generation || !this.#wanted) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
+      this.#transport = transport;
+      transport.on("message", line => { if (this.#transport === transport) this.#handleLine(line); });
+      transport.on("log", message => { if (message) this.logger.info("app-server", message); });
+      transport.on("closed", error => this.#handleExit(transport, error));
+      this.logger.info("app-server", this.isShared() ? "正在连接共享 App Server" : "正在启动 Codex App Server");
+      await transport.open();
+      if (generation !== this.#generation || this.#transport !== transport) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
+      const initialized = await this.request("initialize", {
+        clientInfo: { name: "codex-relay-plugin", title: "Codex Relay Plugin", version: "1.0.0" },
         capabilities: { experimentalApi: true },
-      }, 15_000);
+      }, this.options.initializeTimeoutMs || 15000);
+      if (this.isShared() && (!initialized || typeof initialized !== "object")) throw new Error("App Server initialize 响应无效");
       this.notify("initialized", {});
+      if (this.isShared()) this.version = initialized.userAgent || initialized.serverInfo?.version || null;
+      // Restore only explicit, authorized subscriptions. Never replay turns
+      // whose responses may have been lost on the previous connection.
+      for (const id of [...this.#subscriptions]) {
+        if (generation !== this.#generation || this.#transport !== transport) throw new Error("共享连接恢复已取消");
+        try { await this.resumeThread(id); }
+        catch (error) {
+          if (!transport.writable) throw error;
+          this.#subscriptions.delete(id);
+          this.logger.warn("app-server", "任务订阅恢复失败，等待客户端重新读取", { threadId: id, message: error.message });
+        }
+      }
+      if (generation !== this.#generation || this.#transport !== transport) throw new Error("App Server 连接已取消");
       this.state = "ready";
-      this.logger.info("app-server", "Codex App Server 已就绪", { version: this.version, pid: child.pid });
+      this.#retryAttempt = 0;
+      this.nextRetryAt = null;
+      this.lastError = null;
       this.emit("status", this.status());
       return this.status();
     } catch (error) {
-      if (this.#process === child) this.#process = null;
-      this.state = "error";
-      this.#outputLines?.close();
-      this.#outputLines = null;
-      try { child.kill("SIGTERM"); } catch {}
-      await new Promise((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) return resolve();
-        child.once("exit", resolve);
-        setTimeout(resolve, 1_000);
-      });
-      if (child.exitCode === null && child.signalCode === null) {
-        try { child.kill("SIGKILL"); } catch {}
+      if (this.#transport === transport) this.#transport = null;
+      await transport?.close();
+      if (generation === this.#generation && this.#wanted) {
+        this.lastError = error.message;
+        this.state = "error";
+        this.#scheduleReconnect();
+        this.emit("status", this.status());
       }
       throw error;
     }
   }
 
+  #scheduleReconnect() {
+    if (!this.#wanted || !this.isShared()) return;
+    this.state = "reconnecting";
+    if (this.#retryTimer) return;
+    const delay = Math.min(this.options.reconnectMaxMs || 30000,
+      (this.options.reconnectBaseMs || 500) * 2 ** Math.min(this.#retryAttempt++, 8) * (0.8 + Math.random() * 0.4));
+    this.nextRetryAt = new Date(Date.now() + delay).toISOString();
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = null;
+      this.nextRetryAt = null;
+      // close/open cleanup may still be unwinding after a failed handshake.
+      if (this.#starting) { this.#scheduleReconnect(); return; }
+      this.start().catch(error => this.logger.warn("app-server", "共享后端重连失败", { message: error.message }));
+    }, delay);
+    this.#retryTimer.unref();
+  }
+
+  #rejectRequests(error) {
+    for (const pending of this.#requests.values()) pending.reject(error);
+    this.#requests.clear();
+    for (const entry of this.#interactions.clear()) this.emit("interactionResolved", { ...this.#interactions.public(entry, this.configStore.get()), reason: "connectionClosed" });
+  }
+
   async stop() {
+    this.#wanted = false;
+    ++this.#generation;
+    clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
+    this.#retryAttempt = 0;
+    this.nextRetryAt = null;
     clearInterval(this.#rolloutTimer);
     this.#rolloutTimer = null;
     this.#observedThreads.clear();
     this.#rollouts.clear();
-    if (!this.#process) return;
-    const child = this.#process;
-    this.#process = null;
+    this.#subscriptions.clear();
+    this.#resetConnectionState();
+    const transport = this.#transport;
+    this.#transport = null;
     this.state = "stopped";
-    this.#paginatedThreads = null;
-    this.#threadListSortMode = null;
-    this.#resumedThreads.clear();
-    this.#resumingThreads.clear();
-    this.#resumeRetryAt.clear();
-    this.#outputLines?.close();
-    this.#outputLines = null;
-    const exited = new Promise((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) return resolve();
-      child.once("exit", resolve);
-    });
-    child.kill("SIGTERM");
-    for (const pending of this.#requests.values()) pending.reject(new RelayError("APP_SERVER_UNAVAILABLE", "App Server 已停止"));
-    this.#requests.clear();
-    this.#serverRequests.clear();
+    this.#rejectRequests(new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已停止"));
+    await transport?.close();
+    await this.#starting?.catch(() => {});
+    this.#connectionConfig = null;
+    this.version = null;
     this.emit("status", this.status());
-    const timeout = new Promise((resolve) => setTimeout(resolve, 3_000));
-    await Promise.race([exited, timeout]);
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 1_000))]);
-    }
   }
 
   request(method, params = {}, timeoutMs = 30_000) {
-    if (!this.#process?.stdin?.writable) {
+    if (!this.#transport?.writable) {
       return Promise.reject(new RelayError("APP_SERVER_UNAVAILABLE", "Codex App Server 未运行"));
     }
     const id = this.#nextId++;
@@ -185,7 +240,8 @@ export class AppServerClient extends EventEmitter {
           reject(error);
         },
       });
-      this.#write({ jsonrpc: "2.0", id, method, params });
+      try { this.#write({ jsonrpc: "2.0", id, method, params }); }
+      catch (error) { const pending = this.#requests.get(id); this.#requests.delete(id); pending?.reject(error); }
     });
   }
 
@@ -391,7 +447,7 @@ export class AppServerClient extends EventEmitter {
     const thread = result?.thread || result;
     // This process's in-memory state is authoritative for its own writers.
     // A foreign notLoaded thread needs the latest Desktop rollout instead.
-    if (thread?.status?.type !== "notLoaded" || this.#resumedThreads.has(thread.id)) return result;
+    if (this.isShared() || thread?.status?.type !== "notLoaded" || this.#resumedThreads.has(thread.id)) return result;
     const snapshot = await this.#rollouts.read(thread);
     if (!snapshot) return result;
     const observed = this.#observedThreads.get(thread.id);
@@ -464,7 +520,7 @@ export class AppServerClient extends EventEmitter {
         this.#resumeRetryAt.delete(id);
       })
       .catch((error) => {
-        if (!isActiveWriterConflict(error)) throw error;
+        if (this.isShared() || !isActiveWriterConflict(error)) throw error;
         // A different Codex client currently owns the thread writer. The
         // persisted read below is still useful. Explicit subscription probes
         // back off for a minute; ordinary reads never enter this path.
@@ -482,7 +538,26 @@ export class AppServerClient extends EventEmitter {
     return pending;
   }
 
+  // Call only after the command router has checked project access. Raw
+  // snapshot/status reads remain side-effect free in both modes.
+  async subscribeThread(threadId) {
+    if (!this.isShared()) return false;
+    const id = normalizeThreadId(threadId);
+    const alreadySubscribed = this.#resumedThreads.has(id);
+    await this.ensureThreadResumed(id);
+    return !alreadySubscribed && this.#resumedThreads.has(id);
+  }
+
   #rememberResumedThread(id) {
+    if (this.isShared()) {
+      this.#subscriptions.delete(id);
+      this.#subscriptions.add(id);
+      while (this.#subscriptions.size > AppServerClient.MAX_RESUMED_THREADS) {
+        const retired = this.#subscriptions.values().next().value;
+        this.#subscriptions.delete(retired);
+        this.request("thread/unsubscribe", { threadId: retired }).catch(() => {});
+      }
+    }
     this.#resumedThreads.delete(id);
     this.#resumedThreads.add(id);
     while (this.#resumedThreads.size > AppServerClient.MAX_RESUMED_THREADS) {
@@ -572,13 +647,16 @@ export class AppServerClient extends EventEmitter {
 
   async resumeThread(threadId) {
     const id = normalizeThreadId(threadId);
+    const transport = this.#transport;
     const result = await this.request("thread/resume", { threadId: id });
+    if (transport !== this.#transport) throw new RelayError("APP_SERVER_UNAVAILABLE", "任务订阅的连接已过期");
     this.#rememberResumedThread(id);
     return result;
   }
 
   async startTurn({ threadId, text, cwd, model, effort }) {
     const id = normalizeThreadId(threadId);
+    if (this.isShared()) await this.ensureThreadResumed(id);
     const params = {
       threadId: id,
       input: [{ type: "text", text }],
@@ -610,22 +688,60 @@ export class AppServerClient extends EventEmitter {
     });
   }
 
-  interruptTurn({ threadId, turnId }) {
-    return this.request("turn/interrupt", { threadId, turnId });
+  async interruptTurn({ threadId, turnId }) {
+    const key = JSON.stringify([threadId, turnId]);
+    if (this.#interrupts.has(key)) return this.#interrupts.get(key);
+    const generation = this.#generation;
+    const execute = async () => {
+      const deadline = Date.now() + (this.options.interruptRetryMs ?? 5000);
+      while (true) {
+        if (generation !== this.#generation || !this.#transport?.writable) throw new RelayError("APP_SERVER_UNAVAILABLE", "停止请求未确认，请恢复连接后检查任务状态");
+        const recent = await this.request("thread/turns/list", { threadId, limit: 2, sortDirection: "desc", itemsView: "notLoaded" }).catch(async error => {
+          if (this.isShared()) throw error;
+          return { data: (await this.readThreadSnapshot(threadId)).thread?.turns || [] };
+        });
+        const turns = recent.data || [];
+        const target = turns.find(turn => turn.id === turnId);
+        if (target && ["completed", "failed", "interrupted"].includes(target.status)) return { threadId, turnId, status: "alreadyFinished", turnStatus: target.status };
+        if (turns.some(turn => turn.id !== turnId && ["inProgress", "in_progress"].includes(turn.status))) throw new RelayError("TURN_CHANGED", "当前轮次已经改变，未中断新的任务");
+        if (!target) {
+          if (Date.now() >= deadline) throw new RelayError("INTERRUPT_NOT_CONFIRMED", "找不到指定轮次，未中断其他任务，请刷新后重试");
+          await new Promise(resolve => setTimeout(resolve, this.options.interruptPollMs ?? 100));
+          continue;
+        }
+        try {
+          await this.request("turn/interrupt", { threadId, turnId });
+          return { threadId, turnId, status: "requested" };
+        } catch (error) {
+          if (error.code !== "APP_SERVER_ERROR" || !/no active turn to interrupt/i.test(error.message)) throw error;
+          if (Date.now() >= deadline) throw new RelayError("INTERRUPT_NOT_CONFIRMED", "尚未确认任务开始执行，停止请求未完成，请刷新后重试");
+          await new Promise(resolve => setTimeout(resolve, this.options.interruptPollMs ?? 100));
+        }
+      }
+    };
+    const pending = execute().finally(() => this.#interrupts.delete(key));
+    this.#interrupts.set(key, pending);
+    return pending;
   }
 
-  respondToApproval(approvalId, decision) {
-    const key = String(approvalId);
-    const request = this.#serverRequests.get(key);
-    if (!request) throw new RelayError("APPROVAL_EXPIRED", "审批请求不存在或已经处理");
-    this.#serverRequests.delete(key);
-    this.#write({ jsonrpc: "2.0", id: request.id, result: { decision } });
-    return { approvalId: String(approvalId), decision };
+  pendingInteractions(threadId) {
+    return [...this.#interactions.entries.values()].filter(entry => entry.params.threadId === threadId).map(entry => this.#interactions.public(entry, this.configStore.get()));
+  }
+  getInteraction(approvalId) { return this.#interactions.get(approvalId); }
+  respondToApproval(approvalId, decision) { return this.#respondToInteraction(approvalId, { decision }, "approval"); }
+  respondToUserInput(approvalId, answers) { return this.#respondToInteraction(approvalId, { answers }, "userInput"); }
+  #respondToInteraction(approvalId, payload, kind) {
+    const entry = this.#interactions.get(approvalId);
+    const result = this.#interactions.validateResponse(entry, payload, kind);
+    this.#write({ jsonrpc: "2.0", id: entry.backendId, result });
+    entry.responding = true;
+    this.emit("approval", this.#interactions.public(entry, this.configStore.get()));
+    return { approvalId, status: "submitted" };
   }
 
   #write(message) {
-    if (!this.#process?.stdin?.writable) throw new RelayError("APP_SERVER_UNAVAILABLE", "Codex App Server 未运行");
-    this.#process.stdin.write(`${JSON.stringify(message)}\n`);
+    if (!this.#transport?.writable) throw new RelayError("APP_SERVER_UNAVAILABLE", "Codex App Server 未运行");
+    this.#transport.send(JSON.stringify(message));
   }
 
   #handleLine(line) {
@@ -645,7 +761,7 @@ export class AppServerClient extends EventEmitter {
       return;
     }
     if (message.id !== undefined && message.method) {
-      if (!AppServerClient.APPROVAL_METHODS.has(message.method)) {
+      if (!this.isShared() && !AppServerClient.APPROVAL_METHODS.has(message.method) && !["tool/requestUserInput", "item/tool/requestUserInput"].includes(message.method)) {
         this.logger.warn("app-server", "拒绝不受支持的 App Server 客户端请求", { method: message.method });
         this.#write({
           jsonrpc: "2.0",
@@ -654,28 +770,34 @@ export class AppServerClient extends EventEmitter {
         });
         return;
       }
-      this.#serverRequests.set(String(message.id), message);
-      this.emit("approval", {
-        approvalId: String(message.id),
-        method: message.method,
-        params: message.params || {},
-      });
+      // Shared requests are broadcast. An observer must not reject a request
+      // another client can answer: the first response resolves it for everyone.
+      if (!message.params?.threadId) return;
+      const entry = this.#interactions.add(message);
+      this.emit("approval", this.#interactions.public(entry, this.configStore.get()));
       return;
     }
+    let resolved = [];
+    if (message.method === "serverRequest/resolved") resolved = this.#interactions.resolve(message.params?.requestId, message.params?.threadId);
+    if (message.method === "turn/completed") resolved = this.#interactions.clearThread(message.params?.threadId, message.params?.turn?.id);
+    if (message.method === "thread/closed" || message.method === "thread/deleted") {
+      this.#resumedThreads.delete(message.params?.threadId);
+      this.#subscriptions.delete(message.params?.threadId);
+      resolved = this.#interactions.clearThread(message.params?.threadId);
+    }
+    for (const entry of resolved) this.emit("interactionResolved", this.#interactions.public(entry, this.configStore.get()));
     if (message.method) this.emit("notification", message.method, message.params || {});
   }
 
-  #handleExit(child, error) {
-    if (this.#process !== child || this.state === "stopped") return;
-    this.#process = null;
-    this.state = "error";
-    this.#resumedThreads.clear();
-    this.#resumingThreads.clear();
-    this.#resumeRetryAt.clear();
+  #handleExit(transport, error) {
+    if (this.#transport !== transport) return;
+    this.#transport = null;
+    this.#resetConnectionState();
     this.lastError = error.message;
-    this.logger.error("app-server", "Codex App Server 不可用", { message: error.message });
-    for (const pending of this.#requests.values()) pending.reject(new RelayError("APP_SERVER_UNAVAILABLE", error.message));
-    this.#requests.clear();
+    this.state = "error";
+    this.#rejectRequests(new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接中断；未确认的命令不会自动重发"));
+    transport.close().catch(() => {});
+    this.#scheduleReconnect();
     this.emit("status", this.status());
   }
 }

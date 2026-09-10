@@ -18,11 +18,17 @@
     "clean": "node scripts/clean.mjs",
     "validate:build": "node scripts/validate-build.mjs",
     "smoke:build": "node scripts/smoke-build.mjs",
+    "smoke:shared": "node scripts/smoke-shared-app-server.mjs",
+    "smoke:interactions": "node scripts/smoke-shared-interactions.mjs",
+    "smoke:desktop": "node scripts/smoke-shared-desktop.mjs",
+    "shared:prepare": "node scripts/prepare-shared-backend.mjs",
     "check": "npm run ui:build && node --check server/*.js scripts/*.mjs && node --test",
     "test": "node --test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.4"
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "smol-toml": "^1.8.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@ant-design/icons-vue": "^7.0.1",

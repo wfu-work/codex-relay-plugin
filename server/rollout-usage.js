@@ -27,12 +27,13 @@ export class RolloutUsage {
   #total = null;
   #turns = new Map();
 
-  start(turn) {
-    this.#turns.set(turn.id, { baseline: this.#total, invalid: false });
+  start(turn, modelContextWindow) {
+    this.#turns.set(turn.id, { baseline: this.#total, invalid: false,
+      modelContextWindow: contextWindow(modelContextWindow) });
     while (this.#turns.size > 12) this.#turns.delete(this.#turns.keys().next().value);
   }
 
-  update(turn, info) {
+  update(turn, info, updatedAt) {
     const total = usage(info?.total_token_usage);
     if (!total) return false;
     const last = usage(info?.last_token_usage);
@@ -50,7 +51,12 @@ export class RolloutUsage {
       state.invalid = true;
     }
     this.#total = total;
-    turn.tokenUsage = { total, ...(last ? { last } : {}) };
+    const limit = info?.model_context_window ?? info?.modelContextWindow;
+    if (limit !== undefined && limit !== null) state.modelContextWindow = contextWindow(limit);
+    turn.tokenUsage = { total, ...(last ? { last } : {}),
+      ...(state.modelContextWindow ? { modelContextWindow: state.modelContextWindow } : {}),
+      ...(turn.tokenUsage?.updatedAt ? { updatedAt: turn.tokenUsage.updatedAt } : {}),
+    };
     if (state.baseline && !state.invalid) {
       const delta = {};
       for (const [key, value] of Object.entries(total)) {
@@ -62,6 +68,16 @@ export class RolloutUsage {
     }
     // A reset or incomplete baseline cannot support an exact per-turn figure.
     if (state.invalid) delete turn.turnUsage;
-    return previous !== JSON.stringify([turn.turnUsage, turn.tokenUsage]);
+    const changed = previous !== JSON.stringify([turn.turnUsage, turn.tokenUsage]);
+    // Preserve sample time across history/live reads. Repeated rate-limit
+    // snapshots do not advance it or generate redundant notifications.
+    if (changed && typeof updatedAt === "string" && Number.isFinite(Date.parse(updatedAt))) {
+      turn.tokenUsage.updatedAt = updatedAt;
+    }
+    return changed;
   }
+}
+
+function contextWindow(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
 }

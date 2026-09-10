@@ -44,7 +44,10 @@ const {
           </div>
         </div>
         <a-divider />
-        <div class="signal-foot"><span><CloudServerOutlined /> App Server</span><strong>{{ appServerLabel.toUpperCase() }}</strong></div>
+        <div class="signal-foot"><span><CloudServerOutlined /> App Server</span><strong>{{ appServerLabel }}</strong></div>
+        <div class="signal-foot"><span>执行方式</span><strong>{{ state.status?.appServer?.connectionMode === 'shared' ? '共享后端' : '插件管理' }}</strong></div>
+        <p v-if="state.status?.appServer?.endpoint" class="field-help" style="overflow-wrap: anywhere">{{ state.status.appServer.endpoint }}</p>
+        <p v-if="state.status?.appServer?.lastError" class="field-help" role="alert">{{ state.status.appServer.lastError }}</p>
       </div>
     </section>
 

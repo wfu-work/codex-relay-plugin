@@ -30,6 +30,8 @@ export const relayState = reactive({
     heartbeatSeconds: 20,
     reconnectMaxSeconds: 30,
     codexExecutable: 'codex',
+    connectionMode: 'managed',
+    appServerEndpoint: '',
     defaultWorkingDirectory: '',
     autoStartAppServer: true,
     readOnly: false,
@@ -90,7 +92,7 @@ export const relayStatusType = computed(() => ({
   disconnecting: 'processing',
   error: 'error',
 }[relayStateValue.value] || 'default'));
-export const appServerLabel = computed(() => relayState.status?.appServer?.state || '—');
+export const appServerLabel = computed(() => ({ ready: '已就绪', starting: '连接中', reconnecting: '等待重连', stopped: '未连接', error: '连接异常' }[relayState.status?.appServer?.state] || '—'));
 export const securityLabel = computed(() => {
   if (relayState.status?.security?.readOnly ?? relayState.form.readOnly) return '只读模式';
   if (relayState.status?.security?.remoteApprovalEnabled ?? relayState.form.permissions.respondToApprovals) return '远程审批已启用';
@@ -198,6 +200,8 @@ function applyConfig(config) {
   relayState.form.codexExecutable = config.codex?.executable || 'codex';
   relayState.form.defaultWorkingDirectory = config.codex?.defaultWorkingDirectory || '';
   relayState.form.autoStartAppServer = Boolean(config.codex?.autoStartAppServer);
+  relayState.form.connectionMode = config.codex?.connectionMode || 'managed';
+  relayState.form.appServerEndpoint = config.codex?.appServerEndpoint || '';
   relayState.form.readOnly = Boolean(config.readOnly);
   relayState.form.allowedProjects = (config.allowedProjects || []).join('\n');
   for (const name of permissionNames) relayState.form.permissions[name] = Boolean(config.permissions?.[name]);
@@ -229,6 +233,8 @@ function collectConfig() {
       executable: relayState.form.codexExecutable.trim() || 'codex',
       defaultWorkingDirectory: relayState.form.defaultWorkingDirectory.trim(),
       autoStartAppServer: relayState.form.autoStartAppServer,
+      connectionMode: relayState.form.connectionMode,
+      appServerEndpoint: relayState.form.appServerEndpoint.trim(),
     },
     permissions: { ...relayState.form.permissions },
     readOnly: relayState.form.readOnly,

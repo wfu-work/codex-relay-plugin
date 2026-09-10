@@ -8759,8 +8759,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260910121437",
-      buildId: "1.0.0+codex.20260910121437:1789042490889",
+      version: "1.0.0+codex.20260910122138",
+      buildId: "1.0.0+codex.20260910122138:1789042911596",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);

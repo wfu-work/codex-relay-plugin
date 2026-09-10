@@ -13,6 +13,10 @@ const event = (payload) => row("event_msg", payload);
 const start = (turnId) => event({ type: "task_started", turn_id: turnId, started_at: 100 });
 const item = (text, turnId = "current", itemId = "answer") => event({ type: "item_completed", thread_id: id,
   turn_id: turnId, item: { type: "AgentMessage", id: itemId, content: [{ type: "Text", text }], phase: "commentary" } });
+const tokens = (input, output, cached = 0) => ({ input_tokens: input, output_tokens: output,
+  total_tokens: input + output, cached_input_tokens: cached });
+const tokenEvent = (total, last, extra = {}) => event({ type: "token_count",
+  info: { total_token_usage: total, last_token_usage: last }, ...extra });
 
 async function fixture(t) {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "recodex-rollout-")));
@@ -115,4 +119,73 @@ test("status and full reads use the same current turn without resuming a writer"
   });
   await fs.appendFile(newFile, item("incremental", "current", "next"));
   assert.equal((await nextItem).item.text, "incremental");
+});
+
+test("restores each answer's usage using cumulative differences, including cached input", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("first") + item("one", "first")
+    + tokenEvent(tokens(100, 10, 80), tokens(100, 10, 80))
+    + tokenEvent(tokens(100, 10, 80), tokens(100, 10, 80))
+    + tokenEvent(tokens(250, 30, 160), tokens(150, 20, 80))
+    + event({ type: "task_complete", turn_id: "first" })
+    + start("second") + item("two", "second")
+    + tokenEvent(tokens(450, 50, 260), tokens(200, 20, 100))
+    + event({ type: "task_complete", turn_id: "second" }));
+  const snapshot = await reader.read(thread);
+  const turns = applyRolloutSnapshot(thread, snapshot, { includeTurns: true }).turns;
+  assert.deepEqual(turns[0].turnUsage, { inputTokens: 250, outputTokens: 30, totalTokens: 280, cachedInputTokens: 160 });
+  assert.deepEqual(turns[1].turnUsage, { inputTokens: 200, outputTokens: 20, totalTokens: 220, cachedInputTokens: 100 });
+  assert.equal(turns[1].tokenUsage.total.totalTokens, 500);
+  assert.deepEqual(snapshot.notifications, []);
+});
+
+test("live usage notifications and terminal/history snapshots carry the same turn usage", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("current"));
+  await reader.read(thread);
+  const update = tokenEvent(tokens(100, 10, 70), tokens(100, 10, 70));
+  await fs.appendFile(oldFile, update + update + event({ type: "token_count", info: null }));
+  const snapshot = await reader.read(thread);
+  assert.equal(snapshot.notifications.length, 1);
+  const [method, params] = snapshot.notifications[0];
+  assert.equal(method, "thread/tokenUsage/updated");
+  assert.equal(params.threadId, id);
+  assert.equal(params.turnId, "current");
+  assert.equal(params.turnUsage.totalTokens, 110);
+  await fs.appendFile(oldFile, event({ type: "task_complete", turn_id: "current" }));
+  const completed = await reader.read(thread);
+  assert.deepEqual(completed.notifications[0][1].turn.turnUsage, params.turnUsage);
+  assert.deepEqual(completed.currentTurn.turnUsage, params.turnUsage);
+  assert.equal((await reader.read(thread)).notifications.length, 0);
+});
+
+test("missing/inherited baselines and counter resets never claim an exact turn total", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("inherited")
+    + tokenEvent(tokens(10000, 100), tokens(100, 10)));
+  let snapshot = await reader.read(thread);
+  assert.equal(snapshot.currentTurn.turnUsage, undefined);
+  assert.equal(snapshot.currentTurn.tokenUsage.total.totalTokens, 10100);
+  await fs.appendFile(oldFile, event({ type: "task_complete", turn_id: "inherited" }) + start("reset")
+    + tokenEvent(tokens(10100, 120), tokens(100, 20))
+    + tokenEvent(tokens(50, 5), tokens(50, 5)));
+  snapshot = await reader.read(thread);
+  assert.equal(snapshot.currentTurn.turnUsage, undefined);
+  assert.equal(snapshot.currentTurn.tokenUsage.total.totalTokens, 55);
+  await fs.appendFile(oldFile, event({ type: "task_complete", turn_id: "reset" }) + start("next")
+    + tokenEvent(tokens(150, 15), tokens(100, 10)));
+  assert.equal((await reader.read(thread)).currentTurn.turnUsage.totalTokens, 110);
+});
+
+test("ignores invalid and unrelated usage, and does not reuse accounting after file rollover", async (t) => {
+  const { reader, thread, oldFile, newFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("current")
+    + tokenEvent(tokens(100, 10), tokens(100, 10), { thread_id: retry })
+    + tokenEvent(tokens(100, 10), tokens(100, 10), { turn_id: "missing" })
+    + tokenEvent(tokens(-10, 20), tokens(-10, 20)));
+  assert.equal((await reader.read(thread)).currentTurn.tokenUsage, undefined);
+  await fs.appendFile(oldFile, tokenEvent(tokens(1000, 100), tokens(1000, 100)));
+  assert.equal((await reader.read(thread)).currentTurn.turnUsage.totalTokens, 1100);
+  await fs.writeFile(newFile, header + start("retry") + tokenEvent(tokens(20, 2), tokens(20, 2)));
+  assert.equal((await reader.read(thread)).currentTurn.turnUsage.totalTokens, 22);
 });

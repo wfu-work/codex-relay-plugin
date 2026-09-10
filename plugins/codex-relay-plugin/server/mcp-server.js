@@ -16149,6 +16149,66 @@ function duration3(value) {
   return value && Number.isFinite(value.secs) ? Math.round(value.secs * 1e3 + (value.nanos || 0) / 1e6) : null;
 }
 
+// server/rollout-usage.js
+var FIELDS = {
+  inputTokens: "input_tokens",
+  outputTokens: "output_tokens",
+  totalTokens: "total_tokens",
+  cachedInputTokens: "cached_input_tokens",
+  reasoningOutputTokens: "reasoning_output_tokens"
+};
+var REQUIRED = ["inputTokens", "outputTokens", "totalTokens"];
+function usage(value) {
+  if (!value || typeof value !== "object") return null;
+  const result = {};
+  for (const [key, snake] of Object.entries(FIELDS)) {
+    const count = value[snake] ?? value[key];
+    if (count === void 0 && !REQUIRED.includes(key)) continue;
+    if (!Number.isSafeInteger(count) || count < 0) return null;
+    result[key] = count;
+  }
+  return result;
+}
+var RolloutUsage = class {
+  #total = null;
+  #turns = /* @__PURE__ */ new Map();
+  start(turn) {
+    this.#turns.set(turn.id, { baseline: this.#total, invalid: false });
+    while (this.#turns.size > 12) this.#turns.delete(this.#turns.keys().next().value);
+  }
+  update(turn, info) {
+    const total = usage(info?.total_token_usage);
+    if (!total) return false;
+    const last = usage(info?.last_token_usage);
+    if (!turn) {
+      this.#total = total;
+      return false;
+    }
+    const state = this.#turns.get(turn.id);
+    if (!state) return false;
+    const previous = JSON.stringify([turn.turnUsage, turn.tokenUsage]);
+    if (!state.baseline && !state.invalid && last && REQUIRED.every((key) => total[key] === last[key])) {
+      state.baseline = Object.fromEntries(Object.keys(total).map((key) => [key, 0]));
+    }
+    if (this.#total && REQUIRED.some((key) => total[key] < this.#total[key])) {
+      state.invalid = true;
+    }
+    this.#total = total;
+    turn.tokenUsage = { total, ...last ? { last } : {} };
+    if (state.baseline && !state.invalid) {
+      const delta = {};
+      for (const [key, value] of Object.entries(total)) {
+        const baseline = state.baseline[key];
+        if (baseline !== void 0 && value >= baseline) delta[key] = value - baseline;
+      }
+      if (REQUIRED.every((key) => delta[key] !== void 0)) turn.turnUsage = delta;
+      else state.invalid = true;
+    }
+    if (state.invalid) delete turn.turnUsage;
+    return previous !== JSON.stringify([turn.turnUsage, turn.tokenUsage]);
+  }
+};
+
 // server/rollout-snapshot.js
 var UUID = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 var JOURNAL = new RegExp(`^rollout-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-(${UUID})(?:_${UUID})?\\.jsonl$`, "i");
@@ -16230,7 +16290,8 @@ var RolloutSnapshots = class {
             current: null,
             itemCount: 0,
             updatedAt: meta2.timestamp,
-            complete: true
+            complete: true,
+            usage: new RolloutUsage()
           };
         }
         const notifications = [];
@@ -16300,10 +16361,23 @@ function projectRow(record2, row, notifications, threadId) {
     };
     record2.turns.push(turn);
     record2.current = turn;
+    record2.usage.start(turn);
     if (record2.turns.length > 12) {
       record2.itemCount -= record2.turns.shift().items.length;
     }
     notifications.push(["turn/started", { threadId, turn: { ...turn, items: [] } }]);
+  } else if (event.type === "token_count") {
+    const turn = event.turn_id ? record2.turns.find((turn2) => turn2.id === event.turn_id) : record2.current;
+    if (event.turn_id && !turn) return;
+    if (!event.turn_id && record2.turns.filter((turn2) => turn2.status === "inProgress").length > 1) return;
+    if (record2.usage.update(turn, event.info) && turn) {
+      notifications.push(["thread/tokenUsage/updated", {
+        threadId,
+        turnId: turn.id,
+        tokenUsage: turn.tokenUsage,
+        ...turn.turnUsage ? { turnUsage: turn.turnUsage } : {}
+      }]);
+    }
   } else if (event.type === "item_completed" || event.type === "item_started" || event.type === "item_updated") {
     const turn = record2.turns.find((turn2) => turn2.id === event.turn_id);
     const item = rolloutItem(event.item);
@@ -19895,8 +19969,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260909130410",
-      buildId: "1.0.0+codex.20260909130410:1788959061710",
+      version: "1.0.0+codex.20260910063917",
+      buildId: "1.0.0+codex.20260910063917:1789022371758",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -20041,7 +20115,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260909130410:1788959061710";
+  const expectedBuild = "1.0.0+codex.20260910063917:1789022371758";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

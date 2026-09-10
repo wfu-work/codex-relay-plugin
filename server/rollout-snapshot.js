@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { rolloutItem } from "./rollout-items.js";
+import { RolloutUsage } from "./rollout-usage.js";
 
 const UUID = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const JOURNAL = new RegExp(`^rollout-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-(${UUID})(?:_${UUID})?\\.jsonl$`, "i");
@@ -86,7 +87,7 @@ export class RolloutSnapshots {
           // complete replacement if we cannot read the new attempt in full.
           if (stat.size > MAX_READ_BYTES) return null;
           record = { file, cwd: path.resolve(thread.cwd), ino: stat.ino, offset: 0, remainder: Buffer.alloc(0), turns: [], current: null,
-            itemCount: 0, updatedAt: meta.timestamp, complete: true };
+            itemCount: 0, updatedAt: meta.timestamp, complete: true, usage: new RolloutUsage() };
         }
         const notifications = [];
         if (stat.size - record.offset > MAX_READ_BYTES) return null;
@@ -135,10 +136,22 @@ function projectRow(record, row, notifications, threadId) {
       completedAt: null, durationMs: null, items: [] };
     record.turns.push(turn);
     record.current = turn;
+    record.usage.start(turn);
     if (record.turns.length > 12) {
       record.itemCount -= record.turns.shift().items.length;
     }
     notifications.push(["turn/started", { threadId, turn: { ...turn, items: [] } }]);
+  } else if (event.type === "token_count") {
+    const turn = event.turn_id ? record.turns.find((turn) => turn.id === event.turn_id) : record.current;
+    if (event.turn_id && !turn) return;
+    // Unscoped counters cannot be attributed while two turns overlap.
+    if (!event.turn_id && record.turns.filter((turn) => turn.status === "inProgress").length > 1) return;
+    if (record.usage.update(turn, event.info) && turn) {
+      notifications.push(["thread/tokenUsage/updated", {
+        threadId, turnId: turn.id, tokenUsage: turn.tokenUsage,
+        ...(turn.turnUsage ? { turnUsage: turn.turnUsage } : {}),
+      }]);
+    }
   } else if (event.type === "item_completed" || event.type === "item_started" || event.type === "item_updated") {
     const turn = record.turns.find((turn) => turn.id === event.turn_id);
     const item = rolloutItem(event.item);

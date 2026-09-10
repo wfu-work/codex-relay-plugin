@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { PLUGIN_ROOT } from "./utils.js";
+import { EnvironmentService } from "./environment-service.js";
+import { MigrationPreparation } from "./migration-preparation.js";
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -39,6 +41,8 @@ export class DashboardServer {
     this.uiRoot = path.join(PLUGIN_ROOT, "ui");
     this.#listenPort = options.port ?? configuredDashboardPort();
     this.#sessionFile = path.join(service.configStore.configDir, "dashboard-session.json");
+    this.environment = options.environment || new EnvironmentService(service);
+    this.preparation = options.preparation || new MigrationPreparation(this.environment.service ? this.environment : { service });
   }
 
   async start() {
@@ -124,6 +128,39 @@ export class DashboardServer {
   }
 
   async #api(request, response, url) {
+    if (url.pathname.startsWith("/api/environment/migration/")) {
+      try {
+        if (request.method === "GET" && url.pathname === "/api/environment/migration/status") return this.#json(response, 200, await this.preparation.status());
+        if (request.method === "POST" && ["/api/environment/migration/check", "/api/environment/migration/prepare", "/api/environment/migration/verify-desktop"].includes(url.pathname)) {
+          const body = await this.#body(request);
+          return this.#json(response, 202, await this.preparation.start(url.pathname.split("/").at(-1), body.requestId));
+        }
+        if (request.method === "POST" && url.pathname === "/api/environment/migration/cancel") {
+          const body = await this.#body(request);
+          return this.#json(response, 200, await this.preparation.cancel(body.id));
+        }
+        if (request.method === "POST" && url.pathname === "/api/environment/migration/activate") return this.#json(response, 409, { error: { code: "MIGRATION_NOT_READY", message: "请先完成桌面工具兼容性验收，当前准备包不能正式切换" } });
+      } catch (error) {
+        const known = ["INVALID_JOB", "MIGRATION_BUSY"].includes(error.code);
+        return this.#json(response, known ? error.code === "INVALID_JOB" ? 400 : 409 : 500, { error: { code: known ? error.code : "PREPARATION_FAILED", message: known ? error.message : "无法读取或提交迁移准备，请刷新后重试" } });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/environment") {
+      return this.#json(response, 200, await this.environment.inspect());
+    }
+    if (request.method === "POST" && url.pathname === "/api/environment/check") {
+      return this.#json(response, 200, await this.environment.inspect(true));
+    }
+    if (request.method === "POST" && url.pathname === "/api/environment/repair-executable") {
+      try {
+        const body = await this.#body(request);
+        const result = await this.environment.repairExecutable({ configured: body.configured, candidate: body.candidate });
+        return this.#json(response, 200, result);
+      } catch (error) {
+        const known = ["ENVIRONMENT_BUSY", "ENVIRONMENT_CHANGED", "REPAIR_NOT_AVAILABLE"].includes(error.code);
+        return this.#json(response, known ? 409 : 500, { error: { code: known ? error.code : "ENVIRONMENT_REPAIR_FAILED", message: known ? error.message : "执行路径修复失败，请重新检查环境" } });
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/config") {
       return this.#json(response, 200, await this.service.configStore.publicConfig({ includeToken: true }));
     }

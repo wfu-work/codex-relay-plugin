@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   DashboardOutlined,
+  DesktopOutlined,
   FileSearchOutlined,
   LinkOutlined,
   LockOutlined,
@@ -30,6 +31,7 @@ const {
 
 const navItems = [
   { to: '/overview', label: '总览', icon: DashboardOutlined },
+  { to: '/environment', label: '运行环境', icon: DesktopOutlined },
   { to: '/connection', label: '连接设置', icon: LinkOutlined },
   { to: '/permissions', label: '远程权限', icon: SafetyCertificateOutlined },
   { to: '/advanced', label: '高级设置', icon: SettingOutlined },
@@ -59,7 +61,7 @@ onBeforeUnmount(stop);
         <div class="sider-label">控制台</div>
         <nav class="side-nav" aria-label="控制台页面">
           <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" @click="closeMobileNav">
-            <component :is="item.icon" />
+            <component :is="item.icon" aria-hidden="true" />
             <span class="nav-label">{{ item.label }}</span>
           </RouterLink>
         </nav>

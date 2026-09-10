@@ -15,6 +15,7 @@ const expectedFiles = [
   "server/dashboard-cli.js",
   "server/agent-cli.js",
   "server/shared-backend-cli.js",
+  "server/migration-cli.js",
   "ui/index.html",
   "schemas/relay-protocol.schema.json",
   "skills/relay-management/SKILL.md",
@@ -41,7 +42,7 @@ if (marketplacePlugin?.source?.source !== "local" || marketplacePlugin.source.pa
   throw new Error("marketplace.json 没有指向生产插件目录");
 }
 
-for (const relativeFile of ["server/mcp-server.js", "server/dashboard-cli.js", "server/agent-cli.js", "server/shared-backend-cli.js"]) {
+for (const relativeFile of ["server/mcp-server.js", "server/dashboard-cli.js", "server/agent-cli.js", "server/shared-backend-cli.js", "server/migration-cli.js"]) {
   const file = path.join(outputRoot, relativeFile);
   const result = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
   if (result.status !== 0) {

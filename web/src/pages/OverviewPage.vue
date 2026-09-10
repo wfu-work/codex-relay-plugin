@@ -1,6 +1,7 @@
 <script setup>
 import { ApiOutlined, CloudServerOutlined, ExclamationCircleFilled } from '@ant-design/icons-vue';
 import { useRelay } from '../stores/relay.js';
+import EnvironmentSummary from '../components/EnvironmentSummary.vue';
 
 const {
   state,
@@ -25,7 +26,7 @@ const {
         <p>连接本机 Codex 与你的 Relay 连接空间。会话事件实时同步，远程写操作始终受本机权限策略保护。</p>
         <div class="hero-actions">
           <a-button type="primary" size="large" :loading="state.loading.connect" :disabled="connectionBusy || ['connected', 'connecting', 'authenticating', 'disconnecting'].includes(relayStateValue)" @click="runConnection('connect', 'Relay 已连接')"><ApiOutlined />连接 Relay</a-button>
-          <a-button size="large" :loading="state.loading.test" :disabled="connectionBusy || ['connecting', 'authenticating', 'reconnecting', 'disconnecting'].includes(relayStateValue)" @click="runConnection('test', 'Relay 握手和认证通过')">测试连接</a-button>
+          <a-button size="large" :loading="state.loading.test" :disabled="connectionBusy || ['connecting', 'authenticating', 'reconnecting', 'disconnecting'].includes(relayStateValue)" @click="runConnection('test', 'Relay 网络与认证通过；执行后端请查看运行环境')">测试 Relay 网络</a-button>
           <a-button type="text" size="large" :disabled="connectionBusy || relayStateValue === 'disconnected'" :loading="state.loading.disconnect" @click="runConnection('disconnect', 'Relay 已断开')">断开</a-button>
         </div>
         <div v-if="relayStateValue === 'error' && relayErrorHint" class="connection-alert" role="alert">
@@ -58,7 +59,9 @@ const {
       <div><span>连接凭据</span><strong>{{ configReady ? '已就绪' : '待配置' }}</strong><small>{{ state.status?.security?.endpointGrantConfigured ? '已保存令牌与自动续期凭证' : state.status?.security?.tokenConfigured ? '已保存连接令牌，建议补充自动续期凭证' : '尚未保存连接凭据' }}</small></div>
     </section>
 
-    <section class="overview-next">
+    <EnvironmentSummary />
+
+    <section v-if="!configReady" class="overview-next">
       <div><span>初次使用</span><strong>先完成 Relay 地址与凭据配置</strong><p>配置保存后返回总览测试连接；远程写操作仍需在权限页单独开启。</p></div>
       <RouterLink to="/connection">前往连接设置 <span aria-hidden="true">→</span></RouterLink>
     </section>

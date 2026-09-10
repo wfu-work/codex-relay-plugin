@@ -44,7 +44,7 @@ async function saveAndTest() {
   }
   const saved = await saveConfig();
   if (!saved) return;
-  const tested = await runConnection('test', '连接测试通过');
+  const tested = await runConnection('test', 'Relay 网络与认证通过；执行后端请查看运行环境');
   if (tested) showEditor.value = false;
 }
 
@@ -91,7 +91,7 @@ async function cancelEditing() {
         <div><span>连接令牌</span><strong class="masked-value">•••• {{ tokenTail }}</strong><em>已安全保存</em></div>
       </div>
       <div class="setup-summary-actions">
-        <a-button type="primary" :loading="state.loading.test" :disabled="connectionBusy || ['connecting', 'authenticating', 'reconnecting', 'disconnecting'].includes(relayStateValue)" @click="runConnection('test', '连接测试通过')"><WifiOutlined />测试连接</a-button>
+        <a-button type="primary" :loading="state.loading.test" :disabled="connectionBusy || ['connecting', 'authenticating', 'reconnecting', 'disconnecting'].includes(relayStateValue)" @click="runConnection('test', 'Relay 网络与认证通过；执行后端请查看运行环境')"><WifiOutlined />测试 Relay 网络</a-button>
         <a-button :disabled="connectionBusy" @click="showEditor = true"><EditOutlined />修改连接信息</a-button>
       </div>
     </a-card>
@@ -190,7 +190,7 @@ async function cancelEditing() {
           <div class="setup-form-actions">
             <a-button v-if="configReady" aria-label="取消编辑" :disabled="connectionBusy" @click="cancelEditing">取消</a-button>
             <a-button html-type="button" :loading="state.loading.save" :disabled="connectionBusy" @click="saveConfig">仅保存</a-button>
-            <a-button html-type="submit" type="primary" :loading="state.loading.save || state.loading.test" :disabled="connectionBusy"><WifiOutlined />保存并测试连接</a-button>
+            <a-button html-type="submit" type="primary" :loading="state.loading.save || state.loading.test" :disabled="connectionBusy"><WifiOutlined />保存并测试 Relay 网络</a-button>
           </div>
         </div>
       </a-form>
@@ -204,7 +204,7 @@ async function cancelEditing() {
       </div>
       <div class="guidance-list">
         <div><i></i><p><strong>1. 先确认接入端身份</strong><span>在 Relay 控制台找到目标接入端，复制它的接入端 ID，并使用同一个接入端签发连接令牌。</span></p></div>
-        <div><i></i><p><strong>2. 回到这里保存并测试</strong><span>点击“保存并测试连接”，成功后总览页会显示已连接状态。</span></p></div>
+        <div><i></i><p><strong>2. 回到这里保存并测试</strong><span>点击“保存并测试 Relay 网络”，验证网络与认证；持续连接和执行后端状态请查看总览与运行环境。</span></p></div>
         <div><i></i><p><strong>3. 令牌无效先核对接入端</strong><span>接入端 ID、空间 ID、接入端类型和连接令牌必须匹配；重新签发时仍选择同一个网关接入端。</span></p></div>
       </div>
     </section>

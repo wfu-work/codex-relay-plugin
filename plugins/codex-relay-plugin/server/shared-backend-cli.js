@@ -4752,8 +4752,8 @@ async function readJson(file, fallback) {
 var digest = async (file) => createHash("sha256").update(await fs3.readFile(file)).digest("hex");
 async function checkCompatibility(manifest) {
   const [{ stdout: desktop }, { stdout: cli }, binaryHash] = await Promise.all([
-    exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path4.join(manifest.desktopApp, "Contents/Info.plist")]),
-    exec(manifest.binary, ["--version"]),
+    exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path4.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5e3, maxBuffer: 4096 }),
+    exec(manifest.binary, ["--version"], { timeout: 5e3, maxBuffer: 4096 }),
     digest(manifest.binary)
   ]);
   if (desktop.trim() !== manifest.desktopVersion || cli.trim() !== manifest.cliVersion || binaryHash !== manifest.binaryHash) {
@@ -4949,6 +4949,7 @@ async function bootout(manifest) {
   }
 }
 async function activate(manifest) {
+  if (manifest.activationBlocked) throw new Error("\u6B64\u51C6\u5907\u5305\u5C1A\u672A\u901A\u8FC7\u684C\u9762\u5DE5\u5177\u517C\u5BB9\u6027\u9A8C\u8BC1\uFF0C\u4E0D\u80FD\u542F\u7528\u5171\u4EAB\u540E\u7AEF\u3002\u8BF7\u5148\u89E3\u51B3\u63A7\u5236\u53F0\u4E2D\u7684\u5207\u6362\u963B\u585E");
   const activationFile = path4.join(manifest.root, "activation.json");
   if (await readJson(activationFile, null)) throw new Error("\u5DF2\u6709\u5207\u6362\u8BB0\u5F55\uFF1B\u8BF7\u5148\u68C0\u67E5\u72B6\u6001\u6216\u6267\u884C rollback");
   await checkCompatibility(manifest);

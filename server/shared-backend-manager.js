@@ -33,8 +33,8 @@ export async function readJson(file, fallback) {
 export const digest = async file => createHash("sha256").update(await fs.readFile(file)).digest("hex");
 export async function checkCompatibility(manifest) {
   const [{ stdout: desktop }, { stdout: cli }, binaryHash] = await Promise.all([
-    exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(manifest.desktopApp, "Contents/Info.plist")]),
-    exec(manifest.binary, ["--version"]), digest(manifest.binary),
+    exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5000, maxBuffer: 4096 }),
+    exec(manifest.binary, ["--version"], { timeout: 5000, maxBuffer: 4096 }), digest(manifest.binary),
   ]);
   if (desktop.trim() !== manifest.desktopVersion || cli.trim() !== manifest.cliVersion || binaryHash !== manifest.binaryHash) {
     throw new Error("桌面或 CLI 已更新，共享启动已暂停；请重新验证兼容版本后生成启动包");
@@ -203,6 +203,7 @@ async function bootout(manifest) {
   }
 }
 export async function activate(manifest) {
+  if (manifest.activationBlocked) throw new Error("此准备包尚未通过桌面工具兼容性验证，不能启用共享后端。请先解决控制台中的切换阻塞");
   const activationFile = path.join(manifest.root, "activation.json");
   if (await readJson(activationFile, null)) throw new Error("已有切换记录；请先检查状态或执行 rollback");
   await checkCompatibility(manifest);

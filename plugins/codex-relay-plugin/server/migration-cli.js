@@ -6543,8 +6543,8 @@ var EnvironmentService = class {
       if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path13.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
     }
     const lastToolFailure = migration.last?.failedPhase === "verifying_shared_runtime" && /工具|签名|signing|pipe/i.test(migration.last.error || "");
-    const runningVersion = "1.0.0+codex.20260911144740";
-    const runningBuild = "1.0.0+codex.20260911144740:1789138075046";
+    const runningVersion = "1.0.0+codex.20260911153605";
+    const runningBuild = "1.0.0+codex.20260911153605:1789140978380";
     const diskBundle = runningBuild ? await fs9.readFile(path13.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && p.kind === "backend");

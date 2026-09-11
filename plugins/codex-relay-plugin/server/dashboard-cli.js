@@ -9690,8 +9690,8 @@ var EnvironmentService = class {
       if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path18.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
     }
     const lastToolFailure = migration.last?.failedPhase === "verifying_shared_runtime" && /工具|签名|signing|pipe/i.test(migration.last.error || "");
-    const runningVersion = "1.0.0+codex.20260911144740";
-    const runningBuild = "1.0.0+codex.20260911144740:1789138075046";
+    const runningVersion = "1.0.0+codex.20260911153605";
+    const runningBuild = "1.0.0+codex.20260911153605:1789140978380";
     const diskBundle = runningBuild ? await fs14.readFile(path18.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && p.kind === "backend");
@@ -10274,8 +10274,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260911144740",
-      buildId: "1.0.0+codex.20260911144740:1789138075046",
+      version: "1.0.0+codex.20260911153605",
+      buildId: "1.0.0+codex.20260911153605:1789140978380",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -10435,7 +10435,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260911144740:1789138075046";
+  const expectedBuild = "1.0.0+codex.20260911153605:1789140978380";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

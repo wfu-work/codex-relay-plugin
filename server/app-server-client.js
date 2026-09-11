@@ -6,6 +6,7 @@ import { SharedAppServerTransport, StdioAppServerTransport, parseAppServerEndpoi
 import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
+import { DesktopProjectPins } from "./desktop-project-pins.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +35,7 @@ export class AppServerClient extends EventEmitter {
   #threadSettings = new Map();
   #settingsRevision = 0;
   #rollouts = new RolloutSnapshots();
+  #projectPins;
   #observedThreads = new Map();
   #rolloutTimer = null;
   #pollingRollouts = false;
@@ -47,6 +49,7 @@ export class AppServerClient extends EventEmitter {
   constructor(configStore, logger, options = {}) {
     super();
     this.options = options;
+    this.#projectPins = new DesktopProjectPins({ codexHome: options.codexHome });
     this.configStore = configStore;
     this.logger = logger;
     this.state = "stopped";
@@ -380,7 +383,7 @@ export class AppServerClient extends EventEmitter {
       limit,
     });
 
-    if (params.cursor != null) return requestPage(params.cursor);
+    if (params.cursor != null) return this.#projectPins.enrich(await requestPage(params.cursor));
 
     const first = await requestPage(null);
     if (!first || !Array.isArray(first.data)) return first;
@@ -401,11 +404,11 @@ export class AppServerClient extends EventEmitter {
         : null;
       cursor = !nextCursor || nextCursor === cursor ? null : nextCursor;
     }
-    return {
+    return this.#projectPins.enrich({
       ...first,
       data: sortProjectList(dedupeProjectList(data)),
       nextCursor: null,
-    };
+    });
   }
 
   async readThread(threadId) {
@@ -691,12 +694,12 @@ export class AppServerClient extends EventEmitter {
     return { threadId: id, threadSettings: this.threadSettings(id) };
   }
 
-  async startTurn({ threadId, text, cwd, model, effort }) {
+  async startTurn({ threadId, text, cwd, model, effort, images = [] }) {
     const id = normalizeThreadId(threadId);
     if (this.isShared()) await this.ensureThreadResumed(id);
     const params = {
       threadId: id,
-      input: [{ type: "text", text }],
+      input: [...(text ? [{ type: "text", text }] : []), ...images],
       ...(cwd ? { cwd } : {}),
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),

@@ -11,6 +11,7 @@ import { Logger } from "./logger.js";
 import { eventEnvelope, extractContext, normalizeCodexNotification } from "./protocol.js";
 import { RelayClient } from "./relay-client.js";
 import { prepareEventImages } from "./resource-images.js";
+import { IMAGE_INPUT_LIMITS } from "./image-uploads.js";
 import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
 import { inspectRemoteControl, installOfficialStandalone, runRemoteControl } from "./remote-control.js";
 
@@ -269,6 +270,7 @@ export class ConnectorService extends EventEmitter {
       },
       relay: this.relay.status(),
       appServer: this.appServer.status(),
+      capabilities: { imageAttachments: !config.readOnly && config.permissions.sendMessages ? IMAGE_INPUT_LIMITS : null },
       eventStreamId: this.eventStreamId,
       space: {
         spaceId: relaySpaceId(config.relay),
@@ -340,6 +342,7 @@ export class ConnectorService extends EventEmitter {
       }
     }, new WeakSet(), {
       allowedRoots: [
+        this.router?.images?.directory,
         ...(Array.isArray(config.allowedProjects) ? config.allowedProjects : []),
         config.codex?.defaultWorkingDirectory,
       ],

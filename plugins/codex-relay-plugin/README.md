@@ -17,6 +17,7 @@
 - Codex App Server 客户端：插件管理的 stdio 进程，或连接已有的本机 WebSocket / Unix Socket 共享后端
 - App Server 通知实时转换为 Relay 事件，并提供 1000 条内存重放缓冲
 - 图片事件采用“缩略图 + 短期受控资源 URL”：原图通过认证数据通道上传到 Relay，移动端点击预览时再按过期时间读取
+- 图片输入：客户端通过 `image.upload.begin/append/finish/remove` 分块上传，`turn.start.attachmentIds` 引用已完成附件，转为 App Server 原生 `localImage` 输入；支持纯图片提问，最多 4 张、每张 6 MB
 - 远程命令权限、只读总开关、项目路径白名单、请求幂等、时间戳和目标设备校验
 - 公网 Relay 强制 `wss://`；`ws://` 仅允许 `localhost` / 回环地址
 - 本地控制台固定监听 `127.0.0.1:3210`，首次配对使用只放在 URL fragment 中的随机 Bearer key，随后换成本机 `HttpOnly` 会话 Cookie
@@ -26,6 +27,8 @@
 - 官方 Remote Control 探测与受控操作：支持检测 standalone 安装、启动/停止 daemon、生成短时配对码；未获得官方端点时提供安全的桌面桥接探测
 
 ## 架构
+
+图片输入能力由 `capabilities.imageAttachments` 发布。分块最多 96 KiB，上传具备 SHA-256 校验、接入端归属和项目/任务绑定，不接受客户端指定的电脑路径或任意下载 URL。此能力复用 `sendMessages` 权限并遵循只读限制。图片保存在插件数据目录的 `image-uploads` 下，未发送的上传在下次上传时清理超过 24 小时的记录，待发送总量最多 32 张 / 96 MiB。已提交给 Codex 的图片保留供桌面和历史记录读取，不随临时上传清理。插件更新不会搬迁用户配置或会话数据。
 
 ```text
 Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server (stdio)
@@ -379,7 +382,11 @@ Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 
 
 `thread.list` 默认按官方侧栏使用的 `recency_at` 降序返回；不支持该字段的旧版
 App Server 会自动回退到 `updated_at`。`project.list` 返回官方项目的稳定 ID、根目录
-和 `position`，Relay 会按项目白名单过滤后再转发。
+和 `position`，Relay 会按项目白名单过滤后再转发。Relay 还会只读同一 `CODEX_HOME`
+下 `.codex-global-state.json` 的 `pinned-project-ids`，为项目补充 `isPinned` 和
+`pinnedPosition`（未置顶为 `null`），供客户端按桌面置顶顺序分组。每次请求项目列表
+都会重新读取；桌面置顶或取消置顶后，客户端刷新即可同步。首次读取不到桌面状态时
+按未置顶展示，临时读取失败时保留上次有效状态，不会修改桌面偏好。
 
 审批 `decision` 仅允许 `accept`、`acceptForSession`、`decline`、`cancel`。远程审批默认关闭。
 

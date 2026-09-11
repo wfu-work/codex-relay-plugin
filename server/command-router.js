@@ -4,6 +4,7 @@ import { commandError, commandResult, validateRelayCommand } from "./protocol.js
 import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
 import { CommandJournal } from "./command-journal.js";
 import { composerSettingsPatch } from "./composer-settings.js";
+import { ImageUploads } from "./image-uploads.js";
 
 // A thread can contain unbounded command output. Returning that complete
 // history through a Relay frame can exceed the authenticated connection's
@@ -30,6 +31,7 @@ export class CommandRouter {
     this.service = service;
     this.logger = logger;
     this.journal = new CommandJournal(configStore.configDir);
+    this.images = new ImageUploads(configStore.configDir);
   }
 
   async handle(message) {
@@ -161,6 +163,22 @@ export class CommandRouter {
     if (command.type === "sync.request") {
       return this.service.syncAfter(Object.hasOwn(command, "lastSequence") ? command.lastSequence : null, command.eventStreamId);
     }
+    if (command.type.startsWith("image.upload.")) {
+      const owner = this.images.owner(this.configStore.get(), envelope);
+      if (command.type === "image.upload.append") return this.images.append(command, owner);
+      if (command.type === "image.upload.finish") return this.images.finish(command.uploadId, owner);
+      if (command.type === "image.upload.remove") return this.images.remove(command.uploadId, owner);
+      const threadId = command.threadId || envelope.threadId;
+      let cwd = this.#allowedCwd(command.cwd, true);
+      if (threadId) {
+        await this.appServer.start();
+        const read = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus || this.appServer.readThread;
+        const result = await read.call(this.appServer, threadId);
+        this.#assertThreadResultAllowed(result);
+        cwd = this.#allowedCwd((result.thread || result).cwd, true);
+      }
+      return this.images.begin(command, owner, { cwd, threadId });
+    }
     await this.appServer.start();
     switch (command.type) {
       case "model.list":
@@ -224,9 +242,18 @@ export class CommandRouter {
       case "turn.start": {
         const threadId = requireString(command.threadId || envelope.threadId || this.#selectedThreadId, "threadId");
         await this.#assertThreadAllowed(threadId);
+        let images;
+        if (command.attachmentIds !== undefined) {
+          const read = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus || this.appServer.readThread;
+          const result = await read.call(this.appServer, threadId);
+          this.#assertThreadResultAllowed(result);
+          const cwd = this.#allowedCwd((result.thread || result).cwd, true);
+          images = await this.images.resolve(command.attachmentIds, this.images.owner(this.configStore.get(), envelope), { cwd, threadId });
+        }
         return this.appServer.startTurn({
           threadId,
-          text: requireString(command.text, "text"),
+          text: images?.length ? optionalString(command.text) || "" : requireString(command.text, "text"),
+          ...(images ? { images } : {}),
           cwd: this.#allowedCwd(command.cwd),
           model: optionalString(command.model),
           effort: optionalString(command.effort),
@@ -344,7 +371,9 @@ function commandFingerprint(message) {
     targetDeviceId: message.targetDeviceId,
     threadId: message.threadId || null,
     turnId: message.turnId || null,
-    command: stableValue(message.command),
+    command: message.command.type === "image.upload.append"
+      ? { ...stableValue(message.command), data: createHash("sha256").update(String(message.command.data)).digest("hex") }
+      : stableValue(message.command),
   });
 }
 

@@ -3702,7 +3702,7 @@ var require_websocket_server = __commonJS({
 });
 
 // server/migration-cli.js
-import path17 from "node:path";
+import path18 from "node:path";
 
 // server/config-store.js
 import fs3 from "node:fs/promises";
@@ -4422,10 +4422,10 @@ function validateConfig(config) {
 }
 
 // server/environment-service.js
-import fs8 from "node:fs/promises";
+import fs9 from "node:fs/promises";
 import { constants } from "node:fs";
-import os6 from "node:os";
-import path12 from "node:path";
+import os7 from "node:os";
+import path13 from "node:path";
 import { execFile as execFile5 } from "node:child_process";
 import { promisify as promisify5 } from "node:util";
 
@@ -4769,9 +4769,9 @@ async function configuredSharedManifest(environment) {
 }
 
 // server/desktop-compatibility.js
-import fs7 from "node:fs/promises";
-import path11 from "node:path";
-import os5 from "node:os";
+import fs8 from "node:fs/promises";
+import path12 from "node:path";
+import os6 from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 import { execFile as execFile4, spawn as spawn3 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
@@ -4833,8 +4833,8 @@ function rolloutItem(item) {
         ...common,
         type: "fileChange",
         status: item.status,
-        changes: Object.entries(item.changes || {}).slice(0, 128).map(([path18, change]) => ({
-          path: path18,
+        changes: Object.entries(item.changes || {}).slice(0, 128).map(([path19, change]) => ({
+          path: path19,
           kind: { type: change.type, move_path: change.move_path },
           diff: text(change.unified_diff)
         }))
@@ -5218,6 +5218,39 @@ function composerSettings(value) {
   return settings;
 }
 
+// server/desktop-project-pins.js
+import fs7 from "node:fs/promises";
+import os5 from "node:os";
+import path11 from "node:path";
+var DesktopProjectPins = class {
+  #file;
+  #positions = /* @__PURE__ */ new Map();
+  constructor({ codexHome = process.env.CODEX_HOME || path11.join(os5.homedir(), ".codex") } = {}) {
+    this.#file = path11.join(codexHome, ".codex-global-state.json");
+  }
+  async enrich(result) {
+    if (!Array.isArray(result?.data)) return result;
+    try {
+      const state = JSON.parse(await fs7.readFile(this.#file, "utf8"));
+      if (state && typeof state === "object" && !Array.isArray(state)) {
+        const ids = state["pinned-project-ids"] ?? [];
+        if (Array.isArray(ids) && ids.every((id2) => typeof id2 === "string" && id2.trim())) {
+          this.#positions = new Map([...new Set(ids)].map((id2, index) => [id2, index]));
+        }
+      }
+    } catch {
+    }
+    return {
+      ...result,
+      data: result.data.map((project) => {
+        if (!project || typeof project !== "object" || Array.isArray(project)) return project;
+        const pinnedPosition = this.#positions.get(project.id);
+        return { ...project, isPinned: pinnedPosition !== void 0, pinnedPosition: pinnedPosition ?? null };
+      })
+    };
+  }
+};
+
 // server/app-server-client.js
 var execFileAsync = promisify3(execFile3);
 var AppServerClient = class _AppServerClient extends EventEmitter2 {
@@ -5245,6 +5278,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   #threadSettings = /* @__PURE__ */ new Map();
   #settingsRevision = 0;
   #rollouts = new RolloutSnapshots();
+  #projectPins;
   #observedThreads = /* @__PURE__ */ new Map();
   #rolloutTimer = null;
   #pollingRollouts = false;
@@ -5256,6 +5290,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   constructor(configStore, logger, options = {}) {
     super();
     this.options = options;
+    this.#projectPins = new DesktopProjectPins({ codexHome: options.codexHome });
     this.configStore = configStore;
     this.logger = logger;
     this.state = "stopped";
@@ -5568,7 +5603,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
       cursor: cursor2,
       limit
     });
-    if (params.cursor != null) return requestPage(params.cursor);
+    if (params.cursor != null) return this.#projectPins.enrich(await requestPage(params.cursor));
     const first = await requestPage(null);
     if (!first || !Array.isArray(first.data)) return first;
     const data = [...first.data];
@@ -5583,11 +5618,11 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
       const nextCursor = typeof response.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
       cursor = !nextCursor || nextCursor === cursor ? null : nextCursor;
     }
-    return {
+    return this.#projectPins.enrich({
       ...first,
       data: sortProjectList(dedupeProjectList(data)),
       nextCursor: null
-    };
+    });
   }
   async readThread(threadId) {
     return this.readThreadSnapshot(threadId);
@@ -5843,12 +5878,12 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
     if (!this.threadSettings(id2)) throw new RelayError("APP_SERVER_ERROR", "Codex \u672A\u8FD4\u56DE\u4EFB\u52A1\u8BBE\u7F6E\uFF0C\u8BF7\u5347\u7EA7 Codex \u540E\u91CD\u8BD5");
     return { threadId: id2, threadSettings: this.threadSettings(id2) };
   }
-  async startTurn({ threadId, text: text2, cwd, model, effort }) {
+  async startTurn({ threadId, text: text2, cwd, model, effort, images = [] }) {
     const id2 = normalizeThreadId(threadId);
     if (this.isShared()) await this.ensureThreadResumed(id2);
     const params = {
       threadId: id2,
-      input: [{ type: "text", text: text2 }],
+      input: [...text2 ? [{ type: "text", text: text2 }] : [], ...images],
       ...cwd ? { cwd } : {},
       ...model ? { model } : {},
       ...effort ? { effort } : {}
@@ -6156,13 +6191,13 @@ async function desktopTarget(environment) {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
     if (!m || Number(m[2]) !== desktop.pid) return [];
     const direct = m[3].startsWith(`${desktop.appPath}/Contents/Resources/codex `);
-    const proxy = manifest?.desktopApp === desktop.appPath && m[3].includes(`${path11.join(manifest.root, "shared-backend-cli.js")} proxy --manifest ${path11.join(manifest.root, "manifest.json")} `);
+    const proxy = manifest?.desktopApp === desktop.appPath && m[3].includes(`${path12.join(manifest.root, "shared-backend-cli.js")} proxy --manifest ${path12.join(manifest.root, "manifest.json")} `);
     if (!direct && !proxy) return [];
     const pipe = m[3].match(/"CODEX_APP_TOOLS_PIPE_PATH"\s*=\s*"([^"\r\n]+)"/)?.[1];
-    return pipe && path11.isAbsolute(pipe) ? [{ pipe, backendPid: Number(m[1]), connection: proxy ? "shared_proxy" : "direct" }] : [];
+    return pipe && path12.isAbsolute(pipe) ? [{ pipe, backendPid: Number(m[1]), connection: proxy ? "shared_proxy" : "direct" }] : [];
   });
   const target = { ...desktop, ...backends.length === 1 ? backends[0] : { pipe: null } };
-  const stat = target.pipe ? await fs7.stat(target.pipe).catch(() => null) : null;
+  const stat = target.pipe ? await fs8.stat(target.pipe).catch(() => null) : null;
   if (!stat?.isSocket() || stat.uid !== process.getuid()) target.pipe = null;
   const runtime = manifest ? await ownedRuntime(manifest) : null;
   if (manifest) {
@@ -6170,18 +6205,18 @@ async function desktopTarget(environment) {
     target.runtimeIdentity = runtime?.identity || null;
     const backend = stdout.split("\n").map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).find((m) => m && Number(m[1]) === runtime?.pid);
     const service = backend && stdout.split("\n").map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).find((m) => m && m[1] === backend[2]);
-    if (service?.[3].includes(`${path11.join(manifest.root, "shared-backend-cli.js")} service --manifest ${path11.join(manifest.root, "manifest.json")}`)) {
+    if (service?.[3].includes(`${path12.join(manifest.root, "shared-backend-cli.js")} service --manifest ${path12.join(manifest.root, "manifest.json")}`)) {
       target.servicePid = Number(service[1]);
       const command = (await run("/bin/ps", ["-p", service[1], "-o", "comm="], { timeout: 2e3 })).stdout.trim();
-      const resolved = await fs7.realpath(command).catch(() => null);
-      target.serviceRuntime = resolved && resolved === await fs7.realpath(officialNode(manifest.desktopApp)).catch(() => null) ? "official" : "legacy";
+      const resolved = await fs8.realpath(command).catch(() => null);
+      target.serviceRuntime = resolved && resolved === await fs8.realpath(officialNode(manifest.desktopApp)).catch(() => null) ? "official" : "legacy";
     }
   }
   const identity3 = (await run("/bin/ps", ["-p", String(desktop.pid), "-o", "lstart=,comm="], { timeout: 2e3 })).stdout.trim();
-  const resources = path11.join(desktop.appPath, "Contents/Resources");
+  const resources = path12.join(desktop.appPath, "Contents/Resources");
   const hash = createHash2("sha256").update(JSON.stringify([identity3, target.pipe, target.backendPid, target.endpoint, target.runtimeIdentity, target.servicePid, target.serviceRuntime, environment.codexHome]));
   for (const file of ["codex", "cua_node/bin/node", "plugins/openai-bundled/plugins/codex-app-tools/server.mjs", "plugins/openai-bundled/plugins/codex-app-tools/desktop-mcp.json"]) {
-    const s = await fs7.stat(path11.join(resources, file));
+    const s = await fs8.stat(path12.join(resources, file));
     hash.update(JSON.stringify([file, s.ino, s.size, s.mtimeMs, s.ctimeMs]));
   }
   target.fingerprint = hash.digest("hex");
@@ -6189,11 +6224,11 @@ async function desktopTarget(environment) {
 }
 async function probeDesktopTools(target, { checkpoint = async () => {
 }, timeoutMs = 15e3 } = {}) {
-  const root = await fs7.mkdtemp(path11.join(os5.tmpdir(), "relay-desktop-check-"));
-  const home = path11.join(root, "home");
-  await fs7.mkdir(home, { mode: 448 });
+  const root = await fs8.mkdtemp(path12.join(os6.tmpdir(), "relay-desktop-check-"));
+  const home = path12.join(root, "home");
+  await fs8.mkdir(home, { mode: 448 });
   const manifest = { root, desktopApp: target.appPath };
-  const endpoint = `unix://${path11.join(root, "rpc.sock")}`;
+  const endpoint = `unix://${path12.join(root, "rpc.sock")}`;
   const deadline = Date.now() + timeoutMs;
   let child, client, killTimer;
   try {
@@ -6202,13 +6237,13 @@ async function probeDesktopTools(target, { checkpoint = async () => {
     tools.env_vars = tools.env_vars?.filter((key) => !Object.hasOwn(tools.env, key));
     const env = { ...process.env, CODEX_HOME: home, RUST_LOG: "error" };
     for (const key of ["CODEX_CLI_PATH", "CODEX_APP_SERVER_WS_URL", "CODEX_APP_SERVER_FORCE_CLI", "ELECTRON_RUN_AS_NODE"]) delete env[key];
-    child = spawn3(path11.join(target.appPath, "Contents/Resources/codex"), ["-c", "features.code_mode_host=true", "-c", `mcp_servers.codex_app=${tomlValue(tools)}`, "app-server", "--listen", endpoint], { env, cwd: home, stdio: "ignore" });
+    child = spawn3(path12.join(target.appPath, "Contents/Resources/codex"), ["-c", "features.code_mode_host=true", "-c", `mcp_servers.codex_app=${tomlValue(tools)}`, "app-server", "--listen", endpoint], { env, cwd: home, stdio: "ignore" });
     let spawnError;
     child.once("error", (error) => {
       spawnError = error;
     });
     killTimer = setTimeout(() => child.kill("SIGTERM"), timeoutMs + 1e3);
-    while (!await fs7.stat(path11.join(root, "rpc.sock")).then((s) => s.isSocket(), () => false)) {
+    while (!await fs8.stat(path12.join(root, "rpc.sock")).then((s) => s.isSocket(), () => false)) {
       await checkpoint();
       if (spawnError || child.exitCode !== null || child.signalCode !== null) return { code: "failed" };
       if (Date.now() > deadline) return { code: "timeout" };
@@ -6244,7 +6279,7 @@ async function probeDesktopTools(target, { checkpoint = async () => {
         child.kill("SIGTERM");
       });
     }
-    await fs7.rm(root, { recursive: true, force: true });
+    await fs8.rm(root, { recursive: true, force: true });
   }
 }
 async function probeSharedDesktopTools(target, { checkpoint = async () => {
@@ -6315,14 +6350,14 @@ async function verifyDesktopCompatibility(environment, options = {}) {
     code = "failed";
   }
   const result = { checkedAt, expiresAt: new Date(Date.now() + TTL).toISOString(), code, state: ["passed", "shared_passed"].includes(code) ? "passed" : "blocked", message: messages[code], runtime, toolCount, desktopPid: target?.pid || null, fingerprint: target?.fingerprint || null, scope: environment.service.configStore.get?.().codex?.connectionMode === "shared" ? "current_shared_backend_tool_catalog" : "isolated_shared_backend_tool_catalog", modelRequests: 0 };
-  await writePrivate(path11.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json"), JSON.stringify(result));
+  await writePrivate(path12.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json"), JSON.stringify(result));
   return result;
 }
 async function readDesktopCompatibility(environment, { discover = desktopTarget, now = Date.now() } = {}) {
   try {
-    const file = path11.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json");
-    if ((await fs7.stat(file)).size > 32 * 1024) return null;
-    const saved = JSON.parse(await fs7.readFile(file, "utf8"));
+    const file = path12.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json");
+    if ((await fs8.stat(file)).size > 32 * 1024) return null;
+    const saved = JSON.parse(await fs8.readFile(file, "utf8"));
     if (!Object.hasOwn(messages, saved.code) || !Number.isFinite(Date.parse(saved.checkedAt)) || !Number.isFinite(Date.parse(saved.expiresAt))) return null;
     const target = await discover(environment);
     const stale = now > Date.parse(saved.expiresAt) || !saved.fingerprint || saved.fingerprint !== target?.fingerprint;
@@ -6340,31 +6375,31 @@ var clean = (value) => typeof value === "string" ? redact(value).slice(0, 600) :
 var date = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
 async function json(file) {
   try {
-    if ((await fs8.stat(file)).size > 256 * 1024) throw new Error("Record too large");
-    return JSON.parse(await fs8.readFile(file, "utf8"));
+    if ((await fs9.stat(file)).size > 256 * 1024) throw new Error("Record too large");
+    return JSON.parse(await fs9.readFile(file, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
 }
-var samePath = (a, b) => typeof a === "string" && typeof b === "string" && path12.resolve(a) === path12.resolve(b);
+var samePath = (a, b) => typeof a === "string" && typeof b === "string" && path13.resolve(a) === path13.resolve(b);
 async function inspectExecutable(configured, options = {}) {
   const env = options.env || process.env;
   const run = options.exec || exec4;
   const platform = options.platform || process.platform;
   const candidates = [];
   const add = (value) => {
-    if (value && path12.isAbsolute(value) && !candidates.includes(value)) candidates.push(value);
+    if (value && path13.isAbsolute(value) && !candidates.includes(value)) candidates.push(value);
   };
-  if (path12.isAbsolute(configured || "")) add(configured);
+  if (path13.isAbsolute(configured || "")) add(configured);
   else if (configured && !/[\\/]/.test(configured)) {
-    for (const directory of (env.PATH || "").split(path12.delimiter)) {
-      if (path12.isAbsolute(directory)) add(path12.join(directory, configured));
+    for (const directory of (env.PATH || "").split(path13.delimiter)) {
+      if (path13.isAbsolute(directory)) add(path13.join(directory, configured));
     }
   }
   const configuredCandidates = [...candidates];
-  if (path12.basename(env.CODEX_CLI_PATH || "") === "codex") add(env.CODEX_CLI_PATH);
-  if (env.CODEX_ELECTRON_RESOURCES_PATH) add(path12.join(env.CODEX_ELECTRON_RESOURCES_PATH, "codex"));
+  if (path13.basename(env.CODEX_CLI_PATH || "") === "codex") add(env.CODEX_CLI_PATH);
+  if (env.CODEX_ELECTRON_RESOURCES_PATH) add(path13.join(env.CODEX_ELECTRON_RESOURCES_PATH, "codex"));
   if (platform === "darwin") {
     add("/Applications/ChatGPT.app/Contents/Resources/codex");
     add("/Applications/Codex.app/Contents/Resources/codex");
@@ -6373,7 +6408,7 @@ async function inspectExecutable(configured, options = {}) {
   let configuredValid = false;
   for (const file of candidates) {
     try {
-      await fs8.access(file, constants.X_OK);
+      await fs9.access(file, constants.X_OK);
       const { stdout } = await run(file, ["--version"], { timeout: 2500, maxBuffer: 4096, env });
       const version = stdout.trim();
       if (!/^codex-cli\s+[^\s]+$/.test(version)) continue;
@@ -6395,7 +6430,7 @@ async function inspectExecutable(configured, options = {}) {
 }
 function migrationView(manifest, result, activation, configDir2, codexHome) {
   if (!manifest) return { state: "not_prepared", label: "\u5C1A\u672A\u51C6\u5907\u8FC1\u79FB", last: null };
-  if (!samePath(manifest.relayConfig, path12.join(configDir2, "config.json")) || !samePath(manifest.codexHome, codexHome)) {
+  if (!samePath(manifest.relayConfig, path13.join(configDir2, "config.json")) || !samePath(manifest.codexHome, codexHome)) {
     return { state: "different_environment", label: "\u542F\u52A8\u5305\u5C5E\u4E8E\u5176\u4ED6\u73AF\u5883", last: null };
   }
   const last = result ? {
@@ -6421,8 +6456,8 @@ var EnvironmentService = class {
     this.env = options.env || process.env;
     this.exec = options.exec || exec4;
     this.pluginRoot = options.pluginRoot || PLUGIN_ROOT;
-    this.sharedRoot = options.sharedRoot || this.env.CODEX_RELAY_SHARED_ROOT || path12.join(os6.homedir(), "Library/Application Support/Recodex Shared Backend");
-    this.codexHome = this.env.CODEX_HOME || path12.join(os6.homedir(), ".codex");
+    this.sharedRoot = options.sharedRoot || this.env.CODEX_RELAY_SHARED_ROOT || path13.join(os7.homedir(), "Library/Application Support/Recodex Shared Backend");
+    this.codexHome = this.env.CODEX_HOME || path13.join(os7.homedir(), ".codex");
     this.cache = null;
     this.pending = null;
     this.repairing = false;
@@ -6448,7 +6483,7 @@ var EnvironmentService = class {
       inspectExecutable(config.codex.executable, { env: this.env, platform: this.platform, exec: this.exec }),
       this.inspectProcesses(),
       this.inspectMigration(),
-      json(path12.join(this.pluginRoot, ".codex-plugin/plugin.json")).catch(() => null),
+      json(path13.join(this.pluginRoot, ".codex-plugin/plugin.json")).catch(() => null),
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
@@ -6457,12 +6492,12 @@ var EnvironmentService = class {
     let desktopVersion = null;
     if (this.platform === "darwin") {
       const app = processes.items.find((item) => item.kind === "desktop")?.appPath;
-      if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path12.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
+      if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path13.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
     }
     const lastToolFailure = migration.last?.failedPhase === "verifying_shared_runtime" && /工具|签名|signing|pipe/i.test(migration.last.error || "");
-    const runningVersion = "1.0.0+codex.20260911042509";
-    const runningBuild = "1.0.0+codex.20260911042509:1789100722867";
-    const diskBundle = runningBuild ? await fs8.readFile(path12.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
+    const runningVersion = "1.0.0+codex.20260911095629";
+    const runningBuild = "1.0.0+codex.20260911095629:1789120603379";
+    const diskBundle = runningBuild ? await fs9.readFile(path13.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && p.kind === "backend");
     const desktopBackend = processes.items.find((p) => p.kind === "backend" && p.desktopHosted && p.scope === "same");
@@ -6503,7 +6538,7 @@ var EnvironmentService = class {
     try {
       const selected = await configuredSharedManifest(this);
       const root = selected?.root || this.sharedRoot;
-      const [manifest, result, activation] = await Promise.all(["manifest.json", "migration-result.json", "activation.json"].map((file) => json(path12.join(root, file))));
+      const [manifest, result, activation] = await Promise.all(["manifest.json", "migration-result.json", "activation.json"].map((file) => json(path13.join(root, file))));
       return migrationView(manifest, result, activation, this.service.configStore.configDir, this.codexHome);
     } catch {
       return { state: "unreadable", label: "\u8FC1\u79FB\u8BB0\u5F55\u65E0\u6CD5\u8BFB\u53D6", last: null };
@@ -6521,7 +6556,7 @@ var EnvironmentService = class {
         const details = await this.exec("/bin/ps", ["eww", "-p", String(item.pid), "-o", "command="], { timeout: 2e3, maxBuffer: 1024 * 1024 }).then((r) => r.stdout, () => "");
         const key = item.kind === "relay" ? "CODEX_RELAY_CONFIG_DIR" : "CODEX_HOME";
         const selected = details.match(new RegExp(`(?:^| )${key}=(.*?)(?= [A-Za-z_][A-Za-z_0-9]*=|$)`))?.[1];
-        const defaultDir = path12.join(os6.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
+        const defaultDir = path13.join(os7.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
         const target = item.kind === "relay" ? this.service.configStore.configDir : this.codexHome;
         const desktopHosted = item.kind === "backend" && /BROWSER_USE_CODEX_APP_VERSION=/.test(details);
         const transport = desktopHosted ? /--listen\s+stdio:\/\//.test(command) || /--stdio(?:\s|$)/.test(command) ? "stdio" : /--listen\s+(unix:\/\/[^\s]+)/.exec(command)?.[1] || "unknown" : null;
@@ -6557,19 +6592,19 @@ var EnvironmentService = class {
 };
 
 // server/migration-preparation.js
-import fs12 from "node:fs/promises";
-import path16 from "node:path";
+import fs13 from "node:fs/promises";
+import path17 from "node:path";
 import { spawn as spawn4, execFile as execFile7 } from "node:child_process";
 import { promisify as promisify7 } from "node:util";
 
 // server/migration-preflight.js
-import fs9 from "node:fs/promises";
-import path13 from "node:path";
+import fs10 from "node:fs/promises";
+import path14 from "node:path";
 import { createHash as createHash3 } from "node:crypto";
 async function preparationFingerprint(context) {
   const hash = createHash3("sha256");
-  for (const file of [path13.join(context.configDir, "config.json"), ...["package.json", ".codex-plugin/plugin.json", "server/agent-cli.js", "server/shared-backend-cli.js", "server/migration-cli.js", "ui/index.html"].map((file2) => path13.join(context.pluginRoot, file2))]) {
-    hash.update(file).update("\0").update(await fs9.readFile(file)).update("\0");
+  for (const file of [path14.join(context.configDir, "config.json"), ...["package.json", ".codex-plugin/plugin.json", "server/agent-cli.js", "server/shared-backend-cli.js", "server/migration-cli.js", "ui/index.html"].map((file2) => path14.join(context.pluginRoot, file2))]) {
+    hash.update(file).update("\0").update(await fs10.readFile(file)).update("\0");
   }
   hash.update(context.codexHome);
   return hash.digest("hex");
@@ -6589,7 +6624,7 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
   await add("executable", "Codex \u6267\u884C\u8DEF\u5F84", env.executable.state === "ok" && !env.executable.needsRepair ? "passed" : "blocked", env.executable.state === "ok" && !env.executable.needsRepair ? "\u5DF2\u4F7F\u7528\u9A8C\u8BC1\u8FC7\u7684\u5B8C\u6574\u8DEF\u5F84" : "\u8BF7\u5148\u4FEE\u590D\u6267\u884C\u8DEF\u5F84\uFF0C\u518D\u51C6\u5907\u8FC1\u79FB");
   let fingerprint = null;
   try {
-    const installed = JSON.parse(await fs9.readFile(path13.join(context.pluginRoot, "package.json"), "utf8"));
+    const installed = JSON.parse(await fs10.readFile(path14.join(context.pluginRoot, "package.json"), "utf8"));
     if (installed.name === "codex-relay-plugin" && !installed.dependencies && !installed.devDependencies) fingerprint = await preparationFingerprint(context);
   } catch {
   }
@@ -6598,7 +6633,7 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
   try {
     const configured = env.executable.resolved || "";
     const desktopApp = configured.match(/^(.*\.app)\/Contents\/Resources\/codex$/)?.[1] || env.processes.items.find((item) => item.kind === "desktop" && item.scope === "same")?.appPath || "/Applications/ChatGPT.app";
-    manifest = defaultManifest(context.packageRoot, { desktopApp, codexHome: context.codexHome, relayConfig: path13.join(context.configDir, "config.json"), relayAgent: path13.join(context.pluginRoot, "server/agent-cli.js"), originalIcon: true });
+    manifest = defaultManifest(context.packageRoot, { desktopApp, codexHome: context.codexHome, relayConfig: path14.join(context.configDir, "config.json"), relayAgent: path14.join(context.pluginRoot, "server/agent-cli.js"), originalIcon: true });
     manifest.activationBlocked = true;
     manifest.binaryHash = await digest(manifest.binary);
     const compatibility = await verify(manifest);
@@ -6610,9 +6645,9 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
   const config = environment.service.configStore.get();
   const cwd = config.codex.defaultWorkingDirectory;
   const directories = [context.codexHome, ...cwd ? [cwd] : []];
-  const directoriesReady = await Promise.all(directories.map((directory) => fs9.stat(directory).then((stat) => stat.isDirectory(), () => false)));
+  const directoriesReady = await Promise.all(directories.map((directory) => fs10.stat(directory).then((stat) => stat.isDirectory(), () => false)));
   await add("directories", "\u6570\u636E\u4E0E\u5DE5\u4F5C\u76EE\u5F55", directoriesReady.every(Boolean) ? "passed" : "blocked", directoriesReady.every(Boolean) ? "\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D Codex \u6570\u636E\u76EE\u5F55\uFF1B\u51C6\u5907\u8FC7\u7A0B\u4E0D\u4FEE\u6539\u4EFB\u52A1\u5386\u53F2" : "Codex \u6570\u636E\u76EE\u5F55\u6216\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u4E0D\u5B58\u5728");
-  const spaceReady = await fs9.statfs(path13.join(context.configDir, "migration")).then((stat) => stat.bavail * stat.bsize >= 64 * 1024 * 1024, () => false);
+  const spaceReady = await fs10.statfs(path14.join(context.configDir, "migration")).then((stat) => stat.bavail * stat.bsize >= 64 * 1024 * 1024, () => false);
   await add("space", "\u51C6\u5907\u5305\u7A7A\u95F4", spaceReady ? "passed" : "blocked", spaceReady ? "\u51C6\u5907\u76EE\u5F55\u81F3\u5C11\u6709 64 MB \u53EF\u7528\u7A7A\u95F4\uFF1B\u6B63\u5F0F\u5386\u53F2\u5907\u4EFD\u9700\u53E6\u884C\u68C0\u67E5" : "\u65E0\u6CD5\u786E\u8BA4\u51C6\u5907\u76EE\u5F55\u7A7A\u95F4\uFF0C\u6216\u53EF\u7528\u7A7A\u95F4\u4E0D\u8DB3 64 MB");
   const related = env.processes.items.filter((item) => item.scope !== "other");
   await add("processes", "\u8FD0\u884C\u4E2D\u7684\u5BA2\u6237\u7AEF", env.processes.state === "ok" ? "warning" : "blocked", env.processes.state === "ok" ? `\u68C0\u6D4B\u5230 ${related.length} \u4E2A\u76F8\u5173\u8FDB\u7A0B\u3002\u51C6\u5907\u53EF\u7EE7\u7EED\uFF1B\u6B63\u5F0F\u5207\u6362\u524D\u9700\u7ED3\u675F\u4EFB\u52A1\u5E76\u91CD\u65B0\u68C0\u67E5\u5360\u7528` : "\u65E0\u6CD5\u786E\u8BA4\u8FDB\u7A0B\u5360\u7528\uFF0C\u6B63\u5F0F\u5207\u6362\u524D\u5FC5\u987B\u91CD\u65B0\u68C0\u67E5", "activation");
@@ -6624,40 +6659,40 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
 }
 
 // server/shared-backend-prepare.js
-import fs10 from "node:fs/promises";
-import path14 from "node:path";
+import fs11 from "node:fs/promises";
+import path15 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 async function prepareSharedBackend(manifest, production, { checkpoint = async () => {
 }, verify = checkCompatibility } = {}) {
   await checkpoint();
   await verify(manifest);
-  if (await fs10.lstat(manifest.root).then(() => true, (error) => {
+  if (await fs11.lstat(manifest.root).then(() => true, (error) => {
     if (error.code === "ENOENT") return false;
     throw error;
   })) {
     throw new Error("\u51C6\u5907\u5305\u76EE\u5F55\u5DF2\u5B58\u5728\uFF0C\u8BF7\u521B\u5EFA\u65B0\u7684\u51C6\u5907\u5305\uFF0C\u539F\u76EE\u5F55\u4FDD\u6301\u4E0D\u53D8");
   }
-  const installed = JSON.parse(await fs10.readFile(path14.join(manifest.pluginRoot, ".codex-plugin/plugin.json"), "utf8"));
+  const installed = JSON.parse(await fs11.readFile(path15.join(manifest.pluginRoot, ".codex-plugin/plugin.json"), "utf8"));
   if (installed.name !== "codex-relay-plugin") throw new Error("\u76EE\u6807\u76EE\u5F55\u4E0D\u662F codex-relay-plugin");
-  const bundle = path14.join(production, "server/shared-backend-cli.js");
+  const bundle = path15.join(production, "server/shared-backend-cli.js");
   const bundleHash = await digest(bundle);
   const stage = `${manifest.root}.preparing-${randomUUID2().slice(0, 8)}`;
-  await fs10.mkdir(stage, { recursive: false, mode: 448 });
+  await fs11.mkdir(stage, { recursive: false, mode: 448 });
   try {
-    await fs10.copyFile(bundle, path14.join(stage, "shared-backend-cli.js"));
-    await fs10.writeFile(path14.join(stage, "package.json"), '{"type":"module"}\n', { mode: 384 });
-    await fs10.cp(production, path14.join(stage, "plugin"), { recursive: true, filter: async () => {
+    await fs11.copyFile(bundle, path15.join(stage, "shared-backend-cli.js"));
+    await fs11.writeFile(path15.join(stage, "package.json"), '{"type":"module"}\n', { mode: 384 });
+    await fs11.cp(production, path15.join(stage, "plugin"), { recursive: true, filter: async () => {
       await checkpoint();
       return true;
     } });
-    await writePrivate(path14.join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
+    await writePrivate(path15.join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
 `);
-    const command = (operation) => `${shellQuote(manifest.node)} ${shellQuote(path14.join(manifest.root, "shared-backend-cli.js"))} ${operation} --manifest ${shellQuote(path14.join(manifest.root, "manifest.json"))}`;
-    await fs10.writeFile(path14.join(stage, "codex-proxy"), `#!/bin/sh
+    const command = (operation) => `${shellQuote(manifest.node)} ${shellQuote(path15.join(manifest.root, "shared-backend-cli.js"))} ${operation} --manifest ${shellQuote(path15.join(manifest.root, "manifest.json"))}`;
+    await fs11.writeFile(path15.join(stage, "codex-proxy"), `#!/bin/sh
 exec ${command("proxy")} "$@"
 `, { mode: 448 });
     for (const [name, action] of [["\u542F\u7528\u5171\u4EAB\u540E\u7AEF.command", "activate"], ["\u6062\u590D\u72EC\u7ACB\u540E\u7AEF.command", "rollback"], ["\u67E5\u770B\u5171\u4EAB\u72B6\u6001.command", "status"]]) {
-      await fs10.writeFile(path14.join(stage, name), `#!/bin/sh
+      await fs11.writeFile(path15.join(stage, name), `#!/bin/sh
 ${command(action)}
 result=$?
 printf '\\n\u6309\u56DE\u8F66\u5173\u95ED\u7A97\u53E3\u2026'
@@ -6665,18 +6700,18 @@ read -r reply
 exit "$result"
 `, { mode: 448 });
     }
-    const app = path14.join(stage, "Codex Shared.app/Contents");
-    await fs10.mkdir(path14.join(app, "MacOS"), { recursive: true });
-    await fs10.writeFile(path14.join(app, "Info.plist"), plist({ CFBundleIdentifier: "com.recodex.shared-launcher", CFBundleName: "Codex Shared", CFBundleExecutable: "launch", CFBundlePackageType: "APPL", CFBundleVersion: "1", LSUIElement: true }));
-    await fs10.writeFile(path14.join(app, "MacOS/launch"), `#!/bin/sh
-${command("desktop")} >> ${shellQuote(path14.join(manifest.root, "launcher.log"))} 2>&1
+    const app = path15.join(stage, "Codex Shared.app/Contents");
+    await fs11.mkdir(path15.join(app, "MacOS"), { recursive: true });
+    await fs11.writeFile(path15.join(app, "Info.plist"), plist({ CFBundleIdentifier: "com.recodex.shared-launcher", CFBundleName: "Codex Shared", CFBundleExecutable: "launch", CFBundlePackageType: "APPL", CFBundleVersion: "1", LSUIElement: true }));
+    await fs11.writeFile(path15.join(app, "MacOS/launch"), `#!/bin/sh
+${command("desktop")} >> ${shellQuote(path15.join(manifest.root, "launcher.log"))} 2>&1
 result=$?
 if [ "$result" -ne 0 ]; then
   /usr/bin/osascript -e 'display alert "Codex Shared \u672A\u80FD\u542F\u52A8" message "\u8BF7\u5148\u68C0\u67E5\u51C6\u5907\u5305\u7684\u517C\u5BB9\u6027\u4E0E\u5171\u4EAB\u670D\u52A1\u72B6\u6001\uFF1B\u8BE6\u7EC6\u539F\u56E0\u89C1 launcher.log\u3002" as critical'
 fi
 exit "$result"
 `, { mode: 448 });
-    await writePrivate(path14.join(stage, "\u4F7F\u7528\u8BF4\u660E.txt"), `\u51C6\u5907\u5B8C\u6210\uFF0C\u5C1A\u672A\u5207\u6362\u3002
+    await writePrivate(path15.join(stage, "\u4F7F\u7528\u8BF4\u660E.txt"), `\u51C6\u5907\u5B8C\u6210\uFF0C\u5C1A\u672A\u5207\u6362\u3002
 
 \u51C6\u5907\u5305\u4E0D\u4F1A\u4FEE\u6539\u5F53\u524D\u8FDE\u63A5\u3001\u7ED3\u675F\u8FDB\u7A0B\u6216\u590D\u5236\u4EFB\u52A1\u5386\u53F2\u3002
 \u684C\u9762\u4E0E CLI \u7248\u672C\u5339\u914D\u4E0D\u4EE3\u8868\u684C\u9762\u5DE5\u5177\u7684\u7B7E\u540D\u517C\u5BB9\u6027\u5DF2\u901A\u8FC7\u3002\u8BF7\u5148\u89E3\u51B3\u63A7\u5236\u53F0\u68C0\u67E5\u62A5\u544A\u4E2D\u7684\u5207\u6362\u963B\u585E\uFF0C\u518D\u8FDB\u884C\u6B63\u5F0F\u9A8C\u6536\u3002
@@ -6686,19 +6721,19 @@ CODEX_HOME\uFF1A${manifest.codexHome}
 \u5171\u4EAB\u7AEF\u70B9\uFF1A${manifest.endpoint}
 `);
     await checkpoint();
-    if (await digest(bundle) !== bundleHash || await digest(path14.join(stage, "shared-backend-cli.js")) !== bundleHash) throw new Error("\u51C6\u5907\u671F\u95F4\u63D2\u4EF6\u6784\u5EFA\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
+    if (await digest(bundle) !== bundleHash || await digest(path15.join(stage, "shared-backend-cli.js")) !== bundleHash) throw new Error("\u51C6\u5907\u671F\u95F4\u63D2\u4EF6\u6784\u5EFA\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
     await verify(manifest);
     await checkpoint();
-    await fs10.rename(stage, manifest.root);
+    await fs11.rename(stage, manifest.root);
     return { root: manifest.root, endpoint: manifest.endpoint, codexHome: manifest.codexHome, createdAt: (/* @__PURE__ */ new Date()).toISOString(), activated: false };
   } finally {
-    await fs10.rm(stage, { recursive: true, force: true });
+    await fs11.rm(stage, { recursive: true, force: true });
   }
 }
 
 // server/shared-runtime-repair.js
-import fs11 from "node:fs/promises";
-import path15 from "node:path";
+import fs12 from "node:fs/promises";
+import path16 from "node:path";
 import { execFile as execFile6 } from "node:child_process";
 import { promisify as promisify6 } from "node:util";
 var exec5 = promisify6(execFile6);
@@ -6727,7 +6762,7 @@ async function repairSharedRuntime(environment, { checkpoint = async () => {
 }, onProgress = async () => {
 }, timeoutMs = 15 * 6e4, restart = replaceRuntime } = {}) {
   const manifest = await configuredSharedManifest(environment);
-  if (!manifest || (await readJson(path15.join(manifest.root, "activation.json"), null))?.phase !== "active") throw new Error("\u672A\u627E\u5230\u5F53\u524D\u5DF2\u542F\u7528\u7684\u5171\u4EAB\u5B89\u88C5");
+  if (!manifest || (await readJson(path16.join(manifest.root, "activation.json"), null))?.phase !== "active") throw new Error("\u672A\u627E\u5230\u5F53\u524D\u5DF2\u542F\u7528\u7684\u5171\u4EAB\u5B89\u88C5");
   await verifyOfficialRuntime(manifest.desktopApp);
   await checkCompatibility(manifest);
   const runtime = await ownedRuntime(manifest);
@@ -6778,13 +6813,13 @@ async function replaceRuntime(manifest, pluginRoot, expectedRuntime, dependencie
   const parent = (await run("/bin/ps", ["-p", String(expectedRuntime.pid), "-o", "ppid="])).stdout.trim();
   if (!/^\d+$/.test(parent) || job.match(/^\s*pid = (\d+)\s*$/m)?.[1] !== parent) throw new Error("\u5171\u4EAB\u8FDB\u7A0B\u4E0D\u5C5E\u4E8E\u5F53\u524D\u6CE8\u518C\u670D\u52A1\uFF0C\u62D2\u7EDD\u505C\u6B62\u5176\u4ED6\u8FDB\u7A0B");
   const repaired = { ...manifest, node: officialNode(manifest.desktopApp) };
-  const cli = path15.join(manifest.root, "shared-backend-cli.js");
-  const manifestFile = path15.join(manifest.root, "manifest.json");
-  const proxy = path15.join(manifest.root, "codex-proxy");
+  const cli = path16.join(manifest.root, "shared-backend-cli.js");
+  const manifestFile = path16.join(manifest.root, "manifest.json");
+  const proxy = path16.join(manifest.root, "codex-proxy");
   const files = [manifestFile, cli, proxy, manifest.launchAgent];
-  const backup = path15.join(manifest.root, "backups", `runtime-${Date.now()}`);
-  await fs11.mkdir(backup, { recursive: true, mode: 448 });
-  for (const file of files) await fs11.copyFile(file, path15.join(backup, path15.basename(file)));
+  const backup = path16.join(manifest.root, "backups", `runtime-${Date.now()}`);
+  await fs12.mkdir(backup, { recursive: true, mode: 448 });
+  for (const file of files) await fs12.copyFile(file, path16.join(backup, path16.basename(file)));
   let stopped = false;
   const stop = async () => {
     await run("/bin/launchctl", ["bootout", target]);
@@ -6797,13 +6832,13 @@ async function replaceRuntime(manifest, pluginRoot, expectedRuntime, dependencie
   try {
     await stop();
     stopped = true;
-    await writePrivate(cli, await fs11.readFile(path15.join(pluginRoot, "server/shared-backend-cli.js")));
+    await writePrivate(cli, await fs12.readFile(path16.join(pluginRoot, "server/shared-backend-cli.js")));
     await writePrivate(manifestFile, `${JSON.stringify(repaired, null, 2)}
 `);
     await writePrivate(proxy, `#!/bin/sh
 exec ${shellQuote(repaired.node)} ${shellQuote(cli)} proxy --manifest ${shellQuote(manifestFile)} "$@"
 `);
-    await fs11.chmod(proxy, 448);
+    await fs12.chmod(proxy, 448);
     await writePrivate(manifest.launchAgent, plist(serviceDefinition(repaired)));
     await run("/bin/launchctl", ["bootstrap", domain, manifest.launchAgent]);
     await ready(repaired);
@@ -6812,8 +6847,8 @@ exec ${shellQuote(repaired.node)} ${shellQuote(cli)} proxy --manifest ${shellQuo
     if (stopped) {
       const loaded = await run("/bin/launchctl", ["print", target]).then(() => true, () => false);
       if (loaded) await stop();
-      for (const file of files) await fs11.copyFile(path15.join(backup, path15.basename(file)), file);
-      await fs11.chmod(proxy, 448);
+      for (const file of files) await fs12.copyFile(path16.join(backup, path16.basename(file)), file);
+      await fs12.chmod(proxy, 448);
       await run("/bin/launchctl", ["bootstrap", domain, manifest.launchAgent]);
       await ready(manifest);
       await open(manifest);
@@ -6826,7 +6861,7 @@ exec ${shellQuote(repaired.node)} ${shellQuote(cli)} proxy --manifest ${shellQuo
 var exec6 = promisify7(execFile7);
 var UUID2 = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 var iso = () => (/* @__PURE__ */ new Date()).toISOString();
-var exists = (file) => fs12.access(file).then(() => true, () => false);
+var exists = (file) => fs13.access(file).then(() => true, () => false);
 var STARTUP_TOOL_STATES = /* @__PURE__ */ new Set(["no_desktop", "no_pipe", "shared_unloaded", "shared_failed", "shared_timeout"]);
 async function verifyDesktopAfterRepair(environment, { verify = verifyDesktopCompatibility, checkpoint = async () => {
 }, delay = () => new Promise((resolve) => setTimeout(resolve, 500)), onProgress = async () => {
@@ -6845,10 +6880,10 @@ async function verifyDesktopAfterRepair(environment, { verify = verifyDesktopCom
 var identity2 = async (pid) => exec6("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="], { timeout: 2e3, maxBuffer: 4096 }).then((result) => result.stdout.trim(), () => "");
 var jobPath = (root, id2) => {
   if (!UUID2.test(id2 || "")) throw new RelayError("INVALID_JOB", "\u51C6\u5907\u4EFB\u52A1\u7F16\u53F7\u65E0\u6548");
-  return path16.join(root, "jobs", `${id2}.json`);
+  return path17.join(root, "jobs", `${id2}.json`);
 };
 async function runPreparationJob(configDir2, id2, { createEnvironment, inspect = inspectPreparation, prepare = prepareSharedBackend, fingerprint = preparationFingerprint, verify = checkCompatibility, verifyDesktop = verifyDesktopCompatibility, repairRuntime = repairSharedRuntime } = {}) {
-  const root = path16.join(configDir2, "migration");
+  const root = path17.join(configDir2, "migration");
   const file = jobPath(root, id2);
   const lock = new InstanceLock(root, "worker.lock");
   await lock.acquire();
@@ -6929,7 +6964,7 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
       record.phase = "packaging";
       record.step = "\u751F\u6210\u8FC1\u79FB\u51C6\u5907\u5305";
       await save();
-      await fs12.mkdir(path16.dirname(record.context.packageRoot), { recursive: true, mode: 448 });
+      await fs13.mkdir(path17.dirname(record.context.packageRoot), { recursive: true, mode: 448 });
       const assertUnchanged = async () => {
         await checkpoint();
         if (await fingerprint(record.context) !== result.fingerprint) throw new RelayError("PREPARATION_CHANGED", "\u51C6\u5907\u671F\u95F4\u914D\u7F6E\u6216\u63D2\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
@@ -6939,7 +6974,7 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
         await assertUnchanged();
         await verify(manifest);
       } });
-      await writePrivate(path16.join(root, "prepared.json"), JSON.stringify({ id: id2, fingerprint: result.fingerprint, artifact: record.artifact }));
+      await writePrivate(path17.join(root, "prepared.json"), JSON.stringify({ id: id2, fingerprint: result.fingerprint, artifact: record.artifact }));
       record.phase = "complete";
       record.step = "\u51C6\u5907\u5305\u5DF2\u751F\u6210\uFF0C\u5C1A\u672A\u5207\u6362";
     }
@@ -6964,7 +6999,7 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
 // server/migration-cli.js
 var [configFlag, configDir, jobFlag, id] = process.argv.slice(2);
 try {
-  if (configFlag !== "--config-dir" || jobFlag !== "--job-id" || !path17.isAbsolute(configDir || "")) throw new Error("Invalid preparation arguments");
+  if (configFlag !== "--config-dir" || jobFlag !== "--job-id" || !path18.isAbsolute(configDir || "")) throw new Error("Invalid preparation arguments");
   await runPreparationJob(configDir, id, { createEnvironment: async (context) => {
     const configStore = new ConfigStore({ configDir });
     await configStore.load();

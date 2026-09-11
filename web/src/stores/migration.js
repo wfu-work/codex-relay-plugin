@@ -41,6 +41,18 @@ async function run(operation) {
   finally { state.submitting = false; schedule(100); }
 }
 
+async function runAndWait(operation, { timeoutMs = 20 * 60_000 } = {}) {
+  await run(operation);
+  if (state.error) throw new Error(state.error);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await refresh();
+    if (!active.value) return state.job;
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error('操作仍在后台运行，请稍后刷新查看进度');
+}
+
 async function cancel() {
   if (!active.value || state.submitting || state.job.cancelRequested) return;
   state.submitting = true;
@@ -60,4 +72,4 @@ function schedule(delay) { clearTimeout(polling); if (users) polling = setTimeou
 function start() { if (++users === 1) void tick(); }
 function stop() { users = Math.max(0, users - 1); if (!users) clearTimeout(polling); }
 function open() { state.open = true; schedule(0); }
-export function useMigration() { return { state, active, refresh, run, cancel, start, stop, open }; }
+export function useMigration() { return { state, active, refresh, run, runAndWait, cancel, start, stop, open }; }

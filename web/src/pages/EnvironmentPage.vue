@@ -11,8 +11,13 @@ import MigrationPreparationPanel from '../components/MigrationPreparationPanel.v
 const { state, stale, refresh, repair, start, stop } = useEnvironment();
 const { state: relay, api } = useRelay();
 const maintenanceBusy = ref('');
-const { open: openMigration } = useMigration();
+const { state: migrationState, open: openMigration, runAndWait } = useMigration();
 const data = computed(() => state.data);
+const quickFixBusy = ref(false);
+const quickFixLabel = computed(() => data.value?.backend.mode === 'shared' ? '一键修复共享后端' : '一键准备共享后端');
+const quickFixDescription = computed(() => data.value?.backend.mode === 'shared'
+  ? '自动重连共享服务与 Relay；如果桌面工具需要修复，会引导你退出桌面后自动完成。'
+  : '自动修复可用的执行路径、检查条件并生成准备包，整个过程都在控制台完成。');
 const cards = computed(() => {
   if (!data.value) return [];
   const d = data.value;
@@ -44,6 +49,41 @@ async function maintenanceAction(action) {
     await refresh(true);
   } finally { maintenanceBusy.value = ''; }
 }
+async function quickFix() {
+  if (quickFixBusy.value || state.loading || stale.value || !data.value || relay.dirty) {
+    if (relay.dirty) message.info('有未保存的设置，请先保存或取消更改。');
+    return;
+  }
+  quickFixBusy.value = true;
+  try {
+    openMigration();
+    if (data.value.backend.mode === 'shared') {
+      if (data.value.desktopTools.code === 'shared_runtime_restart_required') {
+        await runAndWait('repair-runtime');
+      } else {
+        if (data.value.backend.state !== 'ready') await maintenanceAction('backend');
+        if (data.value.relay.state !== 'connected') await maintenanceAction('relay');
+        await runAndWait('verify-desktop');
+      }
+      await refresh(true);
+      if (state.data?.desktopTools.state === 'passed' && state.data?.backend.state === 'ready') message.success('共享后端已恢复，桌面工具检查通过');
+      else message.warning('共享后端已处理，请查看向导中的检查结果');
+    } else {
+      if (data.value.actions.repair.enabled) await repair();
+      await refresh(true);
+      await runAndWait('check');
+      if (migrationState.job?.report?.readyToPrepare) {
+        await runAndWait('prepare');
+        message.success('共享后端准备包已生成，可在向导中继续启用');
+      } else {
+        message.warning('已完成自动检查，但仍有待处理项，请按向导提示操作');
+      }
+    }
+  } catch (error) {
+    message.error(error.message || '自动处理失败，请查看向导中的详细状态');
+    await refresh(true);
+  } finally { quickFixBusy.value = false; }
+}
 onMounted(start);
 onBeforeUnmount(stop);
 </script>
@@ -52,7 +92,7 @@ onBeforeUnmount(stop);
   <section class="route-page environment-page">
     <div class="section-title environment-heading">
       <div><div class="eyebrow">运行与恢复</div><h1>运行环境</h1><p>查看连接停在哪一步，检查本机环境与迁移结果。</p></div>
-      <a-button type="primary" :loading="state.loading" :disabled="state.repairing" @click="refresh(true)"><ReloadOutlined aria-hidden="true" />检查环境</a-button>
+      <a-button type="primary" :loading="state.loading" :disabled="state.repairing || quickFixBusy" @click="refresh(true)"><ReloadOutlined aria-hidden="true" />检查环境</a-button>
     </div>
 
     <div class="environment-freshness" aria-live="polite">
@@ -86,7 +126,7 @@ onBeforeUnmount(stop);
         <div v-if="data.executable.candidate && data.executable.needsRepair" class="environment-path"><span>已验证的候选路径</span><code>{{ data.executable.candidate.path }}</code></div>
         <div class="environment-panel-actions">
           <div><strong>{{ data.executable.message }}</strong><p>{{ data.actions.repair.reason }}</p><p v-if="relay.dirty">有未保存的设置，请先保存或取消更改。</p></div>
-          <a-button :loading="state.repairing" :disabled="stale || state.loading || relay.dirty || !data.actions.repair.enabled" @click="repair"><ToolOutlined aria-hidden="true" />修复执行路径</a-button>
+          <a-button :loading="state.repairing" :disabled="stale || state.loading || relay.dirty || quickFixBusy || !data.actions.repair.enabled" @click="repair"><ToolOutlined aria-hidden="true" />修复执行路径</a-button>
         </div>
         <details class="environment-details"><summary>进程与目录详情</summary><dl>
           <div><dt>插件进程</dt><dd>PID {{ data.plugin.pid }} · 启动于 {{ formatTime(data.plugin.startedAt) }}</dd></div>
@@ -102,9 +142,13 @@ onBeforeUnmount(stop);
 
       <section class="environment-panel environment-maintenance" aria-labelledby="environment-maintenance">
         <div class="environment-panel-heading"><div><h2 id="environment-maintenance">运行维护</h2><p>常用恢复操作集中在这里完成。共享模式下只重连插件连接，不会停止桌面共享后端或删除历史数据。</p></div><a-tag color="blue">可视化操作</a-tag></div>
+        <div class="environment-quick-fix">
+          <div><strong>{{ quickFixLabel }}</strong><p>{{ quickFixDescription }}</p></div>
+          <a-button type="primary" :loading="quickFixBusy" :disabled="quickFixBusy || state.loading || stale || relay.dirty" @click="quickFix"><ToolOutlined aria-hidden="true" />{{ quickFixLabel }}</a-button>
+        </div>
         <div class="environment-maintenance-grid">
-          <div><strong>重连共享后端</strong><p>修复插件与共享 App Server 的连接或订阅状态。</p><a-button :loading="maintenanceBusy === 'backend'" :disabled="Boolean(maintenanceBusy)" @click="maintenanceAction('backend')">重新连接后端</a-button></div>
-          <div><strong>重连 Relay</strong><p>重新建立 Flutter 与本机之间的 Relay 通道。</p><a-button :loading="maintenanceBusy === 'relay'" :disabled="Boolean(maintenanceBusy)" @click="maintenanceAction('relay')">重新连接 Relay</a-button></div>
+          <div><strong>重连共享后端</strong><p>修复插件与共享 App Server 的连接或订阅状态。</p><a-button :loading="maintenanceBusy === 'backend'" :disabled="Boolean(maintenanceBusy) || quickFixBusy" @click="maintenanceAction('backend')">重新连接后端</a-button></div>
+          <div><strong>重连 Relay</strong><p>重新建立 Flutter 与本机之间的 Relay 通道。</p><a-button :loading="maintenanceBusy === 'relay'" :disabled="Boolean(maintenanceBusy) || quickFixBusy" @click="maintenanceAction('relay')">重新连接 Relay</a-button></div>
           <div><strong>安装与检查</strong><p>{{ data.backend.mode === 'shared' ? '查看已启用的共享安装，检查当前桌面工具。' : '检查迁移条件并生成准备包。' }}</p><a-button @click="openMigration">{{ data.backend.mode === 'shared' ? '查看共享安装' : '打开迁移向导' }}</a-button></div>
         </div>
       </section>

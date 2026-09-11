@@ -143,6 +143,11 @@ class RuntimeProxy {
   async connect() { return this.#request("/api/connection/connect", "POST"); }
   async disconnect() { return this.#request("/api/connection/disconnect", "POST"); }
   async testConnection() { return this.#request("/api/connection/test", "POST"); }
+  async remoteControlStatus() { return this.#request("/api/remote-control"); }
+  async remoteControlInstall() { return this.#request("/api/remote-control/install", "POST"); }
+  async remoteControlStart() { return this.#request("/api/remote-control/start", "POST"); }
+  async remoteControlStop() { return this.#request("/api/remote-control/stop", "POST"); }
+  async remoteControlPair() { return this.#request("/api/remote-control/pair", "POST"); }
   async updateConfig(patch, credential) {
     return this.#request("/api/config", "PUT", { config: patch, credential });
   }

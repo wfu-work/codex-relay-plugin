@@ -20,6 +20,7 @@ async function server(t, { socketPath, initialize = true } = {}) {
   const wss = new WebSocketServer({ server: httpServer });
   const requests = [];
   let turns = 0;
+  let settings = { model: "desktop-model", effort: "medium", approvalPolicy: "on-request", approvalsReviewer: "user", activePermissionProfile: { id: ":workspace" } };
   wss.on("connection", socket => {
     socket.subscribed = new Set();
     socket.on("message", data => {
@@ -28,8 +29,16 @@ async function server(t, { socketPath, initialize = true } = {}) {
       if (m.id === undefined) return;
       const respond = result => socket.send(JSON.stringify({ id: m.id, result }));
       if (m.method === "initialize") { if (initialize) respond({ userAgent: "codex/0.153.4" }); }
-      else if (m.method === "thread/resume") { socket.subscribed.add(m.params.threadId); respond({ thread: { id: m.params.threadId } }); }
+      else if (m.method === "thread/resume") { socket.subscribed.add(m.params.threadId); respond({ ...settings, reasoningEffort: settings.effort, thread: { id: m.params.threadId } }); }
       else if (m.method === "thread/read") respond({ thread: { id: m.params.threadId, cwd: "/allowed", status: { type: "active" }, turns: [] } });
+      else if (m.method === "thread/settings/update") {
+        const { threadId, permissions, ...patch } = m.params;
+        settings = { ...settings, ...patch, ...(permissions ? { activePermissionProfile: { id: permissions } } : {}) };
+        for (const peer of wss.clients) if (peer.subscribed.has(threadId)) {
+          peer.send(JSON.stringify({ method: "thread/settings/updated", params: { threadId, threadSettings: settings } }));
+        }
+        respond({});
+      }
       else if (m.method === "turn/start") {
         turns++;
         if (m.params.input[0].text === "drop-reply") { socket.terminate(); return; }
@@ -167,4 +176,26 @@ test("a lost backend connection invalidates event replay without reusing sequenc
   buffer.invalidateReplay();
   assert.equal(buffer.after(cursor), null);
   assert.ok(buffer.nextSequence() > cursor + 1);
+});
+
+
+test("composer settings synchronize both ways and recover after reconnect", async t => {
+  const s = await server(t);
+  const phone = client(t, s.endpoint), desktop = client(t, s.endpoint);
+  await Promise.all([phone.start(), desktop.start()]);
+  await Promise.all([phone.subscribeThread("thread-1"), desktop.subscribeThread("thread-1")]);
+  assert.equal(phone.threadSettings("thread-1").effort, "medium");
+  await phone.updateThreadSettings("thread-1", { model: "phone-model", effort: "high", permissions: ":danger-full-access", approvalPolicy: "never" });
+  await until(() => desktop.threadSettings("thread-1")?.effort === "high");
+  assert.equal(desktop.threadSettings("thread-1").activePermissionProfile.id, ":danger-full-access");
+  await desktop.updateThreadSettings("thread-1", { model: "desktop-model", effort: "ultra", permissions: ":workspace", approvalPolicy: "on-request", approvalsReviewer: "auto_review" });
+  await until(() => phone.threadSettings("thread-1")?.effort === "ultra");
+  assert.equal(phone.threadSettings("thread-1").approvalsReviewer, "auto_review");
+  const resumes = s.requests.filter(r => r.method === "thread/resume").length;
+  assert.equal(resumes, 2, "notifications should avoid extra resume requests");
+  const socket = s.requests.find(r => r.method === "thread/resume").socket;
+  socket.terminate();
+  await until(() => s.requests.filter(r => r.method === "thread/resume").length > resumes);
+  await until(() => phone.state === "ready" && desktop.state === "ready");
+  assert.equal(phone.threadSettings("thread-1").effort, "ultra");
 });

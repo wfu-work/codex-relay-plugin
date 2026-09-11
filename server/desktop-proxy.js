@@ -26,7 +26,8 @@ export async function bindDesktopPipe(root, config) {
   const temporary = `${stable}.${process.pid}`;
   await fs.symlink(pipe, temporary);
   try { await fs.rename(temporary, stable); } finally { await fs.rm(temporary, { force: true }); }
-  return { ...config, "mcp_servers.codex_app": { ...tools, env: { ...tools.env, [DESKTOP_PIPE_KEY]: stable } } };
+  const env = { ...tools.env, [DESKTOP_PIPE_KEY]: stable };
+  return { ...config, "mcp_servers.codex_app": { ...tools, env, env_vars: tools.env_vars?.filter(key => !Object.hasOwn(env, key)) } };
 }
 
 export async function refreshDesktopTools(endpoint) {

@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { RelayError } from "./errors.js";
 
-export const MUTATING_COMMANDS = new Set(["thread.create", "turn.start", "turn.steer", "turn.interrupt", "approval.respond", "userInput.respond"]);
+export const MUTATING_COMMANDS = new Set(["thread.create", "thread.settings.update", "turn.start", "turn.steer", "turn.interrupt", "approval.respond", "userInput.respond"]);
 const hash = value => createHash("sha256").update(value).digest("hex");
 
 // Persist intent before dispatch. If the process dies before the response is

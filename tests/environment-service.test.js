@@ -143,3 +143,16 @@ test('expired, invalid and failed checks cannot remain visually healthy', () => 
   assert.match(describeEnvironmentError('spawn codex ENOENT'), /执行路径/);
   assert.match(describeEnvironmentError('thread already has an active writer'), /共用后端/);
 });
+
+test('migration history follows the selected shared package instead of an earlier failed experiment', async t => {
+  const f = await fixture(t);
+  const { writePrivate } = await import('../server/shared-backend-manager.js');
+  const root = path.join(f.root, 'migration/packages/current');
+  f.config.codex = { ...f.config.codex, connectionMode: 'shared', appServerEndpoint: `unix://${root}/rpc.sock` };
+  await writePrivate(path.join(root, 'manifest.json'), JSON.stringify({ root, endpoint: f.config.codex.appServerEndpoint, relayConfig: path.join(f.root, 'config.json'), codexHome: f.root }));
+  await writePrivate(path.join(root, 'activation.json'), '{"phase":"active"}');
+  await writePrivate(path.join(f.inspector.sharedRoot, 'migration-result.json'), '{"phase":"failed","error":"obsolete failure"}');
+  const migration = await f.inspector.inspectMigration();
+  assert.equal(migration.state, 'active');
+  assert.equal(migration.last, null);
+});

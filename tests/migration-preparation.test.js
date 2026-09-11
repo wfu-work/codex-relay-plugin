@@ -3,10 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { MigrationPreparation, runPreparationJob } from '../server/migration-preparation.js';
+import { MigrationPreparation, runPreparationJob, verifyDesktopAfterRepair } from '../server/migration-preparation.js';
 import { inspectPreparation, preparationFingerprint } from '../server/migration-preflight.js';
 import { prepareSharedBackend } from '../server/shared-backend-prepare.js';
 import { activate, readJson, writePrivate } from '../server/shared-backend-manager.js';
+
+test('post-repair verification waits for the actual catalog after transient startup failures', async () => {
+  const proofs = [{ code: 'shared_unloaded', state: 'blocked' }, { code: 'shared_failed', state: 'blocked' }, { code: 'shared_passed', state: 'passed', toolCount: 27 }];
+  const result = await verifyDesktopAfterRepair({}, { verify: async () => proofs.shift(), delay: async () => {} });
+  assert.equal(result.code, 'shared_passed');
+  assert.equal(result.toolCount, 27);
+});
+
+test('post-repair verification never turns persistent failure into success or retries signature rejection', async () => {
+  let attempts = 0;
+  const verify = async () => { attempts++; return { code: 'shared_failed', state: 'blocked' }; };
+  assert.equal((await verifyDesktopAfterRepair({}, { verify, delay: async () => {} })).state, 'blocked');
+  assert.equal(attempts, 3);
+  attempts = 0;
+  assert.equal((await verifyDesktopAfterRepair({}, { verify: async () => { attempts++; return { code: 'invalid_signature', state: 'blocked' }; }, delay: async () => {} })).code, 'invalid_signature');
+  assert.equal(attempts, 1);
+  await assert.rejects(verifyDesktopAfterRepair({}, { checkpoint: async () => { throw Object.assign(Error('cancelled'), { code: 'PREPARATION_CANCELLED' }); }, verify }), { code: 'PREPARATION_CANCELLED' });
+  assert.equal(attempts, 1);
+});
 
 async function fixture(t) {
   const root = await fs.mkdtemp('/tmp/relay-prep-');
@@ -69,7 +88,7 @@ test('ready package is atomic, remains inactive, and keeps live config and older
   const manifest = await readJson(path.join(f.context.packageRoot, 'manifest.json'));
   assert.equal(manifest.root, f.context.packageRoot);
   assert.equal(manifest.activationBlocked, true);
-  await assert.rejects(activate(manifest), /尚未通过桌面工具/);
+  await assert.rejects(activate(manifest), /EACCES|桌面、CLI 或安装路径不符合/);
   assert.equal(await fs.readFile(path.join(f.configDir, 'config.json'), 'utf8'), before);
   assert.deepEqual(await readJson(path.join(f.environment.sharedRoot, 'migration-result.json')), { phase: 'failed', backup: 'keep' });
   assert.equal((await fs.stat(f.context.packageRoot)).mode & 0o777, 0o700);
@@ -173,4 +192,30 @@ test('desktop compatibility runs as a persistent job and cannot generate or acti
   assert.equal(result.job.report.checks[1].state, 'blocked');
   assert.equal(result.job.report.readyToActivate, false);
   assert.equal(result.prepared, null);
+});
+
+test('the selected active installation survives plugin updates and supersedes an old prepared package', async t => {
+  const f = await fixture(t);
+  const root = path.join(f.configDir, 'migration/packages/active01');
+  const manifest = { root, endpoint: `unix://${root}/rpc.sock`, codexHome: f.codexHome, relayConfig: path.join(f.configDir, 'config.json') };
+  f.environment.service.configStore.get = () => ({ codex: { connectionMode: 'shared', appServerEndpoint: manifest.endpoint } });
+  await writePrivate(path.join(root, 'manifest.json'), JSON.stringify(manifest));
+  await writePrivate(path.join(root, 'activation.json'), JSON.stringify({ phase: 'active', environment: { TOKEN: 'never-return-this' } }));
+  await writePrivate(path.join(f.configDir, 'migration/prepared.json'), JSON.stringify({ id: f.id, fingerprint: 'outdated', artifact: { root: f.context.packageRoot } }));
+  await writePrivate(path.join(f.pluginRoot, 'server/agent-cli.js'), 'new build');
+  const status = await f.controller.status();
+  assert.equal(status.prepared.state, 'active');
+  assert.equal(status.prepared.root, root);
+  assert.equal(JSON.stringify(status).includes('never-return-this'), false);
+  await writePrivate(path.join(root, 'activation.json'), '{"phase":"prepared"}');
+  assert.equal((await f.controller.status()).prepared.state, 'configured');
+  await writePrivate(path.join(root, 'manifest.json'), JSON.stringify({ ...manifest, codexHome: '/other' }));
+  assert.equal((await f.controller.status()).installation, null);
+});
+
+test('a skipped signature check is shown as unchecked', async t => {
+  const f = await fixture(t);
+  await f.controller.start('verify-desktop', f.id);
+  await f.run({ verifyDesktop: async () => ({ checkedAt: new Date().toISOString(), state: 'blocked', code: 'no_desktop', runtime: null, message: 'no desktop' }) });
+  assert.equal((await f.controller.status()).job.report.checks[0].state, 'unchecked');
 });

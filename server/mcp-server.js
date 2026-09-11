@@ -62,6 +62,31 @@ const tools = [
     description: "Run local Codex availability and configuration checks and return redacted logs.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "relay_remote_control_status",
+    description: "Detect the official Codex Remote Control installation and the authorized desktop bridge without exposing credentials.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "relay_remote_control_start",
+    description: "Start the official Codex Remote Control daemon when its standalone installation is available.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "relay_remote_control_install",
+    description: "Install the official Codex standalone runtime from the fixed official installer URL after an explicit user request.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "relay_remote_control_pair",
+    description: "Request a short-lived official Remote Control pairing code; the code is returned only to this caller.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "relay_remote_control_stop",
+    description: "Stop the official Codex Remote Control daemon started for this user.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -111,6 +136,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "relay_diagnostics":
         result = await service.diagnostics();
+        break;
+      case "relay_remote_control_status":
+        result = await service.remoteControlStatus();
+        break;
+      case "relay_remote_control_start":
+        result = await service.remoteControlStart();
+        break;
+      case "relay_remote_control_install":
+        result = await service.remoteControlInstall();
+        break;
+      case "relay_remote_control_pair":
+        result = await service.remoteControlPair();
+        break;
+      case "relay_remote_control_stop":
+        result = await service.remoteControlStop();
         break;
       default:
         throw new Error(`Unknown tool: ${request.params.name}`);

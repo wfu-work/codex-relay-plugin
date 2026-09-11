@@ -18,6 +18,11 @@ const expectedTools = [
   "relay_test_connection",
   "relay_update_config",
   "relay_diagnostics",
+  "relay_remote_control_status",
+  "relay_remote_control_start",
+  "relay_remote_control_install",
+  "relay_remote_control_pair",
+  "relay_remote_control_stop",
 ].sort();
 
 const transport = new StdioClientTransport({
@@ -47,6 +52,10 @@ try {
   const status = await client.callTool({ name: "relay_get_status", arguments: {} });
   if (status.isError || !status.content?.some((item) => item.type === "text")) {
     throw new Error("relay_get_status 没有返回有效文本结果");
+  }
+  const remoteStatus = await client.callTool({ name: "relay_remote_control_status", arguments: {} });
+  if (remoteStatus.isError || !remoteStatus.content?.some((item) => item.type === "text")) {
+    throw new Error("relay_remote_control_status 没有返回有效文本结果");
   }
   sharedBackend = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise(resolve => sharedBackend.once("listening", resolve));

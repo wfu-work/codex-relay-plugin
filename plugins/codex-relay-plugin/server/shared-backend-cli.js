@@ -3702,7 +3702,7 @@ var require_websocket_server = __commonJS({
 });
 
 // server/shared-backend-cli.js
-import path5 from "node:path";
+import path6 from "node:path";
 import { spawn as spawn2 } from "node:child_process";
 
 // server/desktop-proxy.js
@@ -4514,7 +4514,8 @@ async function bindDesktopPipe(root, config) {
   } finally {
     await fs.rm(temporary, { force: true });
   }
-  return { ...config, "mcp_servers.codex_app": { ...tools, env: { ...tools.env, [DESKTOP_PIPE_KEY]: stable } } };
+  const env = { ...tools.env, [DESKTOP_PIPE_KEY]: stable };
+  return { ...config, "mcp_servers.codex_app": { ...tools, env, env_vars: tools.env_vars?.filter((key) => !Object.hasOwn(env, key)) } };
 }
 async function refreshDesktopTools(endpoint) {
   const transport = new SharedAppServerTransport(endpoint);
@@ -4627,10 +4628,10 @@ async function proxyDesktop({ endpoint, config, input = process.stdin, output = 
 // server/shared-backend-manager.js
 import fs3 from "node:fs/promises";
 import { constants } from "node:fs";
-import path4 from "node:path";
+import path5 from "node:path";
 import os2 from "node:os";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile as execFile2, spawn } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
 import { createHash } from "node:crypto";
 
 // server/instance-lock.js
@@ -4724,9 +4725,22 @@ var InstanceLock = class {
   }
 };
 
-// server/shared-backend-manager.js
+// server/official-runtime.js
+import path4 from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 var exec = promisify(execFile);
+var officialNode = (app) => path4.join(app, "Contents/Resources/cua_node/bin/node");
+async function verifyOfficialRuntime(app) {
+  const runtime = officialNode(app);
+  await exec("/usr/bin/codesign", ["--verify", "--strict", '-R=identifier "node" and anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"', runtime], { timeout: 5e3, maxBuffer: 4096 });
+  return { verified: true, teamId: "2DC432GLL2", identifier: "node" };
+}
+
+// server/shared-backend-manager.js
+var exec2 = promisify2(execFile2);
 var ENV_KEYS = ["CODEX_CLI_PATH", "CODEX_APP_SERVER_FORCE_CLI", "CODEX_APP_SERVER_WS_URL", "CODEX_HOME"];
+var COMPATIBILITY = { minDesktopVersion: "26.901.51231", minCliVersion: "0.153.4" };
 var escapeXml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 function plist(value) {
   const encode = (item) => Array.isArray(item) ? `<array>${item.map(encode).join("")}</array>` : typeof item === "object" ? `<dict>${Object.entries(item).map(([key, val]) => `<key>${escapeXml(key)}</key>${encode(val)}`).join("")}</dict>` : typeof item === "boolean" ? `<${item}/>` : typeof item === "number" ? `<integer>${item}</integer>` : `<string>${escapeXml(item)}</string>`;
@@ -4736,7 +4750,7 @@ function plist(value) {
 `;
 }
 async function writePrivate(file, value) {
-  await fs3.mkdir(path4.dirname(file), { recursive: true, mode: 448 });
+  await fs3.mkdir(path5.dirname(file), { recursive: true, mode: 448 });
   const temporary = `${file}.${process.pid}.tmp`;
   await fs3.writeFile(temporary, value, { mode: 384 });
   await fs3.rename(temporary, file);
@@ -4750,15 +4764,33 @@ async function readJson(file, fallback) {
   }
 }
 var digest = async (file) => createHash("sha256").update(await fs3.readFile(file)).digest("hex");
+function versionParts(value) {
+  const match = String(value || "").trim().match(/(?:^|\s)(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return match ? match.slice(1).map((part) => Number(part || 0)) : null;
+}
+function isVersionAtLeast(actual, minimum) {
+  const a = versionParts(actual);
+  const b = versionParts(minimum);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return true;
+}
 async function checkCompatibility(manifest) {
   const [{ stdout: desktop }, { stdout: cli }, binaryHash] = await Promise.all([
-    exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path4.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5e3, maxBuffer: 4096 }),
-    exec(manifest.binary, ["--version"], { timeout: 5e3, maxBuffer: 4096 }),
+    exec2("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path5.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5e3, maxBuffer: 4096 }),
+    exec2(manifest.binary, ["--version"], { timeout: 5e3, maxBuffer: 4096 }),
     digest(manifest.binary)
   ]);
-  if (desktop.trim() !== manifest.desktopVersion || cli.trim() !== manifest.cliVersion || binaryHash !== manifest.binaryHash) {
-    throw new Error("\u684C\u9762\u6216 CLI \u5DF2\u66F4\u65B0\uFF0C\u5171\u4EAB\u542F\u52A8\u5DF2\u6682\u505C\uFF1B\u8BF7\u91CD\u65B0\u9A8C\u8BC1\u517C\u5BB9\u7248\u672C\u540E\u751F\u6210\u542F\u52A8\u5305");
+  const desktopVersion = desktop.trim();
+  const cliVersion = cli.trim().replace(/^codex-cli\s+/, "");
+  const resources = path5.join(manifest.desktopApp, "Contents/Resources");
+  const required = ["codex", "cua_node/bin/node", "plugins/openai-bundled/plugins/codex-app-tools/server.mjs", "plugins/openai-bundled/plugins/codex-app-tools/desktop-mcp.json"];
+  if (!isVersionAtLeast(desktopVersion, manifest.minDesktopVersion || COMPATIBILITY.minDesktopVersion) || !isVersionAtLeast(cliVersion, manifest.minCliVersion || COMPATIBILITY.minCliVersion) || binaryHash !== manifest.binaryHash || !await Promise.all(required.map((file) => fs3.access(path5.join(resources, file)).then(() => true, () => false))).then((values) => values.every(Boolean))) {
+    throw new Error("\u684C\u9762\u6216 CLI \u5B89\u88C5\u4E0D\u6EE1\u8DB3\u5F53\u524D\u542F\u52A8\u5668\u7684\u6700\u4F4E\u517C\u5BB9\u8981\u6C42\uFF0C\u6216\u5B89\u88C5\u6587\u4EF6\u5DF2\u53D1\u751F\u53D8\u5316\uFF1B\u8BF7\u91CD\u65B0\u68C0\u67E5\u5E76\u751F\u6210\u51C6\u5907\u5305");
   }
+  return { desktopVersion, cliVersion: `codex-cli ${cliVersion}`, binaryHash };
 }
 function processConflicts(output, allowedPids = []) {
   return output.split("\n").flatMap((line) => {
@@ -4772,18 +4804,18 @@ function processConflicts(output, allowedPids = []) {
   });
 }
 async function assertStopped(allowedPids = [], manifest, kinds = ["desktop", "backend", "relay"]) {
-  const { stdout } = await exec("/bin/ps", ["-axo", "pid=,ppid=,args="], { maxBuffer: 8 * 1024 * 1024 });
+  const { stdout } = await exec2("/bin/ps", ["-axo", "pid=,ppid=,args="], { maxBuffer: 8 * 1024 * 1024 });
   const candidates = processConflicts(stdout, allowedPids).filter((item) => kinds.includes(item.kind));
   const conflicts = [];
   for (const item of candidates) {
     if (manifest) {
-      const { stdout: details } = await exec("/bin/ps", ["eww", "-p", String(item.pid), "-o", "command="]).catch(() => ({ stdout: "" }));
+      const { stdout: details } = await exec2("/bin/ps", ["eww", "-p", String(item.pid), "-o", "command="]).catch(() => ({ stdout: "" }));
       if (!details) continue;
       const key = item.kind === "relay" ? "CODEX_RELAY_CONFIG_DIR" : "CODEX_HOME";
       const match = details.match(new RegExp(`(?:^| )${key}=(.*?)(?= [A-Za-z_][A-Za-z_0-9]*=|$)`));
-      const home = match?.[1] || path4.join(os2.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
-      const target = item.kind === "relay" ? path4.dirname(manifest.relayConfig) : manifest.codexHome;
-      if (path4.resolve(home) !== path4.resolve(target)) continue;
+      const home = match?.[1] || path5.join(os2.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
+      const target = item.kind === "relay" ? path5.dirname(manifest.relayConfig) : manifest.codexHome;
+      if (path5.resolve(home) !== path5.resolve(target)) continue;
     }
     conflicts.push(item);
   }
@@ -4791,13 +4823,13 @@ async function assertStopped(allowedPids = [], manifest, kinds = ["desktop", "ba
 }
 async function identity(pid) {
   try {
-    return (await exec("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="])).stdout.trim();
+    return (await exec2("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="])).stdout.trim();
   } catch {
     return "";
   }
 }
 async function ownedRuntime(manifest) {
-  const runtime = await readJson(path4.join(manifest.root, "runtime.json"), null);
+  const runtime = await readJson(path5.join(manifest.root, "runtime.json"), null);
   if (!runtime || runtime.endpoint !== manifest.endpoint || !runtime.pid || !runtime.identity) return null;
   return await identity(runtime.pid) === runtime.identity ? runtime : null;
 }
@@ -4828,31 +4860,37 @@ async function waitReady(manifest, timeoutMs = 12e3) {
   throw new Error("\u5171\u4EAB\u540E\u7AEF\u672A\u5C31\u7EEA\uFF1B\u5DF2\u505C\u6B62\u542F\u52A8\u684C\u9762\uFF0C\u907F\u514D\u521B\u5EFA\u53E6\u4E00\u4E2A\u6267\u884C\u540E\u7AEF");
 }
 function expectedEnvironment(manifest) {
-  return { CODEX_CLI_PATH: path4.join(manifest.root, "codex-proxy"), CODEX_APP_SERVER_FORCE_CLI: "1", CODEX_APP_SERVER_WS_URL: "", CODEX_HOME: manifest.codexHome };
+  return { CODEX_CLI_PATH: path5.join(manifest.root, "codex-proxy"), CODEX_APP_SERVER_FORCE_CLI: "1", CODEX_APP_SERVER_WS_URL: "", CODEX_HOME: manifest.codexHome };
 }
 async function environment() {
   return Object.fromEntries(await Promise.all(ENV_KEYS.map(async (key) => {
-    const result = await exec("/bin/launchctl", ["getenv", key]).catch(() => ({ stdout: "" }));
+    const result = await exec2("/bin/launchctl", ["getenv", key]).catch(() => ({ stdout: "" }));
     return [key, result.stdout.replace(/\n$/, "")];
   })));
 }
 async function setEnvironment(values) {
-  for (const [key, value] of Object.entries(values)) await exec("/bin/launchctl", value ? ["setenv", key, value] : ["unsetenv", key]);
+  for (const [key, value] of Object.entries(values)) await exec2("/bin/launchctl", value ? ["setenv", key, value] : ["unsetenv", key]);
 }
 function serviceDefinition(manifest) {
   return {
     Label: manifest.label,
-    ProgramArguments: [manifest.node, path4.join(manifest.root, "shared-backend-cli.js"), "service", "--manifest", path4.join(manifest.root, "manifest.json")],
+    // The desktop authenticates the tool, its parent and its grandparent.
+    // The service manager is in that chain; a shell/Homebrew Node breaks it.
+    ProgramArguments: [officialNode(manifest.desktopApp), path5.join(manifest.root, "shared-backend-cli.js"), "service", "--manifest", path5.join(manifest.root, "manifest.json")],
     RunAtLoad: true,
     KeepAlive: { SuccessfulExit: false },
     ThrottleInterval: 15,
     ProcessType: "Interactive",
     Umask: 63,
-    StandardOutPath: path4.join(manifest.root, "service.log"),
-    StandardErrorPath: path4.join(manifest.root, "service.log")
+    StandardOutPath: path5.join(manifest.root, "service.log"),
+    StandardErrorPath: path5.join(manifest.root, "service.log")
   };
 }
 async function runService(manifest) {
+  await verifyOfficialRuntime(manifest.desktopApp);
+  if (await fs3.realpath(process.execPath) !== await fs3.realpath(officialNode(manifest.desktopApp))) {
+    throw new Error("\u5171\u4EAB\u670D\u52A1\u5FC5\u987B\u4F7F\u7528 Codex \u81EA\u5E26\u7684\u7B7E\u540D Node \u542F\u52A8\uFF0C\u8BF7\u5728\u8FD0\u884C\u73AF\u5883\u4E2D\u4FEE\u590D\u5171\u4EAB\u670D\u52A1\u8FD0\u884C\u65F6");
+  }
   const lock = new InstanceLock(manifest.root, "service.lock");
   await lock.acquire();
   let child;
@@ -4869,7 +4907,7 @@ async function runService(manifest) {
   process.on("SIGINT", stop);
   try {
     await checkCompatibility(manifest);
-    await assertStopped([], manifest, ["backend"]);
+    if (!await isActiveSharedInstallation(manifest)) await assertStopped([], manifest, ["backend"]);
     if (await probeEndpoint(manifest.endpoint)) throw new Error("\u5171\u4EAB Socket \u5DF2\u88AB\u5360\u7528\uFF0C\u62D2\u7EDD\u63A5\u7BA1\u672A\u77E5\u540E\u7AEF");
     const socketPath = manifest.endpoint.slice(7);
     const stat = await fs3.lstat(socketPath).catch((error) => {
@@ -4897,7 +4935,7 @@ async function runService(manifest) {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
-    await writePrivate(path4.join(manifest.root, "runtime.json"), JSON.stringify({ pid: child.pid, identity: await identity(child.pid), endpoint: manifest.endpoint }));
+    await writePrivate(path5.join(manifest.root, "runtime.json"), JSON.stringify({ pid: child.pid, identity: await identity(child.pid), endpoint: manifest.endpoint }));
     const result = await exited;
     if (!stopping) throw new Error(`\u5171\u4EAB\u540E\u7AEF\u9000\u51FA (${result.code ?? result.signal})`);
   } finally {
@@ -4914,7 +4952,7 @@ async function runService(manifest) {
     }
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
-    await fs3.rm(path4.join(manifest.root, "runtime.json"), { force: true });
+    await fs3.rm(path5.join(manifest.root, "runtime.json"), { force: true });
     await lock.release();
   }
 }
@@ -4922,10 +4960,10 @@ async function backupData(manifest, target) {
   await fs3.mkdir(target, { recursive: false, mode: 448 });
   const entries = await fs3.readdir(manifest.codexHome);
   const selected = entries.filter((name) => ["sessions", "archived_sessions", "history.jsonl", "auth.json", "sqlite", "memories", "automations", "skills", "AGENTS.md", ".codex-global-state.json", ".codex-global-state.json.backup"].includes(name) || /\.toml$|\.(?:sqlite|db)(?:-wal|-shm)?$/.test(name));
-  for (const name of selected) await fs3.cp(path4.join(manifest.codexHome, name), path4.join(target, "codex", name), { recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true });
-  await fs3.cp(manifest.relayConfig, path4.join(target, "relay-config.json"), { mode: constants.COPYFILE_FICLONE });
-  if (manifest.desktopProfile) await fs3.cp(manifest.desktopProfile, path4.join(target, "desktop-profile"), { recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true, filter: (source) => !["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"].includes(path4.basename(source)) });
-  await writePrivate(path4.join(target, "inventory.json"), JSON.stringify({ createdAt: (/* @__PURE__ */ new Date()).toISOString(), codexHome: manifest.codexHome, files: selected }, null, 2));
+  for (const name of selected) await fs3.cp(path5.join(manifest.codexHome, name), path5.join(target, "codex", name), { recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true });
+  await fs3.cp(manifest.relayConfig, path5.join(target, "relay-config.json"), { mode: constants.COPYFILE_FICLONE });
+  if (manifest.desktopProfile) await fs3.cp(manifest.desktopProfile, path5.join(target, "desktop-profile"), { recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true, filter: (source) => !["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"].includes(path5.basename(source)) });
+  await writePrivate(path5.join(target, "inventory.json"), JSON.stringify({ createdAt: (/* @__PURE__ */ new Date()).toISOString(), codexHome: manifest.codexHome, files: selected }, null, 2));
 }
 function patchRelay(config, endpoint) {
   return { ...config, codex: { ...config.codex, connectionMode: "shared", appServerEndpoint: endpoint } };
@@ -4940,8 +4978,8 @@ function restoreRelay(config, previousCodex) {
 }
 async function bootout(manifest) {
   const target = `gui/${process.getuid()}/${manifest.label}`;
-  const exists = await exec("/bin/launchctl", ["print", target]).then(() => true, () => false);
-  if (exists) await exec("/bin/launchctl", ["bootout", target]);
+  const exists = await exec2("/bin/launchctl", ["print", target]).then(() => true, () => false);
+  if (exists) await exec2("/bin/launchctl", ["bootout", target]);
   const deadline = Date.now() + 8e3;
   while (await ownedRuntime(manifest)) {
     if (Date.now() > deadline) throw new Error("\u5171\u4EAB\u8FDB\u7A0B\u5C1A\u672A\u505C\u6B62\uFF0C\u6682\u4E0D\u6062\u590D\u72EC\u7ACB\u540E\u7AEF\u914D\u7F6E");
@@ -4949,35 +4987,34 @@ async function bootout(manifest) {
   }
 }
 async function activate(manifest) {
-  if (manifest.activationBlocked) throw new Error("\u6B64\u51C6\u5907\u5305\u5C1A\u672A\u901A\u8FC7\u684C\u9762\u5DE5\u5177\u517C\u5BB9\u6027\u9A8C\u8BC1\uFF0C\u4E0D\u80FD\u542F\u7528\u5171\u4EAB\u540E\u7AEF\u3002\u8BF7\u5148\u89E3\u51B3\u63A7\u5236\u53F0\u4E2D\u7684\u5207\u6362\u963B\u585E");
-  const activationFile = path4.join(manifest.root, "activation.json");
+  const activationFile = path5.join(manifest.root, "activation.json");
   if (await readJson(activationFile, null)) throw new Error("\u5DF2\u6709\u5207\u6362\u8BB0\u5F55\uFF1B\u8BF7\u5148\u68C0\u67E5\u72B6\u6001\u6216\u6267\u884C rollback");
   await checkCompatibility(manifest);
   await assertStopped([], manifest);
   const config = await readJson(manifest.relayConfig);
   if (!config.codex) throw new Error("\u672A\u627E\u5230\u73B0\u6709 Relay \u914D\u7F6E\uFF0C\u62D2\u7EDD\u8986\u76D6\u4E3A\u9ED8\u8BA4\u914D\u7F6E");
-  const agentBundle = await fs3.readFile(path4.join(manifest.root, "plugin/server/agent-cli.js"), "utf8");
+  const agentBundle = await fs3.readFile(path5.join(manifest.root, "plugin/server/agent-cli.js"), "utf8");
   if (!agentBundle.includes("appServerEndpoint") || !agentBundle.includes("SharedAppServerTransport")) throw new Error("\u5DF2\u5B89\u88C5 Relay \u5C1A\u4E0D\u652F\u6301\u5171\u4EAB\u540E\u7AEF\uFF0C\u8BF7\u5148\u66F4\u65B0\u63D2\u4EF6");
   const priorPlist = await fs3.readFile(manifest.launchAgent).catch((error) => {
     if (error.code !== "ENOENT") throw error;
     return null;
   });
   if (priorPlist) throw new Error("LaunchAgent \u6587\u4EF6\u5DF2\u5B58\u5728\uFF0C\u62D2\u7EDD\u8986\u76D6\uFF1B\u8BF7\u5148\u68C0\u67E5\u5DF2\u6709\u5B89\u88C5");
-  const backup = path4.join(manifest.root, "backups", (/* @__PURE__ */ new Date()).toISOString().replaceAll(":", "-"));
-  await fs3.mkdir(path4.dirname(backup), { recursive: true, mode: 448 });
+  const backup = path5.join(manifest.root, "backups", (/* @__PURE__ */ new Date()).toISOString().replaceAll(":", "-"));
+  await fs3.mkdir(path5.dirname(backup), { recursive: true, mode: 448 });
   await backupData(manifest, backup);
-  await fs3.cp(manifest.pluginRoot, path4.join(backup, "plugin"), { recursive: true, mode: constants.COPYFILE_FICLONE });
-  const record = { backup, previousCodex: config.codex, environment: await environment(), phase: "prepared", previousAgentHash: await digest(manifest.relayAgent), installedAgentHash: await digest(path4.join(manifest.root, "plugin/server/agent-cli.js")) };
+  await fs3.cp(manifest.pluginRoot, path5.join(backup, "plugin"), { recursive: true, mode: constants.COPYFILE_FICLONE });
+  const record = { backup, previousCodex: config.codex, environment: await environment(), phase: "prepared", previousAgentHash: await digest(manifest.relayAgent), installedAgentHash: await digest(path5.join(manifest.root, "plugin/server/agent-cli.js")) };
   await writePrivate(activationFile, JSON.stringify(record));
   try {
     await assertStopped([], manifest);
-    await replacePlugin(manifest, path4.join(manifest.root, "plugin"));
+    await replacePlugin(manifest, path5.join(manifest.root, "plugin"));
     const currentConfig = await readJson(manifest.relayConfig);
     if (JSON.stringify(currentConfig.codex) !== JSON.stringify(config.codex)) throw new Error("\u5207\u6362\u671F\u95F4\u540E\u7AEF\u914D\u7F6E\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u68C0\u67E5\u540E\u91CD\u8BD5");
     await writePrivate(manifest.relayConfig, `${JSON.stringify(patchRelay(currentConfig, manifest.endpoint), null, 2)}
 `);
     await writePrivate(manifest.launchAgent, plist(serviceDefinition(manifest)));
-    await exec("/bin/launchctl", ["bootstrap", `gui/${process.getuid()}`, manifest.launchAgent]);
+    await exec2("/bin/launchctl", ["bootstrap", `gui/${process.getuid()}`, manifest.launchAgent]);
     await waitReady(manifest);
     record.phase = "active";
     await writePrivate(activationFile, JSON.stringify(record));
@@ -4988,7 +5025,7 @@ async function activate(manifest) {
   return { active: true, backup, ...await backendStatus(manifest) };
 }
 async function rollback(manifest, { failedActivation = false } = {}) {
-  const activationFile = path4.join(manifest.root, "activation.json");
+  const activationFile = path5.join(manifest.root, "activation.json");
   const record = await readJson(activationFile, null);
   if (!record) throw new Error("\u6CA1\u6709\u53EF\u56DE\u6EDA\u7684\u5171\u4EAB\u6A21\u5F0F\u5207\u6362\u8BB0\u5F55");
   const runtime = await ownedRuntime(manifest);
@@ -5006,18 +5043,25 @@ async function rollback(manifest, { failedActivation = false } = {}) {
   if (manifest.originalIcon) await setEnvironment(record.environment);
   if (relayPatched) await writePrivate(manifest.relayConfig, `${JSON.stringify(restoreRelay(config, record.previousCodex), null, 2)}
 `);
-  if (await digest(manifest.relayAgent) === record.installedAgentHash) await replacePlugin(manifest, path4.join(record.backup, "plugin"));
-  await fs3.rename(activationFile, path4.join(record.backup, "activation-rolled-back.json"));
+  if (await digest(manifest.relayAgent) === record.installedAgentHash) await replacePlugin(manifest, path5.join(record.backup, "plugin"));
+  await fs3.rename(activationFile, path5.join(record.backup, "activation-rolled-back.json"));
   return { rolledBack: true, backup: record.backup };
 }
 async function openDesktop(manifest) {
   await checkCompatibility(manifest);
   await waitReady(manifest);
   const runtime = await ownedRuntime(manifest);
-  await assertStopped(runtime ? [runtime.pid] : [], manifest, ["backend"]);
+  if (!await isActiveSharedInstallation(manifest)) await assertStopped(runtime ? [runtime.pid] : [], manifest, ["backend"]);
   const env = { ...process.env, ...expectedEnvironment(manifest), CODEX_HOME: manifest.codexHome };
   delete env.CODEX_APP_SERVER_WS_URL;
-  await exec("/usr/bin/open", ["-a", manifest.desktopApp, "--env", `CODEX_CLI_PATH=${env.CODEX_CLI_PATH}`, "--env", "CODEX_APP_SERVER_FORCE_CLI=1", "--env", "CODEX_APP_SERVER_WS_URL=", "--env", `CODEX_HOME=${manifest.codexHome}`], { env });
+  await exec2("/usr/bin/open", ["-a", manifest.desktopApp, "--env", `CODEX_CLI_PATH=${env.CODEX_CLI_PATH}`, "--env", "CODEX_APP_SERVER_FORCE_CLI=1", "--env", "CODEX_APP_SERVER_WS_URL=", "--env", `CODEX_HOME=${manifest.codexHome}`], { env });
+}
+async function isActiveSharedInstallation(manifest) {
+  const [record, config] = await Promise.all([
+    readJson(path5.join(manifest.root, "activation.json"), null),
+    readJson(manifest.relayConfig, null)
+  ]);
+  return record?.phase === "active" && config?.codex?.connectionMode === "shared" && config.codex.appServerEndpoint === manifest.endpoint;
 }
 async function replacePlugin(manifest, source) {
   const temporary = `${manifest.pluginRoot}.recodex-new`;
@@ -5044,17 +5088,22 @@ function tomlValue(value) {
   return JSON.stringify(value);
 }
 async function desktopToolDefinition(manifest) {
-  const plugin = path4.join(manifest.desktopApp, "Contents/Resources/plugins/openai-bundled/plugins/codex-app-tools");
-  const definition = (await readJson(path4.join(plugin, "desktop-mcp.json"))).mcpServers.codex_app;
-  return { ...definition, command: path4.resolve(plugin, definition.command), cwd: plugin, enabled: true, omit_tools_from: ["deferred"], env: {
-    ...definition.env,
-    [DESKTOP_PIPE_KEY]: path4.join(manifest.root, "desktop-tools.sock"),
-    CODEX_MCP_NODE_PATH: path4.join(manifest.desktopApp, "Contents/Resources/cua_node/bin/node")
-  } };
+  const plugin = path5.join(manifest.desktopApp, "Contents/Resources/plugins/openai-bundled/plugins/codex-app-tools");
+  const definition = (await readJson(path5.join(plugin, "desktop-mcp.json"))).mcpServers.codex_app;
+  const env = { ...definition.env, [DESKTOP_PIPE_KEY]: path5.join(manifest.root, "desktop-tools.sock"), CODEX_MCP_NODE_PATH: officialNode(manifest.desktopApp) };
+  return {
+    ...definition,
+    command: path5.resolve(plugin, definition.command),
+    cwd: plugin,
+    enabled: true,
+    omit_tools_from: ["deferred"],
+    env,
+    env_vars: definition.env_vars?.filter((key) => !Object.hasOwn(env, key))
+  };
 }
 async function readLoginEnvironment(shell) {
   const marker = "RECODEX_ENV_BEGIN\0";
-  const { stdout } = await exec(shell || "/bin/zsh", ["-ilc", "printf 'RECODEX_ENV_BEGIN\\0'; exec /usr/bin/env -0"], { timeout: 5e3, maxBuffer: 1024 * 1024 });
+  const { stdout } = await exec2(shell || "/bin/zsh", ["-ilc", "printf 'RECODEX_ENV_BEGIN\\0'; exec /usr/bin/env -0"], { timeout: 5e3, maxBuffer: 1024 * 1024 });
   const index = stdout.indexOf(marker);
   if (index < 0) throw new Error("\u65E0\u6CD5\u52A0\u8F7D\u767B\u5F55 Shell \u73AF\u5883\uFF0C\u5DF2\u505C\u6B62\u542F\u52A8\u5171\u4EAB\u540E\u7AEF");
   return Object.fromEntries(stdout.slice(index + marker.length).split("\0").flatMap((entry) => {
@@ -5066,9 +5115,9 @@ async function readLoginEnvironment(shell) {
 // server/shared-backend-cli.js
 var [command, flag, manifestPath, ...args] = process.argv.slice(2);
 try {
-  if (flag !== "--manifest" || !path5.isAbsolute(manifestPath || "")) throw new Error("\u7528\u6CD5\uFF1Ashared-backend-cli.js <activate|status|desktop|rollback|service|proxy> --manifest /\u7EDD\u5BF9\u8DEF\u5F84/manifest.json");
+  if (flag !== "--manifest" || !path6.isAbsolute(manifestPath || "")) throw new Error("\u7528\u6CD5\uFF1Ashared-backend-cli.js <activate|status|desktop|rollback|service|proxy> --manifest /\u7EDD\u5BF9\u8DEF\u5F84/manifest.json");
   const manifest = await readJson(manifestPath);
-  if (path5.dirname(manifestPath) !== manifest.root) throw new Error("\u542F\u52A8\u5305\u4F4D\u7F6E\u5DF2\u6539\u53D8\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u542F\u52A8\u5305");
+  if (path6.dirname(manifestPath) !== manifest.root) throw new Error("\u542F\u52A8\u5305\u4F4D\u7F6E\u5DF2\u6539\u53D8\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u542F\u52A8\u5305");
   if (command === "service") await runService(manifest);
   else if (command === "activate") console.log(JSON.stringify(await activate(manifest), null, 2));
   else if (command === "status") console.log(JSON.stringify(await backendStatus(manifest), null, 2));

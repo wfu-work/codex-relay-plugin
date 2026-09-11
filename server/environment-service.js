@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { PLUGIN_ROOT, redact } from "./utils.js";
 import { RelayError } from "./errors.js";
 import { processConflicts } from "./shared-backend-manager.js";
+import { configuredSharedManifest } from "./shared-installation.js";
 import { readDesktopCompatibility } from "./desktop-compatibility.js";
 
 const exec = promisify(execFile);
@@ -94,6 +95,7 @@ export class EnvironmentService {
     this.cache = null;
     this.pending = null;
     this.repairing = false;
+    this.remoteControl = options.remoteControl || service.remoteControl || null;
   }
 
   async inspect(force = false) {
@@ -111,13 +113,16 @@ export class EnvironmentService {
     const config = this.service.configStore.get();
     const configDir = this.service.configStore.configDir;
     const checkedAt = new Date().toISOString();
-    const [executable, processes, migration, installed] = await Promise.all([
+    const [executable, processes, migration, installed, remoteControl] = await Promise.all([
       inspectExecutable(config.codex.executable, { env: this.env, platform: this.platform, exec: this.exec }),
       this.inspectProcesses(), this.inspectMigration(),
       json(path.join(this.pluginRoot, ".codex-plugin/plugin.json")).catch(() => null),
+      this.remoteControl?.inspect
+        ? Promise.resolve().then(() => this.remoteControl.inspect()).catch(error => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control 状态检查失败" } }))
+        : Promise.resolve(null),
     ]);
     const status = await this.service.status();
-    const shared = status.appServer?.connectionMode === "shared";
+    const shared = (status.appServer?.connectionMode || config.codex.connectionMode) === "shared";
     const backendReady = status.appServer?.state === "ready";
     let desktopVersion = null;
     if (this.platform === "darwin") {
@@ -132,6 +137,7 @@ export class EnvironmentService {
     const diskBundle = runningBuild ? await fs.readFile(path.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter(p => p.scope === "same" && p.kind === "backend");
+    const desktopBackend = processes.items.find(p => p.kind === "backend" && p.desktopHosted && p.scope === "same");
     const repairAllowed = !shared && ["stopped", "error"].includes(status.appServer?.state) && executable.needsRepair;
     const desktopCompatibility = await readDesktopCompatibility(this);
     return {
@@ -140,17 +146,19 @@ export class EnvironmentService {
       desktop: { version: desktopVersion, running: processes.state === "ok" ? processes.items.some(p => p.kind === "desktop" && p.scope === "same") : null },
       executable, processes, migration,
       backend: { mode: status.appServer?.connectionMode || config.codex.connectionMode || "managed", state: status.appServer?.state || "unknown", pid: status.appServer?.pid ?? null, ownsProcess: status.appServer?.ownsProcess ?? null, endpoint: status.appServer?.endpoint || null, error: clean(status.appServer?.lastError) },
+      desktopBackend: desktopBackend ? { state: "detected", pid: desktopBackend.pid, transport: desktopBackend.transport, endpoint: desktopBackend.transport === "stdio" ? null : desktopBackend.transport, attachable: false, reason: desktopBackend.transport === "stdio" ? "桌面后端仅使用 stdio://，未暴露可供 Relay 连接的本地端点" : "桌面后端端点需要官方授权，当前未启用 Relay 接入" } : { state: "unavailable", pid: null, transport: null, endpoint: null, attachable: false, reason: "未检测到桌面版托管的 App Server" },
+      remoteControl: remoteControl || { checkedAt, official: { state: "unavailable", installed: false, reason: "未检查" }, bridge: { state: "blocked", endpoint: null, attachable: false, reason: "未检查" } },
       relay: { state: status.relay?.state || "unknown", lastHeartbeat: status.relay?.lastHeartbeat || null, reconnectAttempt: status.relay?.reconnectAttempt || 0 },
       sharing: {
         state: shared ? "unverified" : "not_enabled",
-        label: shared ? backendReady ? "插件已接入共享后端，桌面共用待验证" : "共享后端尚未就绪" : "桌面共用未启用",
-        message: shared ? "还需验证桌面连接与工具调用，才能确认两端共用成功。" : "插件使用独立后端；桌面占用的任务可能无法从 Flutter 继续发送。",
+        label: shared ? backendReady ? "共享后端已连接" : "共享后端尚未就绪" : "桌面共用未启用",
+        message: shared ? "Flutter 与桌面通过共享 App Server 执行任务；浏览器等桌面工具的检查结果单独显示。" : "插件使用独立后端；桌面占用的任务可能无法从 Flutter 继续发送。",
       },
-      desktopTools: desktopCompatibility ? { ...desktopCompatibility, label: desktopCompatibility.state === "passed" ? "工具目录验收通过" : desktopCompatibility.state === "stale" ? "需要重新验收" : "兼容性验收未通过" } : { state: "unchecked", label: "当前连接未验证", message: lastToolFailure ? "上次迁移的桌面工具验收失败；可在迁移向导中重新验收。" : "可在迁移向导中运行真实桌面工具验收。" },
+      desktopTools: desktopCompatibility ? { ...desktopCompatibility, label: desktopCompatibility.state === "passed" ? "工具目录验收通过" : desktopCompatibility.state === "stale" ? "需要重新检查" : desktopCompatibility.code === "shared_runtime_restart_required" ? "共享服务运行时待修复" : desktopCompatibility.code === "shared_timeout" ? "工具查询超时" : "桌面工具待处理" } : { state: "unchecked", label: "当前连接未验证", message: lastToolFailure ? "上次迁移的桌面工具验收失败；可在迁移向导中重新验收。" : "可在迁移向导中运行真实桌面工具验收。" },
       paths: { configDir, codexHome: this.codexHome, sharedRoot: this.sharedRoot },
       actions: {
         repair: { enabled: Boolean(repairAllowed), candidate: executable.candidate?.path || null, reason: shared ? "共享模式由共享服务管理执行程序" : !executable.candidate ? "尚未找到可用程序，请先安装 Codex 或在高级设置中指定路径" : !executable.needsRepair ? "当前已使用验证过的完整路径，无需修复" : !repairAllowed ? "后端正在使用中，请在停止执行后通过高级设置修改路径" : "验证候选路径后保存；自动连接已开启时会尝试恢复连接" },
-        migrate: { enabled: false, blockers: [
+        migrate: { enabled: false, blockers: shared ? [] : [
           ...(this.platform !== "darwin" ? ["自动迁移首版仅支持 macOS"] : []),
           ...(desktopCompatibility ? [desktopCompatibility.message] : lastToolFailure ? ["上次桌面工具兼容性验证失败，需要先解决"] : ["桌面工具兼容性尚未通过本机验证"]),
           ...(processes.state !== "ok" ? ["无法确认冲突进程"] : owned.length > 1 ? [`检测到 ${owned.length} 个执行后端，需要确认任务状态并处理占用`] : []),
@@ -162,7 +170,9 @@ export class EnvironmentService {
 
   async inspectMigration() {
     try {
-      const [manifest, result, activation] = await Promise.all(["manifest.json", "migration-result.json", "activation.json"].map(file => json(path.join(this.sharedRoot, file))));
+      const selected = await configuredSharedManifest(this);
+      const root = selected?.root || this.sharedRoot;
+      const [manifest, result, activation] = await Promise.all(["manifest.json", "migration-result.json", "activation.json"].map(file => json(path.join(root, file))));
       return migrationView(manifest, result, activation, this.service.configStore.configDir, this.codexHome);
     } catch { return { state: "unreadable", label: "迁移记录无法读取", last: null }; }
   }
@@ -182,7 +192,9 @@ export class EnvironmentService {
         const selected = details.match(new RegExp(`(?:^| )${key}=(.*?)(?= [A-Za-z_][A-Za-z_0-9]*=|$)`))?.[1];
         const defaultDir = path.join(os.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
         const target = item.kind === "relay" ? this.service.configStore.configDir : this.codexHome;
-        return { ...item, application, ...(appPath ? { appPath } : {}), scope: !details ? "unknown" : samePath(selected || defaultDir, target) ? "same" : "other", taskState: "unknown" };
+        const desktopHosted = item.kind === "backend" && /BROWSER_USE_CODEX_APP_VERSION=/.test(details);
+        const transport = desktopHosted ? (/--listen\s+stdio:\/\//.test(command) || /--stdio(?:\s|$)/.test(command) ? "stdio" : /--listen\s+(unix:\/\/[^\s]+)/.exec(command)?.[1] || "unknown") : null;
+        return { ...item, application, ...(appPath ? { appPath } : {}), ...(desktopHosted ? { desktopHosted, transport } : {}), scope: !details ? "unknown" : samePath(selected || defaultDir, target) ? "same" : "other", taskState: "unknown" };
       }));
       return { state: "ok", items, message: "仅检查进程和数据目录，未判断任务是否正在执行；不会自动结束这些进程。" };
     } catch { return { state: "error", items: [], message: "进程检查失败，不能据此判断没有占用" }; }

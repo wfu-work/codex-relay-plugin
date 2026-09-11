@@ -5,7 +5,11 @@ import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { AppServerClient } from "./app-server-client.js";
-import { desktopToolDefinition, tomlValue, writePrivate } from "./shared-backend-manager.js";
+import { desktopToolDefinition, tomlValue, writePrivate, ownedRuntime } from "./shared-backend-manager.js";
+
+import { configuredSharedManifest } from "./shared-installation.js";
+import { officialNode, verifyOfficialRuntime } from "./official-runtime.js";
+export { verifyOfficialRuntime } from "./official-runtime.js";
 
 const exec = promisify(execFile);
 const TTL = 10 * 60_000;
@@ -22,6 +26,11 @@ const messages = {
   changed: "验收期间桌面进程或安装文件发生变化，请重新验证",
   unsupported: "当前平台暂不支持这项桌面兼容性验收",
   failed: "无法完成桌面工具验收，请重新检查本机安装与桌面状态",
+  shared_passed: "当前共享后端已返回桌面工具目录；具体工具调用需在任务中验证",
+  shared_timeout: "当前共享后端的桌面工具查询超时；消息执行可用不代表浏览器等桌面工具已恢复",
+  shared_failed: "当前共享后端未能加载桌面工具目录，请检查桌面工具连接",
+  shared_unloaded: "当前共享后端没有已加载任务，暂无法检查任务中的桌面工具目录",
+  shared_runtime_restart_required: "共享服务仍由系统 Node 启动，桌面工具的父进程签名链不符合要求。请修复共享服务运行时；退出桌面后将自动重启并验证，无需重新迁移。",
 };
 
 export async function desktopTarget(environment) {
@@ -29,36 +38,45 @@ export async function desktopTarget(environment) {
   const desktops = processes.items.filter(p => p.kind === "desktop" && p.scope === "same");
   if (processes.state !== "ok" || desktops.length !== 1 || !desktops[0].appPath) return null;
   const desktop = desktops[0];
-  const { stdout } = await exec("/bin/ps", ["-axo", "pid=,ppid=,args="], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 });
+  const manifest = await configuredSharedManifest(environment);
+  const run = environment.exec || exec;
+  const { stdout } = await run("/bin/ps", ["-axo", "pid=,ppid=,args="], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 });
   const backends = stdout.split("\n").flatMap(line => {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-    if (!m || Number(m[2]) !== desktop.pid || !m[3].startsWith(`${desktop.appPath}/Contents/Resources/codex `)) return [];
+    if (!m || Number(m[2]) !== desktop.pid) return [];
+    const direct = m[3].startsWith(`${desktop.appPath}/Contents/Resources/codex `);
+    const proxy = manifest?.desktopApp === desktop.appPath &&
+      m[3].includes(`${path.join(manifest.root, "shared-backend-cli.js")} proxy --manifest ${path.join(manifest.root, "manifest.json")} `);
+    if (!direct && !proxy) return [];
     // Read only the pipe selector supplied to this desktop's backend. Raw
     // launch arguments may contain credentials and never leave this method.
     const pipe = m[3].match(/"CODEX_APP_TOOLS_PIPE_PATH"\s*=\s*"([^"\r\n]+)"/)?.[1];
-    return pipe && path.isAbsolute(pipe) ? [{ pipe, backendPid: Number(m[1]) }] : [];
+    return pipe && path.isAbsolute(pipe) ? [{ pipe, backendPid: Number(m[1]), connection: proxy ? "shared_proxy" : "direct" }] : [];
   });
-  if (backends.length !== 1) return { ...desktop, pipe: null };
-  const target = { ...desktop, ...backends[0] };
-  const stat = await fs.stat(target.pipe).catch(() => null);
-  if (!stat?.isSocket() || stat.uid !== process.getuid()) return { ...target, pipe: null };
-  const identity = (await exec("/bin/ps", ["-p", String(desktop.pid), "-o", "lstart=,comm="], { timeout: 2000 })).stdout.trim();
+  const target = { ...desktop, ...(backends.length === 1 ? backends[0] : { pipe: null }) };
+  const stat = target.pipe ? await fs.stat(target.pipe).catch(() => null) : null;
+  if (!stat?.isSocket() || stat.uid !== process.getuid()) target.pipe = null;
+  const runtime = manifest ? await ownedRuntime(manifest) : null;
+  if (manifest) {
+    target.endpoint = manifest.endpoint; target.runtimeIdentity = runtime?.identity || null;
+    const backend = stdout.split("\n").map(line => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).find(m => m && Number(m[1]) === runtime?.pid);
+    const service = backend && stdout.split("\n").map(line => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).find(m => m && m[1] === backend[2]);
+    if (service?.[3].includes(`${path.join(manifest.root, "shared-backend-cli.js")} service --manifest ${path.join(manifest.root, "manifest.json")}`)) {
+      target.servicePid = Number(service[1]);
+      const command = (await run("/bin/ps", ["-p", service[1], "-o", "comm="], { timeout: 2000 })).stdout.trim();
+      const resolved = await fs.realpath(command).catch(() => null);
+      target.serviceRuntime = resolved && resolved === await fs.realpath(officialNode(manifest.desktopApp)).catch(() => null) ? "official" : "legacy";
+    }
+  }
+  const identity = (await run("/bin/ps", ["-p", String(desktop.pid), "-o", "lstart=,comm="], { timeout: 2000 })).stdout.trim();
   const resources = path.join(desktop.appPath, "Contents/Resources");
-  const hash = createHash("sha256").update(JSON.stringify([identity, target.pipe, environment.codexHome]));
+  const hash = createHash("sha256").update(JSON.stringify([identity, target.pipe, target.backendPid, target.endpoint, target.runtimeIdentity, target.servicePid, target.serviceRuntime, environment.codexHome]));
   for (const file of ["codex", "cua_node/bin/node", "plugins/openai-bundled/plugins/codex-app-tools/server.mjs", "plugins/openai-bundled/plugins/codex-app-tools/desktop-mcp.json"]) {
     const s = await fs.stat(path.join(resources, file));
     hash.update(JSON.stringify([file, s.ino, s.size, s.mtimeMs, s.ctimeMs]));
   }
   target.fingerprint = hash.digest("hex");
   return target;
-}
-
-export async function verifyOfficialRuntime(app) {
-  const runtime = path.join(app, "Contents/Resources/cua_node/bin/node");
-  await exec("/usr/bin/codesign", ["--verify", "--strict", runtime], { timeout: 5000, maxBuffer: 4096 });
-  const result = await exec("/usr/bin/codesign", ["-dv", "--verbose=2", runtime], { timeout: 5000, maxBuffer: 4096 });
-  if (!/^TeamIdentifier=2DC432GLL2$/m.test(result.stderr) || !/^Identifier=node$/m.test(result.stderr)) throw new Error("Unexpected runtime signing identity");
-  return { verified: true, teamId: "2DC432GLL2", identifier: "node" };
 }
 
 export async function probeDesktopTools(target, { checkpoint = async () => {}, timeoutMs = 15_000 } = {}) {
@@ -93,7 +111,7 @@ export async function probeDesktopTools(target, { checkpoint = async () => {}, t
     const { thread } = await client.createThread({ cwd: home, approvalPolicy: "never", sandbox: "read-only" });
     while (Date.now() < deadline) {
       await checkpoint();
-      const result = await client.request("mcpServerStatus/list", { threadId: thread.id }, Math.max(100, Math.min(5000, deadline - Date.now())));
+      const result = await client.request("mcpServerStatus/list", { threadId: thread.id, detail: "toolsAndAuthOnly" }, Math.max(100, Math.min(5000, deadline - Date.now())));
       const server = result.data?.find(server => server.name === "codex_app");
       if (server?.runtimeStatus === "failed") return { code: "handshake_failed" };
       const names = Object.keys(server?.tools || {});
@@ -114,6 +132,40 @@ export async function probeDesktopTools(target, { checkpoint = async () => {}, t
   }
 }
 
+// Read a loaded task's MCP status on the already running service. Do not
+// create a task, acquire a writer, reload MCP, or start an isolated backend.
+export async function probeSharedDesktopTools(target, { checkpoint = async () => {}, timeoutMs = 20_000, createClient } = {}) {
+  if (target.serviceRuntime === "legacy") return { code: "shared_runtime_restart_required" };
+  if (!target.endpoint || !target.runtimeIdentity) return { code: "shared_failed" };
+  const client = createClient ? createClient() : new AppServerClient({ get: () => ({ codex: { connectionMode: "shared", appServerEndpoint: target.endpoint } }) }, quiet, { initializeTimeoutMs: 3000 });
+  const deadline = Date.now() + timeoutMs;
+  const request = (method, params) => client.request(method, params, Math.max(100, deadline - Date.now()));
+  try {
+    await checkpoint();
+    await client.start();
+    const loaded = await request("thread/loaded/list", { limit: 1 });
+    const threadId = loaded.data?.[0];
+    if (typeof threadId !== "string") return { code: "shared_unloaded" };
+    await checkpoint();
+    let cursor, server;
+    const cursors = new Set();
+    do {
+      await checkpoint();
+      if (Date.now() >= deadline) return { code: "shared_timeout" };
+      const response = await request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly", limit: 100, ...(cursor ? { cursor } : {}) });
+      server = response.data?.find(item => item.name === "codex_app");
+      cursor = response.nextCursor;
+      if (cursor && cursors.has(cursor)) return { code: "shared_failed" };
+      cursors.add(cursor);
+    } while (!server && cursor);
+    const names = Object.keys(server?.tools || {});
+    return { code: server?.runtimeStatus === "failed" ? "shared_failed" : REQUIRED.every(name => names.includes(name)) ? "shared_passed" : "incomplete_catalog", toolCount: names.length };
+  } catch (error) {
+    if (error.code === "PREPARATION_CANCELLED") throw error;
+    return { code: error.code === "APP_SERVER_TIMEOUT" || Date.now() >= deadline ? "shared_timeout" : "shared_failed" };
+  } finally { await client.stop().catch(() => {}); }
+}
+
 export async function verifyDesktopCompatibility(environment, options = {}) {
   const discover = options.discover || desktopTarget;
   const checkedAt = new Date().toISOString();
@@ -123,14 +175,18 @@ export async function verifyDesktopCompatibility(environment, options = {}) {
     else {
       target = await discover(environment);
       if (!target) code = "no_desktop";
-      else if (!target.pipe) code = "no_pipe";
       else {
         try { runtime = await (options.verifyRuntime || verifyOfficialRuntime)(target.appPath); }
         catch { code = "invalid_signature"; }
         if (runtime) {
-          const result = await (options.probe || probeDesktopTools)(target, options);
-          code = Object.hasOwn(messages, result.code) ? result.code : "failed";
-          toolCount = Number.isSafeInteger(result.toolCount) ? result.toolCount : 0;
+          if (!target.pipe) code = "no_pipe";
+          else {
+            const shared = environment.service.configStore.get?.().codex?.connectionMode === "shared";
+            const probe = options.probe || (shared ? probeSharedDesktopTools : probeDesktopTools);
+            const result = await probe(target, options);
+            code = Object.hasOwn(messages, result.code) ? result.code : "failed";
+            toolCount = Number.isSafeInteger(result.toolCount) ? result.toolCount : 0;
+          }
           if ((await discover(environment))?.fingerprint !== target.fingerprint) code = "changed";
         }
       }
@@ -139,7 +195,7 @@ export async function verifyDesktopCompatibility(environment, options = {}) {
     if (error.code === "PREPARATION_CANCELLED") throw error;
     code = "failed";
   }
-  const result = { checkedAt, expiresAt: new Date(Date.now() + TTL).toISOString(), code, state: code === "passed" ? "passed" : "blocked", message: messages[code], runtime, toolCount, desktopPid: target?.pid || null, fingerprint: target?.fingerprint || null, scope: "isolated_shared_backend_tool_catalog", modelRequests: 0 };
+  const result = { checkedAt, expiresAt: new Date(Date.now() + TTL).toISOString(), code, state: ["passed", "shared_passed"].includes(code) ? "passed" : "blocked", message: messages[code], runtime, toolCount, desktopPid: target?.pid || null, fingerprint: target?.fingerprint || null, scope: environment.service.configStore.get?.().codex?.connectionMode === "shared" ? "current_shared_backend_tool_catalog" : "isolated_shared_backend_tool_catalog", modelRequests: 0 };
   await writePrivate(path.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json"), JSON.stringify(result));
   return result;
 }
@@ -153,6 +209,6 @@ export async function readDesktopCompatibility(environment, { discover = desktop
     const target = await discover(environment);
     const stale = now > Date.parse(saved.expiresAt) || !saved.fingerprint || saved.fingerprint !== target?.fingerprint;
     // Explicit fields only; never return process arguments or raw MCP output.
-    return { checkedAt: saved.checkedAt, code: saved.code, state: stale ? "stale" : saved.code === "passed" ? "passed" : "blocked", message: stale ? "桌面进程、安装版本已变化或验收已过期，请重新验证" : messages[saved.code], signatureVerified: saved.runtime?.verified === true, toolCount: saved.toolCount || 0, desktopPid: saved.desktopPid || null };
+    return { checkedAt: saved.checkedAt, code: saved.code, state: stale ? "stale" : ["passed", "shared_passed"].includes(saved.code) ? "passed" : "blocked", message: stale ? "桌面进程、安装版本已变化或验收已过期，请重新验证" : messages[saved.code], signatureVerified: saved.runtime?.verified === true, signatureState: saved.runtime?.verified === true ? "passed" : saved.code === "invalid_signature" ? "blocked" : "unchecked", scope: saved.scope, toolCount: saved.toolCount || 0, desktopPid: saved.desktopPid || null };
   } catch { return null; }
 }

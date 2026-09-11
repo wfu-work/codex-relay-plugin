@@ -3,6 +3,7 @@ import { asRelayError, RelayError } from "./errors.js";
 import { commandError, commandResult, validateRelayCommand } from "./protocol.js";
 import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
 import { CommandJournal } from "./command-journal.js";
+import { composerSettingsPatch } from "./composer-settings.js";
 
 // A thread can contain unbounded command output. Returning that complete
 // history through a Relay frame can exceed the authenticated connection's
@@ -19,6 +20,7 @@ export class CommandRouter {
   #inflight = new Map();
   #sharedReads = new Map();
   #threadReadTails = new Map();
+  #settingsWriteTails = new Map();
   #nextSnapshotRevision = 0;
   #selectedThreadId = null;
 
@@ -56,7 +58,15 @@ export class CommandRouter {
       return this.#failure(config, message, fingerprint, error);
     }
 
-    const promise = this.#run(config, message, fingerprint);
+    // Preserve arrival order between picker changes and a subsequent send.
+    // Journal writes and authorization reads must not let turn/start overtake
+    // an earlier settings update on the same thread.
+    const threadId = message.command.threadId || message.threadId;
+    const ordered = threadId && ["thread.settings.update", "turn.start"].includes(message.command.type);
+    const previous = ordered ? this.#settingsWriteTails.get(threadId) : null;
+    const promise = (previous ? previous.catch(() => {}) : Promise.resolve())
+      .then(() => this.#run(config, message, fingerprint));
+    if (ordered) this.#settingsWriteTails.set(threadId, promise);
     this.#inflight.set(message.requestId, { fingerprint, promise });
     try {
       return await promise;
@@ -64,6 +74,7 @@ export class CommandRouter {
       if (this.#inflight.get(message.requestId)?.promise === promise) {
         this.#inflight.delete(message.requestId);
       }
+      if (ordered && this.#settingsWriteTails.get(threadId) === promise) this.#settingsWriteTails.delete(threadId);
     }
   }
 
@@ -92,6 +103,7 @@ export class CommandRouter {
   async #authorizeReplay(message, response) {
     if (!response.success) return;
     const command = message.command;
+    if (command.type === "thread.settings.update") composerSettingsPatch(command, this.configStore.get());
     if (command.type === "thread.create") this.#allowedCwd(command.cwd, true);
     const threadId = command.threadId || message.threadId;
     if (threadId) await this.#assertThreadAllowed(threadId);
@@ -203,6 +215,12 @@ export class CommandRouter {
         this.#selectedThreadId = threadId;
         return { threadId: this.#selectedThreadId };
       }
+      case "thread.settings.update": {
+        const threadId = requireString(command.threadId || envelope.threadId, "threadId");
+        const patch = composerSettingsPatch(command, this.configStore.get());
+        await this.#assertThreadAllowed(threadId);
+        return this.appServer.updateThreadSettings(threadId, patch);
+      }
       case "turn.start": {
         const threadId = requireString(command.threadId || envelope.threadId || this.#selectedThreadId, "threadId");
         await this.#assertThreadAllowed(threadId);
@@ -278,7 +296,8 @@ export class CommandRouter {
       result = await read.call(this.appServer, threadId, { ensureResumed: false });
       this.#assertThreadResultAllowed(result);
     }
-    return result;
+    const settings = this.appServer.threadSettings?.(threadId);
+    return settings ? { ...result, threadSettings: settings } : result;
   }
 
   async #assertThreadAllowed(threadId) {

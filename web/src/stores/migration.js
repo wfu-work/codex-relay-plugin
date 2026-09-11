@@ -2,8 +2,8 @@ import { computed, reactive } from 'vue';
 import { useRelay } from './relay.js';
 
 const { api, state: relay } = useRelay();
-const state = reactive({ job: null, prepared: null, loading: false, submitting: false, error: '', open: false });
-const active = computed(() => ['queued', 'checking', 'packaging'].includes(state.job?.phase));
+const state = reactive({ job: null, prepared: null, installation: null, loading: false, submitting: false, error: '', open: false });
+const active = computed(() => ['queued', 'checking', 'packaging', 'restarting'].includes(state.job?.phase));
 let polling;
 let users = 0;
 let pending;
@@ -17,6 +17,7 @@ async function refresh() {
       const result = await api('/api/environment/migration/status', { signal: AbortSignal.timeout(12_000) });
       state.job = result.job;
       state.prepared = result.prepared;
+      state.installation = result.installation || null;
       state.error = '';
     } catch (error) { state.error = error.message || '准备状态读取失败'; }
     finally { state.loading = false; pending = null; }

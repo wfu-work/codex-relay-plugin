@@ -5,6 +5,7 @@ import { RelayError } from "./errors.js";
 import { SharedAppServerTransport, StdioAppServerTransport, parseAppServerEndpoint } from "./app-server-transport.js";
 import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
 import { PendingInteractions } from "./pending-interactions.js";
+import { composerSettings } from "./composer-settings.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +31,8 @@ export class AppServerClient extends EventEmitter {
   #resumedThreads = new Set();
   #resumingThreads = new Map();
   #resumeRetryAt = new Map();
+  #threadSettings = new Map();
+  #settingsRevision = 0;
   #rollouts = new RolloutSnapshots();
   #observedThreads = new Map();
   #rolloutTimer = null;
@@ -108,6 +111,7 @@ export class AppServerClient extends EventEmitter {
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
+    this.#threadSettings.clear();
   }
 
   async #startInternal(generation) {
@@ -641,17 +645,50 @@ export class AppServerClient extends EventEmitter {
   async createThread({ cwd } = {}) {
     const result = await this.request("thread/start", { ...(cwd ? { cwd } : {}) });
     const id = result?.thread?.id || result?.id;
-    if (id) this.#rememberResumedThread(normalizeThreadId(id));
-    return result;
+    if (id) {
+      this.#rememberResumedThread(normalizeThreadId(id));
+      this.#rememberThreadSettings(id, result);
+    }
+    return { ...result, ...(this.threadSettings(id) ? { threadSettings: this.threadSettings(id) } : {}) };
   }
 
   async resumeThread(threadId) {
     const id = normalizeThreadId(threadId);
     const transport = this.#transport;
+    const previousSettings = this.#threadSettings.get(id);
     const result = await this.request("thread/resume", { threadId: id });
     if (transport !== this.#transport) throw new RelayError("APP_SERVER_UNAVAILABLE", "任务订阅的连接已过期");
     this.#rememberResumedThread(id);
+    // A newer settings notification can arrive while resume is in flight.
+    if (this.#threadSettings.get(id) === previousSettings) this.#rememberThreadSettings(id, result);
     return result;
+  }
+
+  threadSettings(threadId) {
+    const value = this.#threadSettings.get(threadId);
+    return value ? structuredClone(value) : null;
+  }
+
+  #rememberThreadSettings(threadId, value) {
+    const settings = composerSettings(value);
+    if (!settings || !threadId) return;
+    this.#threadSettings.delete(threadId);
+    this.#threadSettings.set(threadId, { ...settings, revision: ++this.#settingsRevision });
+    while (this.#threadSettings.size > AppServerClient.MAX_RESUMED_THREADS) {
+      this.#threadSettings.delete(this.#threadSettings.keys().next().value);
+    }
+  }
+
+  async updateThreadSettings(threadId, patch) {
+    const id = normalizeThreadId(threadId);
+    await this.ensureThreadResumed(id);
+    const previous = this.#threadSettings.get(id);
+    await this.request("thread/settings/update", { threadId: id, ...patch });
+    // New servers notify every subscriber. If a server does not notify this
+    // connection, resume gives the authoritative accepted values, not an echo.
+    if (this.#threadSettings.get(id) === previous) await this.resumeThread(id);
+    if (!this.threadSettings(id)) throw new RelayError("APP_SERVER_ERROR", "Codex 未返回任务设置，请升级 Codex 后重试");
+    return { threadId: id, threadSettings: this.threadSettings(id) };
   }
 
   async startTurn({ threadId, text, cwd, model, effort }) {
@@ -786,6 +823,10 @@ export class AppServerClient extends EventEmitter {
       resolved = this.#interactions.clearThread(message.params?.threadId);
     }
     for (const entry of resolved) this.emit("interactionResolved", this.#interactions.public(entry, this.configStore.get()));
+    if (message.method === "thread/settings/updated") {
+      this.#rememberThreadSettings(message.params?.threadId, message.params?.threadSettings);
+      message.params = { threadId: message.params?.threadId, threadSettings: this.threadSettings(message.params?.threadId) };
+    }
     if (message.method) this.emit("notification", message.method, message.params || {});
   }
 

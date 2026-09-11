@@ -421,6 +421,8 @@ button, input, textarea { font: inherit; }
 .environment-page code { font-family: var(--font-code); font-size: 12px; overflow-wrap: anywhere; white-space: normal; }
 .environment-panel-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 20px; }
 .environment-panel-actions strong { color: var(--ink-soft); font-size: 13px; font-weight: 500; }
+.environment-action-progress { color: var(--accent) !important; }
+.environment-action-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .environment-details { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 15px; }
 .environment-details summary { width: fit-content; cursor: pointer; color: var(--ink-soft); font-size: 12px; }
 .environment-details summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; }
@@ -431,6 +433,11 @@ button, input, textarea { font: inherit; }
 .environment-process-list li > div span { display: block; margin-top: 3px; font-size: 12px; color: var(--ink-faint); }
 .environment-process-list strong { font-size: 13px; font-weight: 500; }
 .environment-process-list .field-help { margin: 0; }
+.environment-maintenance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.environment-maintenance-grid > div { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--page-bg-soft); }
+.environment-maintenance-grid strong { color: var(--ink); font-size: 13px; }
+.environment-maintenance-grid p { min-height: 38px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+.environment-maintenance-grid .field-help { margin-top: auto; }
 .environment-notice { display: flex; align-items: flex-start; gap: 12px; margin: 20px 0 0; padding: 16px; border-radius: 8px; background: var(--page-bg-soft); color: var(--ink-soft); }
 .environment-notice > .anticon { margin-top: 3px; color: var(--warning); font-size: 17px; }
 .environment-notice strong { font-size: 13px; font-weight: 600; }
@@ -461,6 +468,7 @@ button, input, textarea { font: inherit; }
   .environment-facts { grid-template-columns: 1fr; gap: 12px; }
   .environment-process-list li { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; }
   .environment-process-list li > .field-help { grid-column: 1 / -1; }
+  .environment-maintenance-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 960px) {

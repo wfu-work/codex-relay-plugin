@@ -7,13 +7,32 @@ import { RelayError } from "./errors.js";
 import { readJson, writePrivate, checkCompatibility } from "./shared-backend-manager.js";
 import { inspectPreparation, preparationFingerprint } from "./migration-preflight.js";
 import { prepareSharedBackend } from "./shared-backend-prepare.js";
-import { verifyDesktopCompatibility } from "./desktop-compatibility.js";
+import { configuredSharedManifest, sharedInstallation } from "./shared-installation.js";
+import { desktopTarget, readDesktopCompatibility, verifyDesktopCompatibility } from "./desktop-compatibility.js";
+import { officialNode, verifyOfficialRuntime } from "./official-runtime.js";
+import { repairSharedRuntime } from "./shared-runtime-repair.js";
 
 const exec = promisify(execFile);
-const ACTIVE = new Set(["queued", "checking", "packaging"]);
+const ACTIVE = new Set(["queued", "checking", "packaging", "restarting"]);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const iso = () => new Date().toISOString();
 const exists = file => fs.access(file).then(() => true, () => false);
+const STARTUP_TOOL_STATES = new Set(["no_desktop", "no_pipe", "shared_unloaded", "shared_failed", "shared_timeout"]);
+
+// Desktop creates its pipe before every task's MCP catalog is ready. A failed
+// first read after restart is not final; retry only transient startup results.
+export async function verifyDesktopAfterRepair(environment, { verify = verifyDesktopCompatibility, checkpoint = async () => {}, delay = () => new Promise(resolve => setTimeout(resolve, 500)), onProgress = async () => {} } = {}) {
+  const deadline = Date.now() + 60_000;
+  let proof;
+  for (let attempt = 0; attempt < 3 && Date.now() < deadline; attempt++) {
+    await checkpoint();
+    proof = await verify(environment, { checkpoint, timeoutMs: Math.min(20_000, deadline - Date.now()) });
+    if (proof.state === "passed" || !STARTUP_TOOL_STATES.has(proof.code) || attempt === 2) return proof;
+    await onProgress("桌面已重新打开，工具目录仍在初始化，正在复查…");
+    await delay();
+  }
+  return proof;
+}
 const identity = async pid => exec("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="], { timeout: 2000, maxBuffer: 4096 }).then(result => result.stdout.trim(), () => "");
 const jobPath = (root, id) => {
   if (!UUID.test(id || "")) throw new RelayError("INVALID_JOB", "准备任务编号无效");
@@ -27,7 +46,12 @@ export class MigrationPreparation {
     this.root = path.join(environment.service.configStore.configDir, "migration");
     this.compatibilityCache = null;
     this.launch = options.launch || (async (record) => {
-      const child = spawn(process.execPath, [path.join(environment.pluginRoot, "server/migration-cli.js"), "--config-dir", record.context.configDir, "--job-id", record.id], { detached: true, stdio: "ignore", env: { ...process.env, CODEX_RELAY_CONFIG_DIR: record.context.configDir } });
+      let node = process.execPath;
+      if (["verify-desktop", "repair-runtime"].includes(record.operation)) {
+        const app = (await configuredSharedManifest(environment))?.desktopApp || (await desktopTarget(environment))?.appPath;
+        if (app) { await verifyOfficialRuntime(app); node = officialNode(app); }
+      }
+      const child = spawn(node, [path.join(environment.pluginRoot, "server/migration-cli.js"), "--config-dir", record.context.configDir, "--job-id", record.id], { detached: true, stdio: "ignore", env: { ...process.env, CODEX_RELAY_CONFIG_DIR: record.context.configDir } });
       await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
       child.unref();
     });
@@ -60,6 +84,7 @@ export class MigrationPreparation {
   async status() {
     const record = await this.latest();
     const saved = await readJson(path.join(this.root, "prepared.json"), null);
+    const installation = await sharedInstallation(this.environment);
     let prepared = null;
     if (saved) {
       const context = this.context(saved.id);
@@ -70,7 +95,15 @@ export class MigrationPreparation {
         && manifest && await this.compatible(manifest);
       prepared = { ...saved.artifact, state: present ? current ? "prepared" : "stale" : "missing" };
     }
-    return { job: publicJob(record), prepared };
+    if (installation) prepared = installation;
+    const job = publicJob(record);
+    // Old jobs remain available as history; they do not describe today's mode.
+    if (job) job.historical = Boolean(installation && (!["verify-desktop", "repair-runtime"].includes(record.operation) || (record.report?.scope !== "current_shared_backend_tool_catalog" && !ACTIVE.has(job.phase))));
+    if (["verify-desktop", "repair-runtime"].includes(job?.operation) && !job.historical && !ACTIVE.has(job.phase)) {
+      const proof = await readDesktopCompatibility(this.environment);
+      job.stale = !proof || proof.state === "stale" || proof.checkedAt !== job.report?.checkedAt;
+    }
+    return { job, prepared, installation };
   }
 
   async compatible(manifest) {
@@ -87,7 +120,8 @@ export class MigrationPreparation {
   }
 
   async start(operation, requestId) {
-    if (!["check", "prepare", "verify-desktop"].includes(operation) || !UUID.test(requestId || "")) throw new RelayError("INVALID_JOB", "准备任务参数无效");
+    if (!["check", "prepare", "verify-desktop", "repair-runtime"].includes(operation) || !UUID.test(requestId || "")) throw new RelayError("INVALID_JOB", "准备任务参数无效");
+    if (operation === "repair-runtime" && !(await configuredSharedManifest(this.environment))) throw new RelayError("INVALID_JOB", "当前没有可修复的共享安装");
     const lock = new InstanceLock(this.root, "submission.lock");
     try { await lock.acquire(); } catch { throw new RelayError("MIGRATION_BUSY", "已有准备请求正在提交，请稍后重试"); }
     try {
@@ -112,12 +146,13 @@ export class MigrationPreparation {
   async cancel(id) {
     const record = await this.latest();
     if (!record || record.id !== id) throw new RelayError("INVALID_JOB", "准备任务已变化，请刷新状态");
+    if (record.phase === "restarting") throw new RelayError("MIGRATION_BUSY", "已开始重启，请等待恢复和验证完成");
     if (ACTIVE.has(record.phase)) await writePrivate(`${jobPath(this.root, id)}.cancel`, "cancel\n");
     return { ...publicJob(record), cancelRequested: ACTIVE.has(record.phase) };
   }
 }
 
-export async function runPreparationJob(configDir, id, { createEnvironment, inspect = inspectPreparation, prepare = prepareSharedBackend, fingerprint = preparationFingerprint, verify = checkCompatibility, verifyDesktop = verifyDesktopCompatibility } = {}) {
+export async function runPreparationJob(configDir, id, { createEnvironment, inspect = inspectPreparation, prepare = prepareSharedBackend, fingerprint = preparationFingerprint, verify = checkCompatibility, verifyDesktop = verifyDesktopCompatibility, repairRuntime = repairSharedRuntime } = {}) {
   const root = path.join(configDir, "migration");
   const file = jobPath(root, id);
   const lock = new InstanceLock(root, "worker.lock");
@@ -143,17 +178,30 @@ export async function runPreparationJob(configDir, id, { createEnvironment, insp
     timer = setInterval(() => { void save().catch(() => {}); }, 2000);
     await checkpoint();
     const environment = await createEnvironment(record.context);
-    if (record.operation === "verify-desktop") {
+    if (record.operation === "repair-runtime") {
+      await repairRuntime(environment, { checkpoint, onProgress: async (step, progress) => { record.step = step; if (progress?.committing) record.phase = "restarting"; await save(); } });
+      record.step = "共享服务已重启，等待桌面工具连接";
+      await save();
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const target = await desktopTarget(environment);
+        if (target?.pipe && target.serviceRuntime === "official") break;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    if (["verify-desktop", "repair-runtime"].includes(record.operation)) {
       record.step = "验证官方运行时签名与真实桌面工具目录";
       await save();
-      const proof = await verifyDesktop(environment, { checkpoint });
+      const proof = record.operation === "repair-runtime"
+        ? await verifyDesktopAfterRepair(environment, { verify: verifyDesktop, checkpoint, onProgress: async step => { record.step = step; await save(); } })
+        : await verifyDesktop(environment, { checkpoint });
       await checkpoint();
-      record.report = { checkedAt: proof.checkedAt, readyToPrepare: false, readyToActivate: false, checks: [
-        { id: "signature", title: "官方运行时签名", state: proof.runtime?.verified ? "passed" : "blocked", detail: proof.runtime?.verified ? "已验证官方签名；签名通过不能代替桌面连接验收" : "运行时签名尚未验证通过", scope: "activation" },
-        { id: "desktop_tools", title: "真实桌面工具目录", state: proof.state, detail: proof.message, scope: "activation" },
+      record.report = { scope: proof.scope, code: proof.code, checkedAt: proof.checkedAt, readyToPrepare: false, readyToActivate: false, checks: [
+        { id: "signature", title: "官方运行时签名", state: proof.runtime?.verified ? "passed" : proof.code === "invalid_signature" ? "blocked" : "unchecked", detail: proof.runtime?.verified ? "官方运行时签名有效" : proof.code === "invalid_signature" ? "运行时签名验证失败，请检查官方安装" : "尚未执行签名检查，不代表签名无效", scope: "diagnostic" },
+        { id: "desktop_tools", title: "真实桌面工具目录", state: proof.state, detail: proof.message, scope: "diagnostic" },
       ] };
       record.phase = proof.state === "passed" ? "complete" : "blocked";
-      record.step = proof.state === "passed" ? "工具目录验收通过，正式切换仍待验收" : "桌面兼容性验收未通过";
+      record.step = proof.state === "passed" ? "工具目录检查通过；具体工具调用需在任务中验证" : "桌面工具检查存在待处理项；不代表消息执行失败";
       return;
     }
     const result = await inspect(record.context, { environment, checkpoint, onProgress: async report => { record.report = report; record.step = report.checks.at(-1)?.title || record.step; await save(); } });
@@ -182,7 +230,7 @@ export async function runPreparationJob(configDir, id, { createEnvironment, insp
   } catch (error) {
     if (!record) throw error;
     record.phase = error.code === "PREPARATION_CANCELLED" ? "cancelled" : "failed";
-    record.error = ["PREPARATION_CANCELLED", "PREPARATION_CHANGED"].includes(error.code) ? error.message : "迁移准备失败，可重新检查后重试；当前连接未被切换";
+    record.error = ["PREPARATION_CANCELLED", "PREPARATION_CHANGED"].includes(error.code) ? error.message : record.operation === "repair-runtime" ? "共享运行时修复未完成，请检查当前服务状态后重试；现有历史和连接配置已保留" : "迁移准备失败，可重新检查后重试；当前连接未被切换";
     record.step = record.phase === "cancelled" ? "准备已取消" : "准备未完成";
   } finally {
     clearInterval(timer);

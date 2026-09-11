@@ -67,6 +67,7 @@ export const COMMAND_PERMISSIONS = Object.freeze({
   "thread.create": "createThreads",
   "thread.resume": "readThreads",
   "thread.select": "readThreads",
+  "thread.settings.update": "sendMessages",
   "turn.start": "sendMessages",
   "turn.steer": "steerTurns",
   "turn.interrupt": "interruptTurns",
@@ -159,6 +160,7 @@ export function normalizeCodexNotification(method, params = {}) {
   const map = {
     "thread/started": "thread.created",
     "thread/status/changed": "thread.updated",
+    "thread/settings/updated": "thread.settings.updated",
     "thread/queue/changed": "thread.queue.changed",
     "turn/started": "turn.started",
     "turn/completed": "turn.completed",

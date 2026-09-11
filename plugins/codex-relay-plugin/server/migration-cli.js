@@ -3702,7 +3702,7 @@ var require_websocket_server = __commonJS({
 });
 
 // server/migration-cli.js
-import path14 from "node:path";
+import path17 from "node:path";
 
 // server/config-store.js
 import fs3 from "node:fs/promises";
@@ -3969,19 +3969,19 @@ var EndpointIdentityStore = class {
     const pair = crypto3.generateKeyPairSync("ed25519");
     const publicDer = pair.publicKey.export({ format: "der", type: "spki" });
     const privateDer = pair.privateKey.export({ format: "der", type: "pkcs8" });
-    const identity2 = {
+    const identity3 = {
       schemaVersion: 1,
       publicKey: Buffer.from(publicDer).subarray(-32).toString("base64url"),
       privateKey: Buffer.from(privateDer).toString("base64url")
     };
     await fs2.mkdir(this.configDir, { recursive: true, mode: 448 });
     const temporary = `${this.file}.${process.pid}.${crypto3.randomUUID()}.tmp`;
-    await fs2.writeFile(temporary, `${JSON.stringify(identity2, null, 2)}
+    await fs2.writeFile(temporary, `${JSON.stringify(identity3, null, 2)}
 `, { mode: 384 });
     await fs2.rename(temporary, this.file);
     await fs2.chmod(this.file, 384);
-    this.identity = identity2;
-    return { ...identity2 };
+    this.identity = identity3;
+    return { ...identity3 };
   }
   #validate(value) {
     if (!value || value.schemaVersion !== 1) throw new Error("Endpoint identity schema is invalid");
@@ -4238,7 +4238,7 @@ var ConfigStore = class {
   async publicConfig({ includeToken = false } = {}) {
     const config = this.get();
     const credential = await this.secretStore.getCredential(relaySpaceId(config.relay));
-    const identity2 = await this.endpointIdentityStore.get();
+    const identity3 = await this.endpointIdentityStore.get();
     const credentialConfigured = Boolean(credential?.connectToken || credential?.endpointGrant);
     return {
       ...config,
@@ -4254,7 +4254,7 @@ var ConfigStore = class {
         endpointGrantConfigured: Boolean(credential?.endpointGrant),
         grantExpiresAt: credential?.grantExpiresAt || null,
         tokenEndpoint: credential?.tokenEndpoint || "",
-        endpointPublicKey: identity2.publicKey
+        endpointPublicKey: identity3.publicKey
       }
     };
   }
@@ -4425,9 +4425,9 @@ function validateConfig(config) {
 import fs8 from "node:fs/promises";
 import { constants } from "node:fs";
 import os6 from "node:os";
-import path10 from "node:path";
-import { execFile as execFile4 } from "node:child_process";
-import { promisify as promisify4 } from "node:util";
+import path12 from "node:path";
+import { execFile as execFile5 } from "node:child_process";
+import { promisify as promisify5 } from "node:util";
 
 // server/errors.js
 var RelayError = class extends Error {
@@ -4441,10 +4441,10 @@ var RelayError = class extends Error {
 
 // server/shared-backend-manager.js
 import fs5 from "node:fs/promises";
-import path7 from "node:path";
+import path8 from "node:path";
 import os3 from "node:os";
-import { execFile, spawn as spawn2 } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile as execFile2, spawn as spawn2 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
 import { createHash } from "node:crypto";
 
 // server/instance-lock.js
@@ -4541,9 +4541,21 @@ var InstanceLock = class {
 // server/desktop-proxy.js
 var DESKTOP_PIPE_KEY = "CODEX_APP_TOOLS_PIPE_PATH";
 
-// server/shared-backend-manager.js
+// server/official-runtime.js
+import path7 from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 var exec = promisify(execFile);
-var COMPATIBILITY = { desktopVersion: "26.901.51231", cliVersion: "codex-cli 0.153.4" };
+var officialNode = (app) => path7.join(app, "Contents/Resources/cua_node/bin/node");
+async function verifyOfficialRuntime(app) {
+  const runtime = officialNode(app);
+  await exec("/usr/bin/codesign", ["--verify", "--strict", '-R=identifier "node" and anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"', runtime], { timeout: 5e3, maxBuffer: 4096 });
+  return { verified: true, teamId: "2DC432GLL2", identifier: "node" };
+}
+
+// server/shared-backend-manager.js
+var exec2 = promisify2(execFile2);
+var COMPATIBILITY = { minDesktopVersion: "26.901.51231", minCliVersion: "0.153.4" };
 var shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 var escapeXml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 function plist(value) {
@@ -4554,7 +4566,7 @@ function plist(value) {
 `;
 }
 async function writePrivate(file, value) {
-  await fs5.mkdir(path7.dirname(file), { recursive: true, mode: 448 });
+  await fs5.mkdir(path8.dirname(file), { recursive: true, mode: 448 });
   const temporary = `${file}.${process.pid}.tmp`;
   await fs5.writeFile(temporary, value, { mode: 384 });
   await fs5.rename(temporary, file);
@@ -4568,15 +4580,33 @@ async function readJson(file, fallback) {
   }
 }
 var digest = async (file) => createHash("sha256").update(await fs5.readFile(file)).digest("hex");
+function versionParts(value) {
+  const match = String(value || "").trim().match(/(?:^|\s)(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return match ? match.slice(1).map((part) => Number(part || 0)) : null;
+}
+function isVersionAtLeast(actual, minimum) {
+  const a = versionParts(actual);
+  const b = versionParts(minimum);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return true;
+}
 async function checkCompatibility(manifest) {
   const [{ stdout: desktop }, { stdout: cli }, binaryHash] = await Promise.all([
-    exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path7.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5e3, maxBuffer: 4096 }),
-    exec(manifest.binary, ["--version"], { timeout: 5e3, maxBuffer: 4096 }),
+    exec2("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path8.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5e3, maxBuffer: 4096 }),
+    exec2(manifest.binary, ["--version"], { timeout: 5e3, maxBuffer: 4096 }),
     digest(manifest.binary)
   ]);
-  if (desktop.trim() !== manifest.desktopVersion || cli.trim() !== manifest.cliVersion || binaryHash !== manifest.binaryHash) {
-    throw new Error("\u684C\u9762\u6216 CLI \u5DF2\u66F4\u65B0\uFF0C\u5171\u4EAB\u542F\u52A8\u5DF2\u6682\u505C\uFF1B\u8BF7\u91CD\u65B0\u9A8C\u8BC1\u517C\u5BB9\u7248\u672C\u540E\u751F\u6210\u542F\u52A8\u5305");
+  const desktopVersion = desktop.trim();
+  const cliVersion = cli.trim().replace(/^codex-cli\s+/, "");
+  const resources = path8.join(manifest.desktopApp, "Contents/Resources");
+  const required = ["codex", "cua_node/bin/node", "plugins/openai-bundled/plugins/codex-app-tools/server.mjs", "plugins/openai-bundled/plugins/codex-app-tools/desktop-mcp.json"];
+  if (!isVersionAtLeast(desktopVersion, manifest.minDesktopVersion || COMPATIBILITY.minDesktopVersion) || !isVersionAtLeast(cliVersion, manifest.minCliVersion || COMPATIBILITY.minCliVersion) || binaryHash !== manifest.binaryHash || !await Promise.all(required.map((file) => fs5.access(path8.join(resources, file)).then(() => true, () => false))).then((values) => values.every(Boolean))) {
+    throw new Error("\u684C\u9762\u6216 CLI \u5B89\u88C5\u4E0D\u6EE1\u8DB3\u5F53\u524D\u542F\u52A8\u5668\u7684\u6700\u4F4E\u517C\u5BB9\u8981\u6C42\uFF0C\u6216\u5B89\u88C5\u6587\u4EF6\u5DF2\u53D1\u751F\u53D8\u5316\uFF1B\u8BF7\u91CD\u65B0\u68C0\u67E5\u5E76\u751F\u6210\u51C6\u5907\u5305");
   }
+  return { desktopVersion, cliVersion: `codex-cli ${cliVersion}`, binaryHash };
 }
 function processConflicts(output, allowedPids = []) {
   return output.split("\n").flatMap((line) => {
@@ -4589,27 +4619,117 @@ function processConflicts(output, allowedPids = []) {
     return [];
   });
 }
+async function assertStopped(allowedPids = [], manifest, kinds = ["desktop", "backend", "relay"]) {
+  const { stdout } = await exec2("/bin/ps", ["-axo", "pid=,ppid=,args="], { maxBuffer: 8 * 1024 * 1024 });
+  const candidates = processConflicts(stdout, allowedPids).filter((item) => kinds.includes(item.kind));
+  const conflicts = [];
+  for (const item of candidates) {
+    if (manifest) {
+      const { stdout: details } = await exec2("/bin/ps", ["eww", "-p", String(item.pid), "-o", "command="]).catch(() => ({ stdout: "" }));
+      if (!details) continue;
+      const key = item.kind === "relay" ? "CODEX_RELAY_CONFIG_DIR" : "CODEX_HOME";
+      const match = details.match(new RegExp(`(?:^| )${key}=(.*?)(?= [A-Za-z_][A-Za-z_0-9]*=|$)`));
+      const home = match?.[1] || path8.join(os3.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
+      const target = item.kind === "relay" ? path8.dirname(manifest.relayConfig) : manifest.codexHome;
+      if (path8.resolve(home) !== path8.resolve(target)) continue;
+    }
+    conflicts.push(item);
+  }
+  if (conflicts.length) throw new Error(`\u8BF7\u5148\u9000\u51FA\u684C\u9762\u5E76\u505C\u6B62\u65E7 Relay/\u540E\u7AEF\uFF0C\u518D\u6267\u884C\u5207\u6362\u3002\u4ECD\u5728\u8FD0\u884C\uFF1A${conflicts.map((x) => `${x.kind} PID ${x.pid}`).join("\u3001")}`);
+}
+async function identity(pid) {
+  try {
+    return (await exec2("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="])).stdout.trim();
+  } catch {
+    return "";
+  }
+}
+async function ownedRuntime(manifest) {
+  const runtime = await readJson(path8.join(manifest.root, "runtime.json"), null);
+  if (!runtime || runtime.endpoint !== manifest.endpoint || !runtime.pid || !runtime.identity) return null;
+  return await identity(runtime.pid) === runtime.identity ? runtime : null;
+}
+async function probeEndpoint(endpoint) {
+  const connection = new SharedAppServerTransport(endpoint, { connectTimeoutMs: 1e3 });
+  connection.on("closed", () => {
+  });
+  try {
+    await connection.open();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await connection.close();
+  }
+}
+async function backendStatus(manifest) {
+  const runtime = await ownedRuntime(manifest);
+  return { ready: Boolean(runtime && await probeEndpoint(manifest.endpoint)), pid: runtime?.pid ?? null, endpoint: manifest.endpoint, codexHome: manifest.codexHome };
+}
+async function waitReady(manifest, timeoutMs = 12e3) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const status = await backendStatus(manifest);
+    if (status.ready) return status;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } while (Date.now() < deadline);
+  throw new Error("\u5171\u4EAB\u540E\u7AEF\u672A\u5C31\u7EEA\uFF1B\u5DF2\u505C\u6B62\u542F\u52A8\u684C\u9762\uFF0C\u907F\u514D\u521B\u5EFA\u53E6\u4E00\u4E2A\u6267\u884C\u540E\u7AEF");
+}
+function expectedEnvironment(manifest) {
+  return { CODEX_CLI_PATH: path8.join(manifest.root, "codex-proxy"), CODEX_APP_SERVER_FORCE_CLI: "1", CODEX_APP_SERVER_WS_URL: "", CODEX_HOME: manifest.codexHome };
+}
+function serviceDefinition(manifest) {
+  return {
+    Label: manifest.label,
+    // The desktop authenticates the tool, its parent and its grandparent.
+    // The service manager is in that chain; a shell/Homebrew Node breaks it.
+    ProgramArguments: [officialNode(manifest.desktopApp), path8.join(manifest.root, "shared-backend-cli.js"), "service", "--manifest", path8.join(manifest.root, "manifest.json")],
+    RunAtLoad: true,
+    KeepAlive: { SuccessfulExit: false },
+    ThrottleInterval: 15,
+    ProcessType: "Interactive",
+    Umask: 63,
+    StandardOutPath: path8.join(manifest.root, "service.log"),
+    StandardErrorPath: path8.join(manifest.root, "service.log")
+  };
+}
+async function openDesktop(manifest) {
+  await checkCompatibility(manifest);
+  await waitReady(manifest);
+  const runtime = await ownedRuntime(manifest);
+  if (!await isActiveSharedInstallation(manifest)) await assertStopped(runtime ? [runtime.pid] : [], manifest, ["backend"]);
+  const env = { ...process.env, ...expectedEnvironment(manifest), CODEX_HOME: manifest.codexHome };
+  delete env.CODEX_APP_SERVER_WS_URL;
+  await exec2("/usr/bin/open", ["-a", manifest.desktopApp, "--env", `CODEX_CLI_PATH=${env.CODEX_CLI_PATH}`, "--env", "CODEX_APP_SERVER_FORCE_CLI=1", "--env", "CODEX_APP_SERVER_WS_URL=", "--env", `CODEX_HOME=${manifest.codexHome}`], { env });
+}
+async function isActiveSharedInstallation(manifest) {
+  const [record, config] = await Promise.all([
+    readJson(path8.join(manifest.root, "activation.json"), null),
+    readJson(manifest.relayConfig, null)
+  ]);
+  return record?.phase === "active" && config?.codex?.connectionMode === "shared" && config.codex.appServerEndpoint === manifest.endpoint;
+}
 function defaultManifest(root, options = {}) {
   const desktopApp = options.desktopApp || "/Applications/ChatGPT.app";
   const manifest = {
     version: 1,
-    root: path7.resolve(root),
-    node: process.execPath,
+    root: path8.resolve(root),
+    node: officialNode(desktopApp),
     desktopApp,
-    binary: path7.join(desktopApp, "Contents/Resources/codex"),
+    binary: path8.join(desktopApp, "Contents/Resources/codex"),
     ...COMPATIBILITY,
-    codexHome: path7.resolve(options.codexHome || process.env.CODEX_HOME || path7.join(os3.homedir(), ".codex")),
-    relayConfig: path7.resolve(options.relayConfig || path7.join(os3.homedir(), ".codex-relay-plugin/config.json")),
+    codexHome: path8.resolve(options.codexHome || process.env.CODEX_HOME || path8.join(os3.homedir(), ".codex")),
+    relayConfig: path8.resolve(options.relayConfig || path8.join(os3.homedir(), ".codex-relay-plugin/config.json")),
     relayAgent: options.relayAgent,
-    pluginRoot: options.relayAgent ? path7.dirname(path7.dirname(path7.resolve(options.relayAgent))) : null,
+    pluginRoot: options.relayAgent ? path8.dirname(path8.dirname(path8.resolve(options.relayAgent))) : null,
     originalIcon: options.originalIcon ?? false,
     desktopProfile: options.desktopProfile || null,
     path: process.env.PATH || "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     shell: os3.userInfo().shell || "/bin/zsh",
     label: "com.recodex.shared-backend",
-    launchAgent: path7.join(os3.homedir(), "Library/LaunchAgents/com.recodex.shared-backend.plist")
+    launchAgent: path8.join(os3.homedir(), "Library/LaunchAgents/com.recodex.shared-backend.plist")
   };
-  manifest.endpoint = `unix://${path7.join(manifest.root, "rpc.sock")}`;
+  manifest.endpoint = `unix://${path8.join(manifest.root, "rpc.sock")}`;
   if (Buffer.byteLength(manifest.endpoint.slice(7)) > 100) throw new Error("\u5B89\u88C5\u76EE\u5F55\u8FC7\u957F\uFF0CmacOS Unix Socket \u8DEF\u5F84\u9700\u4E0D\u8D85\u8FC7 100 \u5B57\u8282");
   return manifest;
 }
@@ -4619,31 +4739,51 @@ function tomlValue(value) {
   return JSON.stringify(value);
 }
 async function desktopToolDefinition(manifest) {
-  const plugin = path7.join(manifest.desktopApp, "Contents/Resources/plugins/openai-bundled/plugins/codex-app-tools");
-  const definition = (await readJson(path7.join(plugin, "desktop-mcp.json"))).mcpServers.codex_app;
-  return { ...definition, command: path7.resolve(plugin, definition.command), cwd: plugin, enabled: true, omit_tools_from: ["deferred"], env: {
-    ...definition.env,
-    [DESKTOP_PIPE_KEY]: path7.join(manifest.root, "desktop-tools.sock"),
-    CODEX_MCP_NODE_PATH: path7.join(manifest.desktopApp, "Contents/Resources/cua_node/bin/node")
-  } };
+  const plugin = path8.join(manifest.desktopApp, "Contents/Resources/plugins/openai-bundled/plugins/codex-app-tools");
+  const definition = (await readJson(path8.join(plugin, "desktop-mcp.json"))).mcpServers.codex_app;
+  const env = { ...definition.env, [DESKTOP_PIPE_KEY]: path8.join(manifest.root, "desktop-tools.sock"), CODEX_MCP_NODE_PATH: officialNode(manifest.desktopApp) };
+  return {
+    ...definition,
+    command: path8.resolve(plugin, definition.command),
+    cwd: plugin,
+    enabled: true,
+    omit_tools_from: ["deferred"],
+    env,
+    env_vars: definition.env_vars?.filter((key) => !Object.hasOwn(env, key))
+  };
+}
+
+// server/shared-installation.js
+import path9 from "node:path";
+async function configuredSharedManifest(environment) {
+  const config = environment.service.configStore.get?.().codex;
+  if (config?.connectionMode !== "shared" || !config.appServerEndpoint?.startsWith("unix://")) return null;
+  const socket = config.appServerEndpoint.slice(7);
+  if (!path9.isAbsolute(socket) || path9.basename(socket) !== "rpc.sock") return null;
+  const root = path9.dirname(socket);
+  const packages = path9.join(environment.service.configStore.configDir, "migration/packages");
+  if (path9.dirname(root) !== packages && root !== environment.sharedRoot) return null;
+  const manifest = await readJson(path9.join(root, "manifest.json"), null).catch(() => null);
+  if (!manifest || manifest.root !== root || manifest.endpoint !== config.appServerEndpoint || manifest.codexHome !== environment.codexHome || manifest.relayConfig !== path9.join(environment.service.configStore.configDir, "config.json")) return null;
+  return manifest;
 }
 
 // server/desktop-compatibility.js
 import fs7 from "node:fs/promises";
-import path9 from "node:path";
+import path11 from "node:path";
 import os5 from "node:os";
 import { createHash as createHash2 } from "node:crypto";
-import { execFile as execFile3, spawn as spawn3 } from "node:child_process";
-import { promisify as promisify3 } from "node:util";
+import { execFile as execFile4, spawn as spawn3 } from "node:child_process";
+import { promisify as promisify4 } from "node:util";
 
 // server/app-server-client.js
 import { EventEmitter as EventEmitter2 } from "node:events";
-import { execFile as execFile2 } from "node:child_process";
-import { promisify as promisify2 } from "node:util";
+import { execFile as execFile3 } from "node:child_process";
+import { promisify as promisify3 } from "node:util";
 
 // server/rollout-snapshot.js
 import fs6 from "node:fs/promises";
-import path8 from "node:path";
+import path10 from "node:path";
 import os4 from "node:os";
 
 // server/rollout-items.js
@@ -4693,8 +4833,8 @@ function rolloutItem(item) {
         ...common,
         type: "fileChange",
         status: item.status,
-        changes: Object.entries(item.changes || {}).slice(0, 128).map(([path15, change]) => ({
-          path: path15,
+        changes: Object.entries(item.changes || {}).slice(0, 128).map(([path18, change]) => ({
+          path: path18,
           kind: { type: change.type, move_path: change.move_path },
           diff: text(change.unified_diff)
         }))
@@ -4802,8 +4942,8 @@ var RolloutSnapshots = class {
   #indexing;
   #records = /* @__PURE__ */ new Map();
   #pending = /* @__PURE__ */ new Map();
-  constructor({ codexHome = process.env.CODEX_HOME || path8.join(os4.homedir(), ".codex"), indexIntervalMs = 2e3 } = {}) {
-    this.#root = path8.join(codexHome, "sessions");
+  constructor({ codexHome = process.env.CODEX_HOME || path10.join(os4.homedir(), ".codex"), indexIntervalMs = 2e3 } = {}) {
+    this.#root = path10.join(codexHome, "sessions");
     this.indexIntervalMs = indexIntervalMs;
   }
   clear() {
@@ -4827,7 +4967,7 @@ var RolloutSnapshots = class {
         if (!entry.isFile()) continue;
         const match = entry.name.match(JOURNAL);
         if (!match) continue;
-        const file = path8.join(entry.parentPath, entry.name);
+        const file = path10.join(entry.parentPath, entry.name);
         const files = index.get(match[1]) || [];
         files.push(file);
         index.set(match[1], files);
@@ -4852,18 +4992,18 @@ var RolloutSnapshots = class {
       try {
         const stat = await handle.stat();
         let record = this.#records.get(thread.id);
-        const reusable = record?.file === file && record.cwd === path8.resolve(thread.cwd) && record.ino === stat.ino && stat.size >= record.offset;
+        const reusable = record?.file === file && record.cwd === path10.resolve(thread.cwd) && record.ino === stat.ino && stat.size >= record.offset;
         if (!reusable) {
           const head = Buffer.alloc(Math.min(MAX_LINE_BYTES, stat.size));
           const { bytesRead } = await handle.read(head, 0, head.length, 0);
           const end = head.indexOf(10);
           if (end < 0 || end >= bytesRead) continue;
           const meta = JSON.parse(head.subarray(0, end).toString("utf8"));
-          if (meta.type !== "session_meta" || meta.payload?.id !== thread.id || path8.resolve(meta.payload?.cwd || "") !== path8.resolve(thread.cwd)) continue;
+          if (meta.type !== "session_meta" || meta.payload?.id !== thread.id || path10.resolve(meta.payload?.cwd || "") !== path10.resolve(thread.cwd)) continue;
           if (stat.size > MAX_READ_BYTES) return null;
           record = {
             file,
-            cwd: path8.resolve(thread.cwd),
+            cwd: path10.resolve(thread.cwd),
             ino: stat.ino,
             offset: 0,
             remainder: Buffer.alloc(0),
@@ -4924,8 +5064,8 @@ var RolloutSnapshots = class {
   }
 };
 function inside(root, file) {
-  const relative = path8.relative(root, file);
-  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path8.sep}`) && !path8.isAbsolute(relative);
+  const relative = path10.relative(root, file);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path10.sep}`) && !path10.isAbsolute(relative);
 }
 function projectRow(record, row, notifications, threadId) {
   if (row.type !== "event_msg") return;
@@ -5066,8 +5206,20 @@ var PendingInteractions = class {
   }
 };
 
+// server/composer-settings.js
+function composerSettings(value) {
+  const source = value?.threadSettings && typeof value.threadSettings === "object" ? value.threadSettings : value;
+  if (!source || typeof source.model !== "string") return null;
+  const settings = { model: source.model, effort: source.effort ?? source.reasoningEffort ?? null };
+  for (const key of ["approvalPolicy", "approvalsReviewer", "activePermissionProfile"]) {
+    if (source[key] !== void 0) settings[key] = source[key];
+  }
+  if (source.sandboxPolicy || source.sandbox) settings.sandboxPolicy = source.sandboxPolicy || source.sandbox;
+  return settings;
+}
+
 // server/app-server-client.js
-var execFileAsync = promisify2(execFile2);
+var execFileAsync = promisify3(execFile3);
 var AppServerClient = class _AppServerClient extends EventEmitter2 {
   #transport = null;
   #generation = 0;
@@ -5090,6 +5242,8 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   #resumedThreads = /* @__PURE__ */ new Set();
   #resumingThreads = /* @__PURE__ */ new Map();
   #resumeRetryAt = /* @__PURE__ */ new Map();
+  #threadSettings = /* @__PURE__ */ new Map();
+  #settingsRevision = 0;
   #rollouts = new RolloutSnapshots();
   #observedThreads = /* @__PURE__ */ new Map();
   #rolloutTimer = null;
@@ -5168,6 +5322,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
     this.#resumedThreads.clear();
     this.#resumingThreads.clear();
     this.#resumeRetryAt.clear();
+    this.#threadSettings.clear();
   }
   async #startInternal(generation) {
     const config = this.configStore.get().codex;
@@ -5650,16 +5805,43 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   async createThread({ cwd } = {}) {
     const result = await this.request("thread/start", { ...cwd ? { cwd } : {} });
     const id2 = result?.thread?.id || result?.id;
-    if (id2) this.#rememberResumedThread(normalizeThreadId(id2));
-    return result;
+    if (id2) {
+      this.#rememberResumedThread(normalizeThreadId(id2));
+      this.#rememberThreadSettings(id2, result);
+    }
+    return { ...result, ...this.threadSettings(id2) ? { threadSettings: this.threadSettings(id2) } : {} };
   }
   async resumeThread(threadId) {
     const id2 = normalizeThreadId(threadId);
     const transport = this.#transport;
+    const previousSettings = this.#threadSettings.get(id2);
     const result = await this.request("thread/resume", { threadId: id2 });
     if (transport !== this.#transport) throw new RelayError("APP_SERVER_UNAVAILABLE", "\u4EFB\u52A1\u8BA2\u9605\u7684\u8FDE\u63A5\u5DF2\u8FC7\u671F");
     this.#rememberResumedThread(id2);
+    if (this.#threadSettings.get(id2) === previousSettings) this.#rememberThreadSettings(id2, result);
     return result;
+  }
+  threadSettings(threadId) {
+    const value = this.#threadSettings.get(threadId);
+    return value ? structuredClone(value) : null;
+  }
+  #rememberThreadSettings(threadId, value) {
+    const settings = composerSettings(value);
+    if (!settings || !threadId) return;
+    this.#threadSettings.delete(threadId);
+    this.#threadSettings.set(threadId, { ...settings, revision: ++this.#settingsRevision });
+    while (this.#threadSettings.size > _AppServerClient.MAX_RESUMED_THREADS) {
+      this.#threadSettings.delete(this.#threadSettings.keys().next().value);
+    }
+  }
+  async updateThreadSettings(threadId, patch) {
+    const id2 = normalizeThreadId(threadId);
+    await this.ensureThreadResumed(id2);
+    const previous = this.#threadSettings.get(id2);
+    await this.request("thread/settings/update", { threadId: id2, ...patch });
+    if (this.#threadSettings.get(id2) === previous) await this.resumeThread(id2);
+    if (!this.threadSettings(id2)) throw new RelayError("APP_SERVER_ERROR", "Codex \u672A\u8FD4\u56DE\u4EFB\u52A1\u8BBE\u7F6E\uFF0C\u8BF7\u5347\u7EA7 Codex \u540E\u91CD\u8BD5");
+    return { threadId: id2, threadSettings: this.threadSettings(id2) };
   }
   async startTurn({ threadId, text: text2, cwd, model, effort }) {
     const id2 = normalizeThreadId(threadId);
@@ -5787,6 +5969,10 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
       resolved = this.#interactions.clearThread(message.params?.threadId);
     }
     for (const entry of resolved) this.emit("interactionResolved", this.#interactions.public(entry, this.configStore.get()));
+    if (message.method === "thread/settings/updated") {
+      this.#rememberThreadSettings(message.params?.threadId, message.params?.threadSettings);
+      message.params = { threadId: message.params?.threadId, threadSettings: this.threadSettings(message.params?.threadId) };
+    }
     if (message.method) this.emit("notification", message.method, message.params || {});
   }
   #handleExit(transport, error) {
@@ -5934,7 +6120,7 @@ function isThreadNotLoadedError(error) {
 }
 
 // server/desktop-compatibility.js
-var exec2 = promisify3(execFile3);
+var exec3 = promisify4(execFile4);
 var TTL = 10 * 6e4;
 var REQUIRED2 = ["list_threads", "open_in_codex", "send_message_to_thread"];
 var quiet = { info() {
@@ -5951,48 +6137,63 @@ var messages = {
   timeout: "\u684C\u9762\u5DE5\u5177\u9A8C\u6536\u8D85\u65F6\uFF0C\u53EF\u5728\u684C\u9762\u7A7A\u95F2\u65F6\u91CD\u8BD5",
   changed: "\u9A8C\u6536\u671F\u95F4\u684C\u9762\u8FDB\u7A0B\u6216\u5B89\u88C5\u6587\u4EF6\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9A8C\u8BC1",
   unsupported: "\u5F53\u524D\u5E73\u53F0\u6682\u4E0D\u652F\u6301\u8FD9\u9879\u684C\u9762\u517C\u5BB9\u6027\u9A8C\u6536",
-  failed: "\u65E0\u6CD5\u5B8C\u6210\u684C\u9762\u5DE5\u5177\u9A8C\u6536\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5\u672C\u673A\u5B89\u88C5\u4E0E\u684C\u9762\u72B6\u6001"
+  failed: "\u65E0\u6CD5\u5B8C\u6210\u684C\u9762\u5DE5\u5177\u9A8C\u6536\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5\u672C\u673A\u5B89\u88C5\u4E0E\u684C\u9762\u72B6\u6001",
+  shared_passed: "\u5F53\u524D\u5171\u4EAB\u540E\u7AEF\u5DF2\u8FD4\u56DE\u684C\u9762\u5DE5\u5177\u76EE\u5F55\uFF1B\u5177\u4F53\u5DE5\u5177\u8C03\u7528\u9700\u5728\u4EFB\u52A1\u4E2D\u9A8C\u8BC1",
+  shared_timeout: "\u5F53\u524D\u5171\u4EAB\u540E\u7AEF\u7684\u684C\u9762\u5DE5\u5177\u67E5\u8BE2\u8D85\u65F6\uFF1B\u6D88\u606F\u6267\u884C\u53EF\u7528\u4E0D\u4EE3\u8868\u6D4F\u89C8\u5668\u7B49\u684C\u9762\u5DE5\u5177\u5DF2\u6062\u590D",
+  shared_failed: "\u5F53\u524D\u5171\u4EAB\u540E\u7AEF\u672A\u80FD\u52A0\u8F7D\u684C\u9762\u5DE5\u5177\u76EE\u5F55\uFF0C\u8BF7\u68C0\u67E5\u684C\u9762\u5DE5\u5177\u8FDE\u63A5",
+  shared_unloaded: "\u5F53\u524D\u5171\u4EAB\u540E\u7AEF\u6CA1\u6709\u5DF2\u52A0\u8F7D\u4EFB\u52A1\uFF0C\u6682\u65E0\u6CD5\u68C0\u67E5\u4EFB\u52A1\u4E2D\u7684\u684C\u9762\u5DE5\u5177\u76EE\u5F55",
+  shared_runtime_restart_required: "\u5171\u4EAB\u670D\u52A1\u4ECD\u7531\u7CFB\u7EDF Node \u542F\u52A8\uFF0C\u684C\u9762\u5DE5\u5177\u7684\u7236\u8FDB\u7A0B\u7B7E\u540D\u94FE\u4E0D\u7B26\u5408\u8981\u6C42\u3002\u8BF7\u4FEE\u590D\u5171\u4EAB\u670D\u52A1\u8FD0\u884C\u65F6\uFF1B\u9000\u51FA\u684C\u9762\u540E\u5C06\u81EA\u52A8\u91CD\u542F\u5E76\u9A8C\u8BC1\uFF0C\u65E0\u9700\u91CD\u65B0\u8FC1\u79FB\u3002"
 };
 async function desktopTarget(environment) {
   const processes = await environment.inspectProcesses();
   const desktops = processes.items.filter((p) => p.kind === "desktop" && p.scope === "same");
   if (processes.state !== "ok" || desktops.length !== 1 || !desktops[0].appPath) return null;
   const desktop = desktops[0];
-  const { stdout } = await exec2("/bin/ps", ["-axo", "pid=,ppid=,args="], { timeout: 3e3, maxBuffer: 8 * 1024 * 1024 });
+  const manifest = await configuredSharedManifest(environment);
+  const run = environment.exec || exec3;
+  const { stdout } = await run("/bin/ps", ["-axo", "pid=,ppid=,args="], { timeout: 3e3, maxBuffer: 8 * 1024 * 1024 });
   const backends = stdout.split("\n").flatMap((line) => {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-    if (!m || Number(m[2]) !== desktop.pid || !m[3].startsWith(`${desktop.appPath}/Contents/Resources/codex `)) return [];
+    if (!m || Number(m[2]) !== desktop.pid) return [];
+    const direct = m[3].startsWith(`${desktop.appPath}/Contents/Resources/codex `);
+    const proxy = manifest?.desktopApp === desktop.appPath && m[3].includes(`${path11.join(manifest.root, "shared-backend-cli.js")} proxy --manifest ${path11.join(manifest.root, "manifest.json")} `);
+    if (!direct && !proxy) return [];
     const pipe = m[3].match(/"CODEX_APP_TOOLS_PIPE_PATH"\s*=\s*"([^"\r\n]+)"/)?.[1];
-    return pipe && path9.isAbsolute(pipe) ? [{ pipe, backendPid: Number(m[1]) }] : [];
+    return pipe && path11.isAbsolute(pipe) ? [{ pipe, backendPid: Number(m[1]), connection: proxy ? "shared_proxy" : "direct" }] : [];
   });
-  if (backends.length !== 1) return { ...desktop, pipe: null };
-  const target = { ...desktop, ...backends[0] };
-  const stat = await fs7.stat(target.pipe).catch(() => null);
-  if (!stat?.isSocket() || stat.uid !== process.getuid()) return { ...target, pipe: null };
-  const identity2 = (await exec2("/bin/ps", ["-p", String(desktop.pid), "-o", "lstart=,comm="], { timeout: 2e3 })).stdout.trim();
-  const resources = path9.join(desktop.appPath, "Contents/Resources");
-  const hash = createHash2("sha256").update(JSON.stringify([identity2, target.pipe, environment.codexHome]));
+  const target = { ...desktop, ...backends.length === 1 ? backends[0] : { pipe: null } };
+  const stat = target.pipe ? await fs7.stat(target.pipe).catch(() => null) : null;
+  if (!stat?.isSocket() || stat.uid !== process.getuid()) target.pipe = null;
+  const runtime = manifest ? await ownedRuntime(manifest) : null;
+  if (manifest) {
+    target.endpoint = manifest.endpoint;
+    target.runtimeIdentity = runtime?.identity || null;
+    const backend = stdout.split("\n").map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).find((m) => m && Number(m[1]) === runtime?.pid);
+    const service = backend && stdout.split("\n").map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)).find((m) => m && m[1] === backend[2]);
+    if (service?.[3].includes(`${path11.join(manifest.root, "shared-backend-cli.js")} service --manifest ${path11.join(manifest.root, "manifest.json")}`)) {
+      target.servicePid = Number(service[1]);
+      const command = (await run("/bin/ps", ["-p", service[1], "-o", "comm="], { timeout: 2e3 })).stdout.trim();
+      const resolved = await fs7.realpath(command).catch(() => null);
+      target.serviceRuntime = resolved && resolved === await fs7.realpath(officialNode(manifest.desktopApp)).catch(() => null) ? "official" : "legacy";
+    }
+  }
+  const identity3 = (await run("/bin/ps", ["-p", String(desktop.pid), "-o", "lstart=,comm="], { timeout: 2e3 })).stdout.trim();
+  const resources = path11.join(desktop.appPath, "Contents/Resources");
+  const hash = createHash2("sha256").update(JSON.stringify([identity3, target.pipe, target.backendPid, target.endpoint, target.runtimeIdentity, target.servicePid, target.serviceRuntime, environment.codexHome]));
   for (const file of ["codex", "cua_node/bin/node", "plugins/openai-bundled/plugins/codex-app-tools/server.mjs", "plugins/openai-bundled/plugins/codex-app-tools/desktop-mcp.json"]) {
-    const s = await fs7.stat(path9.join(resources, file));
+    const s = await fs7.stat(path11.join(resources, file));
     hash.update(JSON.stringify([file, s.ino, s.size, s.mtimeMs, s.ctimeMs]));
   }
   target.fingerprint = hash.digest("hex");
   return target;
 }
-async function verifyOfficialRuntime(app) {
-  const runtime = path9.join(app, "Contents/Resources/cua_node/bin/node");
-  await exec2("/usr/bin/codesign", ["--verify", "--strict", runtime], { timeout: 5e3, maxBuffer: 4096 });
-  const result = await exec2("/usr/bin/codesign", ["-dv", "--verbose=2", runtime], { timeout: 5e3, maxBuffer: 4096 });
-  if (!/^TeamIdentifier=2DC432GLL2$/m.test(result.stderr) || !/^Identifier=node$/m.test(result.stderr)) throw new Error("Unexpected runtime signing identity");
-  return { verified: true, teamId: "2DC432GLL2", identifier: "node" };
-}
 async function probeDesktopTools(target, { checkpoint = async () => {
 }, timeoutMs = 15e3 } = {}) {
-  const root = await fs7.mkdtemp(path9.join(os5.tmpdir(), "relay-desktop-check-"));
-  const home = path9.join(root, "home");
+  const root = await fs7.mkdtemp(path11.join(os5.tmpdir(), "relay-desktop-check-"));
+  const home = path11.join(root, "home");
   await fs7.mkdir(home, { mode: 448 });
   const manifest = { root, desktopApp: target.appPath };
-  const endpoint = `unix://${path9.join(root, "rpc.sock")}`;
+  const endpoint = `unix://${path11.join(root, "rpc.sock")}`;
   const deadline = Date.now() + timeoutMs;
   let child, client, killTimer;
   try {
@@ -6001,13 +6202,13 @@ async function probeDesktopTools(target, { checkpoint = async () => {
     tools.env_vars = tools.env_vars?.filter((key) => !Object.hasOwn(tools.env, key));
     const env = { ...process.env, CODEX_HOME: home, RUST_LOG: "error" };
     for (const key of ["CODEX_CLI_PATH", "CODEX_APP_SERVER_WS_URL", "CODEX_APP_SERVER_FORCE_CLI", "ELECTRON_RUN_AS_NODE"]) delete env[key];
-    child = spawn3(path9.join(target.appPath, "Contents/Resources/codex"), ["-c", "features.code_mode_host=true", "-c", `mcp_servers.codex_app=${tomlValue(tools)}`, "app-server", "--listen", endpoint], { env, cwd: home, stdio: "ignore" });
+    child = spawn3(path11.join(target.appPath, "Contents/Resources/codex"), ["-c", "features.code_mode_host=true", "-c", `mcp_servers.codex_app=${tomlValue(tools)}`, "app-server", "--listen", endpoint], { env, cwd: home, stdio: "ignore" });
     let spawnError;
     child.once("error", (error) => {
       spawnError = error;
     });
     killTimer = setTimeout(() => child.kill("SIGTERM"), timeoutMs + 1e3);
-    while (!await fs7.stat(path9.join(root, "rpc.sock")).then((s) => s.isSocket(), () => false)) {
+    while (!await fs7.stat(path11.join(root, "rpc.sock")).then((s) => s.isSocket(), () => false)) {
       await checkpoint();
       if (spawnError || child.exitCode !== null || child.signalCode !== null) return { code: "failed" };
       if (Date.now() > deadline) return { code: "timeout" };
@@ -6018,7 +6219,7 @@ async function probeDesktopTools(target, { checkpoint = async () => {
     const { thread } = await client.createThread({ cwd: home, approvalPolicy: "never", sandbox: "read-only" });
     while (Date.now() < deadline) {
       await checkpoint();
-      const result = await client.request("mcpServerStatus/list", { threadId: thread.id }, Math.max(100, Math.min(5e3, deadline - Date.now())));
+      const result = await client.request("mcpServerStatus/list", { threadId: thread.id, detail: "toolsAndAuthOnly" }, Math.max(100, Math.min(5e3, deadline - Date.now())));
       const server = result.data?.find((server2) => server2.name === "codex_app");
       if (server?.runtimeStatus === "failed") return { code: "handshake_failed" };
       const names = Object.keys(server?.tools || {});
@@ -6046,6 +6247,41 @@ async function probeDesktopTools(target, { checkpoint = async () => {
     await fs7.rm(root, { recursive: true, force: true });
   }
 }
+async function probeSharedDesktopTools(target, { checkpoint = async () => {
+}, timeoutMs = 2e4, createClient } = {}) {
+  if (target.serviceRuntime === "legacy") return { code: "shared_runtime_restart_required" };
+  if (!target.endpoint || !target.runtimeIdentity) return { code: "shared_failed" };
+  const client = createClient ? createClient() : new AppServerClient({ get: () => ({ codex: { connectionMode: "shared", appServerEndpoint: target.endpoint } }) }, quiet, { initializeTimeoutMs: 3e3 });
+  const deadline = Date.now() + timeoutMs;
+  const request = (method, params) => client.request(method, params, Math.max(100, deadline - Date.now()));
+  try {
+    await checkpoint();
+    await client.start();
+    const loaded = await request("thread/loaded/list", { limit: 1 });
+    const threadId = loaded.data?.[0];
+    if (typeof threadId !== "string") return { code: "shared_unloaded" };
+    await checkpoint();
+    let cursor, server;
+    const cursors = /* @__PURE__ */ new Set();
+    do {
+      await checkpoint();
+      if (Date.now() >= deadline) return { code: "shared_timeout" };
+      const response = await request("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly", limit: 100, ...cursor ? { cursor } : {} });
+      server = response.data?.find((item) => item.name === "codex_app");
+      cursor = response.nextCursor;
+      if (cursor && cursors.has(cursor)) return { code: "shared_failed" };
+      cursors.add(cursor);
+    } while (!server && cursor);
+    const names = Object.keys(server?.tools || {});
+    return { code: server?.runtimeStatus === "failed" ? "shared_failed" : REQUIRED2.every((name) => names.includes(name)) ? "shared_passed" : "incomplete_catalog", toolCount: names.length };
+  } catch (error) {
+    if (error.code === "PREPARATION_CANCELLED") throw error;
+    return { code: error.code === "APP_SERVER_TIMEOUT" || Date.now() >= deadline ? "shared_timeout" : "shared_failed" };
+  } finally {
+    await client.stop().catch(() => {
+    });
+  }
+}
 async function verifyDesktopCompatibility(environment, options = {}) {
   const discover = options.discover || desktopTarget;
   const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -6055,7 +6291,6 @@ async function verifyDesktopCompatibility(environment, options = {}) {
     else {
       target = await discover(environment);
       if (!target) code = "no_desktop";
-      else if (!target.pipe) code = "no_pipe";
       else {
         try {
           runtime = await (options.verifyRuntime || verifyOfficialRuntime)(target.appPath);
@@ -6063,9 +6298,14 @@ async function verifyDesktopCompatibility(environment, options = {}) {
           code = "invalid_signature";
         }
         if (runtime) {
-          const result2 = await (options.probe || probeDesktopTools)(target, options);
-          code = Object.hasOwn(messages, result2.code) ? result2.code : "failed";
-          toolCount = Number.isSafeInteger(result2.toolCount) ? result2.toolCount : 0;
+          if (!target.pipe) code = "no_pipe";
+          else {
+            const shared = environment.service.configStore.get?.().codex?.connectionMode === "shared";
+            const probe = options.probe || (shared ? probeSharedDesktopTools : probeDesktopTools);
+            const result2 = await probe(target, options);
+            code = Object.hasOwn(messages, result2.code) ? result2.code : "failed";
+            toolCount = Number.isSafeInteger(result2.toolCount) ? result2.toolCount : 0;
+          }
           if ((await discover(environment))?.fingerprint !== target.fingerprint) code = "changed";
         }
       }
@@ -6074,26 +6314,26 @@ async function verifyDesktopCompatibility(environment, options = {}) {
     if (error.code === "PREPARATION_CANCELLED") throw error;
     code = "failed";
   }
-  const result = { checkedAt, expiresAt: new Date(Date.now() + TTL).toISOString(), code, state: code === "passed" ? "passed" : "blocked", message: messages[code], runtime, toolCount, desktopPid: target?.pid || null, fingerprint: target?.fingerprint || null, scope: "isolated_shared_backend_tool_catalog", modelRequests: 0 };
-  await writePrivate(path9.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json"), JSON.stringify(result));
+  const result = { checkedAt, expiresAt: new Date(Date.now() + TTL).toISOString(), code, state: ["passed", "shared_passed"].includes(code) ? "passed" : "blocked", message: messages[code], runtime, toolCount, desktopPid: target?.pid || null, fingerprint: target?.fingerprint || null, scope: environment.service.configStore.get?.().codex?.connectionMode === "shared" ? "current_shared_backend_tool_catalog" : "isolated_shared_backend_tool_catalog", modelRequests: 0 };
+  await writePrivate(path11.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json"), JSON.stringify(result));
   return result;
 }
 async function readDesktopCompatibility(environment, { discover = desktopTarget, now = Date.now() } = {}) {
   try {
-    const file = path9.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json");
+    const file = path11.join(environment.service.configStore.configDir, "migration/desktop-compatibility.json");
     if ((await fs7.stat(file)).size > 32 * 1024) return null;
     const saved = JSON.parse(await fs7.readFile(file, "utf8"));
     if (!Object.hasOwn(messages, saved.code) || !Number.isFinite(Date.parse(saved.checkedAt)) || !Number.isFinite(Date.parse(saved.expiresAt))) return null;
     const target = await discover(environment);
     const stale = now > Date.parse(saved.expiresAt) || !saved.fingerprint || saved.fingerprint !== target?.fingerprint;
-    return { checkedAt: saved.checkedAt, code: saved.code, state: stale ? "stale" : saved.code === "passed" ? "passed" : "blocked", message: stale ? "\u684C\u9762\u8FDB\u7A0B\u3001\u5B89\u88C5\u7248\u672C\u5DF2\u53D8\u5316\u6216\u9A8C\u6536\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u9A8C\u8BC1" : messages[saved.code], signatureVerified: saved.runtime?.verified === true, toolCount: saved.toolCount || 0, desktopPid: saved.desktopPid || null };
+    return { checkedAt: saved.checkedAt, code: saved.code, state: stale ? "stale" : ["passed", "shared_passed"].includes(saved.code) ? "passed" : "blocked", message: stale ? "\u684C\u9762\u8FDB\u7A0B\u3001\u5B89\u88C5\u7248\u672C\u5DF2\u53D8\u5316\u6216\u9A8C\u6536\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u9A8C\u8BC1" : messages[saved.code], signatureVerified: saved.runtime?.verified === true, signatureState: saved.runtime?.verified === true ? "passed" : saved.code === "invalid_signature" ? "blocked" : "unchecked", scope: saved.scope, toolCount: saved.toolCount || 0, desktopPid: saved.desktopPid || null };
   } catch {
     return null;
   }
 }
 
 // server/environment-service.js
-var exec3 = promisify4(execFile4);
+var exec4 = promisify5(execFile5);
 var CACHE_MS = 15e3;
 var STALE_MS = 6e4;
 var clean = (value) => typeof value === "string" ? redact(value).slice(0, 600) : null;
@@ -6107,24 +6347,24 @@ async function json(file) {
     throw error;
   }
 }
-var samePath = (a, b) => typeof a === "string" && typeof b === "string" && path10.resolve(a) === path10.resolve(b);
+var samePath = (a, b) => typeof a === "string" && typeof b === "string" && path12.resolve(a) === path12.resolve(b);
 async function inspectExecutable(configured, options = {}) {
   const env = options.env || process.env;
-  const run = options.exec || exec3;
+  const run = options.exec || exec4;
   const platform = options.platform || process.platform;
   const candidates = [];
   const add = (value) => {
-    if (value && path10.isAbsolute(value) && !candidates.includes(value)) candidates.push(value);
+    if (value && path12.isAbsolute(value) && !candidates.includes(value)) candidates.push(value);
   };
-  if (path10.isAbsolute(configured || "")) add(configured);
+  if (path12.isAbsolute(configured || "")) add(configured);
   else if (configured && !/[\\/]/.test(configured)) {
-    for (const directory of (env.PATH || "").split(path10.delimiter)) {
-      if (path10.isAbsolute(directory)) add(path10.join(directory, configured));
+    for (const directory of (env.PATH || "").split(path12.delimiter)) {
+      if (path12.isAbsolute(directory)) add(path12.join(directory, configured));
     }
   }
   const configuredCandidates = [...candidates];
-  if (path10.basename(env.CODEX_CLI_PATH || "") === "codex") add(env.CODEX_CLI_PATH);
-  if (env.CODEX_ELECTRON_RESOURCES_PATH) add(path10.join(env.CODEX_ELECTRON_RESOURCES_PATH, "codex"));
+  if (path12.basename(env.CODEX_CLI_PATH || "") === "codex") add(env.CODEX_CLI_PATH);
+  if (env.CODEX_ELECTRON_RESOURCES_PATH) add(path12.join(env.CODEX_ELECTRON_RESOURCES_PATH, "codex"));
   if (platform === "darwin") {
     add("/Applications/ChatGPT.app/Contents/Resources/codex");
     add("/Applications/Codex.app/Contents/Resources/codex");
@@ -6155,7 +6395,7 @@ async function inspectExecutable(configured, options = {}) {
 }
 function migrationView(manifest, result, activation, configDir2, codexHome) {
   if (!manifest) return { state: "not_prepared", label: "\u5C1A\u672A\u51C6\u5907\u8FC1\u79FB", last: null };
-  if (!samePath(manifest.relayConfig, path10.join(configDir2, "config.json")) || !samePath(manifest.codexHome, codexHome)) {
+  if (!samePath(manifest.relayConfig, path12.join(configDir2, "config.json")) || !samePath(manifest.codexHome, codexHome)) {
     return { state: "different_environment", label: "\u542F\u52A8\u5305\u5C5E\u4E8E\u5176\u4ED6\u73AF\u5883", last: null };
   }
   const last = result ? {
@@ -6179,13 +6419,14 @@ var EnvironmentService = class {
     this.service = service;
     this.platform = options.platform || process.platform;
     this.env = options.env || process.env;
-    this.exec = options.exec || exec3;
+    this.exec = options.exec || exec4;
     this.pluginRoot = options.pluginRoot || PLUGIN_ROOT;
-    this.sharedRoot = options.sharedRoot || this.env.CODEX_RELAY_SHARED_ROOT || path10.join(os6.homedir(), "Library/Application Support/Recodex Shared Backend");
-    this.codexHome = this.env.CODEX_HOME || path10.join(os6.homedir(), ".codex");
+    this.sharedRoot = options.sharedRoot || this.env.CODEX_RELAY_SHARED_ROOT || path12.join(os6.homedir(), "Library/Application Support/Recodex Shared Backend");
+    this.codexHome = this.env.CODEX_HOME || path12.join(os6.homedir(), ".codex");
     this.cache = null;
     this.pending = null;
     this.repairing = false;
+    this.remoteControl = options.remoteControl || service.remoteControl || null;
   }
   async inspect(force = false) {
     if (this.pending) return this.pending;
@@ -6203,26 +6444,28 @@ var EnvironmentService = class {
     const config = this.service.configStore.get();
     const configDir2 = this.service.configStore.configDir;
     const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
-    const [executable, processes, migration, installed] = await Promise.all([
+    const [executable, processes, migration, installed, remoteControl] = await Promise.all([
       inspectExecutable(config.codex.executable, { env: this.env, platform: this.platform, exec: this.exec }),
       this.inspectProcesses(),
       this.inspectMigration(),
-      json(path10.join(this.pluginRoot, ".codex-plugin/plugin.json")).catch(() => null)
+      json(path12.join(this.pluginRoot, ".codex-plugin/plugin.json")).catch(() => null),
+      this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const shared = status.appServer?.connectionMode === "shared";
+    const shared = (status.appServer?.connectionMode || config.codex.connectionMode) === "shared";
     const backendReady = status.appServer?.state === "ready";
     let desktopVersion = null;
     if (this.platform === "darwin") {
       const app = processes.items.find((item) => item.kind === "desktop")?.appPath;
-      if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path10.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
+      if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path12.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
     }
     const lastToolFailure = migration.last?.failedPhase === "verifying_shared_runtime" && /工具|签名|signing|pipe/i.test(migration.last.error || "");
-    const runningVersion = "1.0.0+codex.20260910175434";
-    const runningBuild = "1.0.0+codex.20260910175434:1789062888363";
-    const diskBundle = runningBuild ? await fs8.readFile(path10.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
+    const runningVersion = "1.0.0+codex.20260911042509";
+    const runningBuild = "1.0.0+codex.20260911042509:1789100722867";
+    const diskBundle = runningBuild ? await fs8.readFile(path12.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && p.kind === "backend");
+    const desktopBackend = processes.items.find((p) => p.kind === "backend" && p.desktopHosted && p.scope === "same");
     const repairAllowed = !shared && ["stopped", "error"].includes(status.appServer?.state) && executable.needsRepair;
     const desktopCompatibility = await readDesktopCompatibility(this);
     return {
@@ -6235,17 +6478,19 @@ var EnvironmentService = class {
       processes,
       migration,
       backend: { mode: status.appServer?.connectionMode || config.codex.connectionMode || "managed", state: status.appServer?.state || "unknown", pid: status.appServer?.pid ?? null, ownsProcess: status.appServer?.ownsProcess ?? null, endpoint: status.appServer?.endpoint || null, error: clean(status.appServer?.lastError) },
+      desktopBackend: desktopBackend ? { state: "detected", pid: desktopBackend.pid, transport: desktopBackend.transport, endpoint: desktopBackend.transport === "stdio" ? null : desktopBackend.transport, attachable: false, reason: desktopBackend.transport === "stdio" ? "\u684C\u9762\u540E\u7AEF\u4EC5\u4F7F\u7528 stdio://\uFF0C\u672A\u66B4\u9732\u53EF\u4F9B Relay \u8FDE\u63A5\u7684\u672C\u5730\u7AEF\u70B9" : "\u684C\u9762\u540E\u7AEF\u7AEF\u70B9\u9700\u8981\u5B98\u65B9\u6388\u6743\uFF0C\u5F53\u524D\u672A\u542F\u7528 Relay \u63A5\u5165" } : { state: "unavailable", pid: null, transport: null, endpoint: null, attachable: false, reason: "\u672A\u68C0\u6D4B\u5230\u684C\u9762\u7248\u6258\u7BA1\u7684 App Server" },
+      remoteControl: remoteControl || { checkedAt, official: { state: "unavailable", installed: false, reason: "\u672A\u68C0\u67E5" }, bridge: { state: "blocked", endpoint: null, attachable: false, reason: "\u672A\u68C0\u67E5" } },
       relay: { state: status.relay?.state || "unknown", lastHeartbeat: status.relay?.lastHeartbeat || null, reconnectAttempt: status.relay?.reconnectAttempt || 0 },
       sharing: {
         state: shared ? "unverified" : "not_enabled",
-        label: shared ? backendReady ? "\u63D2\u4EF6\u5DF2\u63A5\u5165\u5171\u4EAB\u540E\u7AEF\uFF0C\u684C\u9762\u5171\u7528\u5F85\u9A8C\u8BC1" : "\u5171\u4EAB\u540E\u7AEF\u5C1A\u672A\u5C31\u7EEA" : "\u684C\u9762\u5171\u7528\u672A\u542F\u7528",
-        message: shared ? "\u8FD8\u9700\u9A8C\u8BC1\u684C\u9762\u8FDE\u63A5\u4E0E\u5DE5\u5177\u8C03\u7528\uFF0C\u624D\u80FD\u786E\u8BA4\u4E24\u7AEF\u5171\u7528\u6210\u529F\u3002" : "\u63D2\u4EF6\u4F7F\u7528\u72EC\u7ACB\u540E\u7AEF\uFF1B\u684C\u9762\u5360\u7528\u7684\u4EFB\u52A1\u53EF\u80FD\u65E0\u6CD5\u4ECE Flutter \u7EE7\u7EED\u53D1\u9001\u3002"
+        label: shared ? backendReady ? "\u5171\u4EAB\u540E\u7AEF\u5DF2\u8FDE\u63A5" : "\u5171\u4EAB\u540E\u7AEF\u5C1A\u672A\u5C31\u7EEA" : "\u684C\u9762\u5171\u7528\u672A\u542F\u7528",
+        message: shared ? "Flutter \u4E0E\u684C\u9762\u901A\u8FC7\u5171\u4EAB App Server \u6267\u884C\u4EFB\u52A1\uFF1B\u6D4F\u89C8\u5668\u7B49\u684C\u9762\u5DE5\u5177\u7684\u68C0\u67E5\u7ED3\u679C\u5355\u72EC\u663E\u793A\u3002" : "\u63D2\u4EF6\u4F7F\u7528\u72EC\u7ACB\u540E\u7AEF\uFF1B\u684C\u9762\u5360\u7528\u7684\u4EFB\u52A1\u53EF\u80FD\u65E0\u6CD5\u4ECE Flutter \u7EE7\u7EED\u53D1\u9001\u3002"
       },
-      desktopTools: desktopCompatibility ? { ...desktopCompatibility, label: desktopCompatibility.state === "passed" ? "\u5DE5\u5177\u76EE\u5F55\u9A8C\u6536\u901A\u8FC7" : desktopCompatibility.state === "stale" ? "\u9700\u8981\u91CD\u65B0\u9A8C\u6536" : "\u517C\u5BB9\u6027\u9A8C\u6536\u672A\u901A\u8FC7" } : { state: "unchecked", label: "\u5F53\u524D\u8FDE\u63A5\u672A\u9A8C\u8BC1", message: lastToolFailure ? "\u4E0A\u6B21\u8FC1\u79FB\u7684\u684C\u9762\u5DE5\u5177\u9A8C\u6536\u5931\u8D25\uFF1B\u53EF\u5728\u8FC1\u79FB\u5411\u5BFC\u4E2D\u91CD\u65B0\u9A8C\u6536\u3002" : "\u53EF\u5728\u8FC1\u79FB\u5411\u5BFC\u4E2D\u8FD0\u884C\u771F\u5B9E\u684C\u9762\u5DE5\u5177\u9A8C\u6536\u3002" },
+      desktopTools: desktopCompatibility ? { ...desktopCompatibility, label: desktopCompatibility.state === "passed" ? "\u5DE5\u5177\u76EE\u5F55\u9A8C\u6536\u901A\u8FC7" : desktopCompatibility.state === "stale" ? "\u9700\u8981\u91CD\u65B0\u68C0\u67E5" : desktopCompatibility.code === "shared_runtime_restart_required" ? "\u5171\u4EAB\u670D\u52A1\u8FD0\u884C\u65F6\u5F85\u4FEE\u590D" : desktopCompatibility.code === "shared_timeout" ? "\u5DE5\u5177\u67E5\u8BE2\u8D85\u65F6" : "\u684C\u9762\u5DE5\u5177\u5F85\u5904\u7406" } : { state: "unchecked", label: "\u5F53\u524D\u8FDE\u63A5\u672A\u9A8C\u8BC1", message: lastToolFailure ? "\u4E0A\u6B21\u8FC1\u79FB\u7684\u684C\u9762\u5DE5\u5177\u9A8C\u6536\u5931\u8D25\uFF1B\u53EF\u5728\u8FC1\u79FB\u5411\u5BFC\u4E2D\u91CD\u65B0\u9A8C\u6536\u3002" : "\u53EF\u5728\u8FC1\u79FB\u5411\u5BFC\u4E2D\u8FD0\u884C\u771F\u5B9E\u684C\u9762\u5DE5\u5177\u9A8C\u6536\u3002" },
       paths: { configDir: configDir2, codexHome: this.codexHome, sharedRoot: this.sharedRoot },
       actions: {
         repair: { enabled: Boolean(repairAllowed), candidate: executable.candidate?.path || null, reason: shared ? "\u5171\u4EAB\u6A21\u5F0F\u7531\u5171\u4EAB\u670D\u52A1\u7BA1\u7406\u6267\u884C\u7A0B\u5E8F" : !executable.candidate ? "\u5C1A\u672A\u627E\u5230\u53EF\u7528\u7A0B\u5E8F\uFF0C\u8BF7\u5148\u5B89\u88C5 Codex \u6216\u5728\u9AD8\u7EA7\u8BBE\u7F6E\u4E2D\u6307\u5B9A\u8DEF\u5F84" : !executable.needsRepair ? "\u5F53\u524D\u5DF2\u4F7F\u7528\u9A8C\u8BC1\u8FC7\u7684\u5B8C\u6574\u8DEF\u5F84\uFF0C\u65E0\u9700\u4FEE\u590D" : !repairAllowed ? "\u540E\u7AEF\u6B63\u5728\u4F7F\u7528\u4E2D\uFF0C\u8BF7\u5728\u505C\u6B62\u6267\u884C\u540E\u901A\u8FC7\u9AD8\u7EA7\u8BBE\u7F6E\u4FEE\u6539\u8DEF\u5F84" : "\u9A8C\u8BC1\u5019\u9009\u8DEF\u5F84\u540E\u4FDD\u5B58\uFF1B\u81EA\u52A8\u8FDE\u63A5\u5DF2\u5F00\u542F\u65F6\u4F1A\u5C1D\u8BD5\u6062\u590D\u8FDE\u63A5" },
-        migrate: { enabled: false, blockers: [
+        migrate: { enabled: false, blockers: shared ? [] : [
           ...this.platform !== "darwin" ? ["\u81EA\u52A8\u8FC1\u79FB\u9996\u7248\u4EC5\u652F\u6301 macOS"] : [],
           ...desktopCompatibility ? [desktopCompatibility.message] : lastToolFailure ? ["\u4E0A\u6B21\u684C\u9762\u5DE5\u5177\u517C\u5BB9\u6027\u9A8C\u8BC1\u5931\u8D25\uFF0C\u9700\u8981\u5148\u89E3\u51B3"] : ["\u684C\u9762\u5DE5\u5177\u517C\u5BB9\u6027\u5C1A\u672A\u901A\u8FC7\u672C\u673A\u9A8C\u8BC1"],
           ...processes.state !== "ok" ? ["\u65E0\u6CD5\u786E\u8BA4\u51B2\u7A81\u8FDB\u7A0B"] : owned.length > 1 ? [`\u68C0\u6D4B\u5230 ${owned.length} \u4E2A\u6267\u884C\u540E\u7AEF\uFF0C\u9700\u8981\u786E\u8BA4\u4EFB\u52A1\u72B6\u6001\u5E76\u5904\u7406\u5360\u7528`] : [],
@@ -6256,7 +6501,9 @@ var EnvironmentService = class {
   }
   async inspectMigration() {
     try {
-      const [manifest, result, activation] = await Promise.all(["manifest.json", "migration-result.json", "activation.json"].map((file) => json(path10.join(this.sharedRoot, file))));
+      const selected = await configuredSharedManifest(this);
+      const root = selected?.root || this.sharedRoot;
+      const [manifest, result, activation] = await Promise.all(["manifest.json", "migration-result.json", "activation.json"].map((file) => json(path12.join(root, file))));
       return migrationView(manifest, result, activation, this.service.configStore.configDir, this.codexHome);
     } catch {
       return { state: "unreadable", label: "\u8FC1\u79FB\u8BB0\u5F55\u65E0\u6CD5\u8BFB\u53D6", last: null };
@@ -6274,9 +6521,11 @@ var EnvironmentService = class {
         const details = await this.exec("/bin/ps", ["eww", "-p", String(item.pid), "-o", "command="], { timeout: 2e3, maxBuffer: 1024 * 1024 }).then((r) => r.stdout, () => "");
         const key = item.kind === "relay" ? "CODEX_RELAY_CONFIG_DIR" : "CODEX_HOME";
         const selected = details.match(new RegExp(`(?:^| )${key}=(.*?)(?= [A-Za-z_][A-Za-z_0-9]*=|$)`))?.[1];
-        const defaultDir = path10.join(os6.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
+        const defaultDir = path12.join(os6.homedir(), item.kind === "relay" ? ".codex-relay-plugin" : ".codex");
         const target = item.kind === "relay" ? this.service.configStore.configDir : this.codexHome;
-        return { ...item, application, ...appPath ? { appPath } : {}, scope: !details ? "unknown" : samePath(selected || defaultDir, target) ? "same" : "other", taskState: "unknown" };
+        const desktopHosted = item.kind === "backend" && /BROWSER_USE_CODEX_APP_VERSION=/.test(details);
+        const transport = desktopHosted ? /--listen\s+stdio:\/\//.test(command) || /--stdio(?:\s|$)/.test(command) ? "stdio" : /--listen\s+(unix:\/\/[^\s]+)/.exec(command)?.[1] || "unknown" : null;
+        return { ...item, application, ...appPath ? { appPath } : {}, ...desktopHosted ? { desktopHosted, transport } : {}, scope: !details ? "unknown" : samePath(selected || defaultDir, target) ? "same" : "other", taskState: "unknown" };
       }));
       return { state: "ok", items, message: "\u4EC5\u68C0\u67E5\u8FDB\u7A0B\u548C\u6570\u636E\u76EE\u5F55\uFF0C\u672A\u5224\u65AD\u4EFB\u52A1\u662F\u5426\u6B63\u5728\u6267\u884C\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u7ED3\u675F\u8FD9\u4E9B\u8FDB\u7A0B\u3002" };
     } catch {
@@ -6308,18 +6557,18 @@ var EnvironmentService = class {
 };
 
 // server/migration-preparation.js
-import fs11 from "node:fs/promises";
-import path13 from "node:path";
-import { spawn as spawn4, execFile as execFile5 } from "node:child_process";
-import { promisify as promisify5 } from "node:util";
+import fs12 from "node:fs/promises";
+import path16 from "node:path";
+import { spawn as spawn4, execFile as execFile7 } from "node:child_process";
+import { promisify as promisify7 } from "node:util";
 
 // server/migration-preflight.js
 import fs9 from "node:fs/promises";
-import path11 from "node:path";
+import path13 from "node:path";
 import { createHash as createHash3 } from "node:crypto";
 async function preparationFingerprint(context) {
   const hash = createHash3("sha256");
-  for (const file of [path11.join(context.configDir, "config.json"), ...["package.json", ".codex-plugin/plugin.json", "server/agent-cli.js", "server/shared-backend-cli.js", "server/migration-cli.js", "ui/index.html"].map((file2) => path11.join(context.pluginRoot, file2))]) {
+  for (const file of [path13.join(context.configDir, "config.json"), ...["package.json", ".codex-plugin/plugin.json", "server/agent-cli.js", "server/shared-backend-cli.js", "server/migration-cli.js", "ui/index.html"].map((file2) => path13.join(context.pluginRoot, file2))]) {
     hash.update(file).update("\0").update(await fs9.readFile(file)).update("\0");
   }
   hash.update(context.codexHome);
@@ -6340,7 +6589,7 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
   await add("executable", "Codex \u6267\u884C\u8DEF\u5F84", env.executable.state === "ok" && !env.executable.needsRepair ? "passed" : "blocked", env.executable.state === "ok" && !env.executable.needsRepair ? "\u5DF2\u4F7F\u7528\u9A8C\u8BC1\u8FC7\u7684\u5B8C\u6574\u8DEF\u5F84" : "\u8BF7\u5148\u4FEE\u590D\u6267\u884C\u8DEF\u5F84\uFF0C\u518D\u51C6\u5907\u8FC1\u79FB");
   let fingerprint = null;
   try {
-    const installed = JSON.parse(await fs9.readFile(path11.join(context.pluginRoot, "package.json"), "utf8"));
+    const installed = JSON.parse(await fs9.readFile(path13.join(context.pluginRoot, "package.json"), "utf8"));
     if (installed.name === "codex-relay-plugin" && !installed.dependencies && !installed.devDependencies) fingerprint = await preparationFingerprint(context);
   } catch {
   }
@@ -6349,11 +6598,11 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
   try {
     const configured = env.executable.resolved || "";
     const desktopApp = configured.match(/^(.*\.app)\/Contents\/Resources\/codex$/)?.[1] || env.processes.items.find((item) => item.kind === "desktop" && item.scope === "same")?.appPath || "/Applications/ChatGPT.app";
-    manifest = defaultManifest(context.packageRoot, { desktopApp, codexHome: context.codexHome, relayConfig: path11.join(context.configDir, "config.json"), relayAgent: path11.join(context.pluginRoot, "server/agent-cli.js"), originalIcon: true });
+    manifest = defaultManifest(context.packageRoot, { desktopApp, codexHome: context.codexHome, relayConfig: path13.join(context.configDir, "config.json"), relayAgent: path13.join(context.pluginRoot, "server/agent-cli.js"), originalIcon: true });
     manifest.activationBlocked = true;
     manifest.binaryHash = await digest(manifest.binary);
-    await verify(manifest);
-    await add("versions", "\u684C\u9762\u4E0E CLI \u7248\u672C", "passed", `${manifest.desktopVersion} / ${manifest.cliVersion}\uFF0C\u7B26\u5408\u542F\u52A8\u5668\u7248\u672C\u8981\u6C42\uFF1B\u684C\u9762\u5DE5\u5177\u9700\u5355\u72EC\u9A8C\u6536`);
+    const compatibility = await verify(manifest);
+    await add("versions", "\u684C\u9762\u4E0E CLI \u7248\u672C", "passed", `${compatibility?.desktopVersion || "\u5F53\u524D\u684C\u9762\u7248\u672C"} / ${compatibility?.cliVersion || "\u5F53\u524D CLI \u7248\u672C"}\uFF0C\u6EE1\u8DB3\u6700\u4F4E\u542F\u52A8\u5668\u517C\u5BB9\u8981\u6C42\uFF1B\u684C\u9762\u5DE5\u5177\u9700\u5355\u72EC\u9A8C\u6536`);
   } catch {
     manifest = null;
     await add("versions", "\u684C\u9762\u4E0E CLI \u7248\u672C", "blocked", "\u684C\u9762\u3001CLI \u6216\u5B89\u88C5\u8DEF\u5F84\u4E0D\u7B26\u5408\u5F53\u524D\u542F\u52A8\u5668\u8981\u6C42\uFF0C\u8BF7\u66F4\u65B0\u517C\u5BB9\u5B9E\u73B0\u540E\u91CD\u65B0\u68C0\u67E5");
@@ -6363,7 +6612,7 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
   const directories = [context.codexHome, ...cwd ? [cwd] : []];
   const directoriesReady = await Promise.all(directories.map((directory) => fs9.stat(directory).then((stat) => stat.isDirectory(), () => false)));
   await add("directories", "\u6570\u636E\u4E0E\u5DE5\u4F5C\u76EE\u5F55", directoriesReady.every(Boolean) ? "passed" : "blocked", directoriesReady.every(Boolean) ? "\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D Codex \u6570\u636E\u76EE\u5F55\uFF1B\u51C6\u5907\u8FC7\u7A0B\u4E0D\u4FEE\u6539\u4EFB\u52A1\u5386\u53F2" : "Codex \u6570\u636E\u76EE\u5F55\u6216\u9ED8\u8BA4\u5DE5\u4F5C\u76EE\u5F55\u4E0D\u5B58\u5728");
-  const spaceReady = await fs9.statfs(path11.join(context.configDir, "migration")).then((stat) => stat.bavail * stat.bsize >= 64 * 1024 * 1024, () => false);
+  const spaceReady = await fs9.statfs(path13.join(context.configDir, "migration")).then((stat) => stat.bavail * stat.bsize >= 64 * 1024 * 1024, () => false);
   await add("space", "\u51C6\u5907\u5305\u7A7A\u95F4", spaceReady ? "passed" : "blocked", spaceReady ? "\u51C6\u5907\u76EE\u5F55\u81F3\u5C11\u6709 64 MB \u53EF\u7528\u7A7A\u95F4\uFF1B\u6B63\u5F0F\u5386\u53F2\u5907\u4EFD\u9700\u53E6\u884C\u68C0\u67E5" : "\u65E0\u6CD5\u786E\u8BA4\u51C6\u5907\u76EE\u5F55\u7A7A\u95F4\uFF0C\u6216\u53EF\u7528\u7A7A\u95F4\u4E0D\u8DB3 64 MB");
   const related = env.processes.items.filter((item) => item.scope !== "other");
   await add("processes", "\u8FD0\u884C\u4E2D\u7684\u5BA2\u6237\u7AEF", env.processes.state === "ok" ? "warning" : "blocked", env.processes.state === "ok" ? `\u68C0\u6D4B\u5230 ${related.length} \u4E2A\u76F8\u5173\u8FDB\u7A0B\u3002\u51C6\u5907\u53EF\u7EE7\u7EED\uFF1B\u6B63\u5F0F\u5207\u6362\u524D\u9700\u7ED3\u675F\u4EFB\u52A1\u5E76\u91CD\u65B0\u68C0\u67E5\u5360\u7528` : "\u65E0\u6CD5\u786E\u8BA4\u8FDB\u7A0B\u5360\u7528\uFF0C\u6B63\u5F0F\u5207\u6362\u524D\u5FC5\u987B\u91CD\u65B0\u68C0\u67E5", "activation");
@@ -6376,7 +6625,7 @@ async function inspectPreparation(context, { environment, checkpoint = async () 
 
 // server/shared-backend-prepare.js
 import fs10 from "node:fs/promises";
-import path12 from "node:path";
+import path14 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 async function prepareSharedBackend(manifest, production, { checkpoint = async () => {
 }, verify = checkCompatibility } = {}) {
@@ -6388,27 +6637,27 @@ async function prepareSharedBackend(manifest, production, { checkpoint = async (
   })) {
     throw new Error("\u51C6\u5907\u5305\u76EE\u5F55\u5DF2\u5B58\u5728\uFF0C\u8BF7\u521B\u5EFA\u65B0\u7684\u51C6\u5907\u5305\uFF0C\u539F\u76EE\u5F55\u4FDD\u6301\u4E0D\u53D8");
   }
-  const installed = JSON.parse(await fs10.readFile(path12.join(manifest.pluginRoot, ".codex-plugin/plugin.json"), "utf8"));
+  const installed = JSON.parse(await fs10.readFile(path14.join(manifest.pluginRoot, ".codex-plugin/plugin.json"), "utf8"));
   if (installed.name !== "codex-relay-plugin") throw new Error("\u76EE\u6807\u76EE\u5F55\u4E0D\u662F codex-relay-plugin");
-  const bundle = path12.join(production, "server/shared-backend-cli.js");
+  const bundle = path14.join(production, "server/shared-backend-cli.js");
   const bundleHash = await digest(bundle);
   const stage = `${manifest.root}.preparing-${randomUUID2().slice(0, 8)}`;
   await fs10.mkdir(stage, { recursive: false, mode: 448 });
   try {
-    await fs10.copyFile(bundle, path12.join(stage, "shared-backend-cli.js"));
-    await fs10.writeFile(path12.join(stage, "package.json"), '{"type":"module"}\n', { mode: 384 });
-    await fs10.cp(production, path12.join(stage, "plugin"), { recursive: true, filter: async () => {
+    await fs10.copyFile(bundle, path14.join(stage, "shared-backend-cli.js"));
+    await fs10.writeFile(path14.join(stage, "package.json"), '{"type":"module"}\n', { mode: 384 });
+    await fs10.cp(production, path14.join(stage, "plugin"), { recursive: true, filter: async () => {
       await checkpoint();
       return true;
     } });
-    await writePrivate(path12.join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
+    await writePrivate(path14.join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}
 `);
-    const command = (operation) => `${shellQuote(manifest.node)} ${shellQuote(path12.join(manifest.root, "shared-backend-cli.js"))} ${operation} --manifest ${shellQuote(path12.join(manifest.root, "manifest.json"))}`;
-    await fs10.writeFile(path12.join(stage, "codex-proxy"), `#!/bin/sh
+    const command = (operation) => `${shellQuote(manifest.node)} ${shellQuote(path14.join(manifest.root, "shared-backend-cli.js"))} ${operation} --manifest ${shellQuote(path14.join(manifest.root, "manifest.json"))}`;
+    await fs10.writeFile(path14.join(stage, "codex-proxy"), `#!/bin/sh
 exec ${command("proxy")} "$@"
 `, { mode: 448 });
     for (const [name, action] of [["\u542F\u7528\u5171\u4EAB\u540E\u7AEF.command", "activate"], ["\u6062\u590D\u72EC\u7ACB\u540E\u7AEF.command", "rollback"], ["\u67E5\u770B\u5171\u4EAB\u72B6\u6001.command", "status"]]) {
-      await fs10.writeFile(path12.join(stage, name), `#!/bin/sh
+      await fs10.writeFile(path14.join(stage, name), `#!/bin/sh
 ${command(action)}
 result=$?
 printf '\\n\u6309\u56DE\u8F66\u5173\u95ED\u7A97\u53E3\u2026'
@@ -6416,18 +6665,18 @@ read -r reply
 exit "$result"
 `, { mode: 448 });
     }
-    const app = path12.join(stage, "Codex Shared.app/Contents");
-    await fs10.mkdir(path12.join(app, "MacOS"), { recursive: true });
-    await fs10.writeFile(path12.join(app, "Info.plist"), plist({ CFBundleIdentifier: "com.recodex.shared-launcher", CFBundleName: "Codex Shared", CFBundleExecutable: "launch", CFBundlePackageType: "APPL", CFBundleVersion: "1", LSUIElement: true }));
-    await fs10.writeFile(path12.join(app, "MacOS/launch"), `#!/bin/sh
-${command("desktop")} >> ${shellQuote(path12.join(manifest.root, "launcher.log"))} 2>&1
+    const app = path14.join(stage, "Codex Shared.app/Contents");
+    await fs10.mkdir(path14.join(app, "MacOS"), { recursive: true });
+    await fs10.writeFile(path14.join(app, "Info.plist"), plist({ CFBundleIdentifier: "com.recodex.shared-launcher", CFBundleName: "Codex Shared", CFBundleExecutable: "launch", CFBundlePackageType: "APPL", CFBundleVersion: "1", LSUIElement: true }));
+    await fs10.writeFile(path14.join(app, "MacOS/launch"), `#!/bin/sh
+${command("desktop")} >> ${shellQuote(path14.join(manifest.root, "launcher.log"))} 2>&1
 result=$?
 if [ "$result" -ne 0 ]; then
   /usr/bin/osascript -e 'display alert "Codex Shared \u672A\u80FD\u542F\u52A8" message "\u8BF7\u5148\u68C0\u67E5\u51C6\u5907\u5305\u7684\u517C\u5BB9\u6027\u4E0E\u5171\u4EAB\u670D\u52A1\u72B6\u6001\uFF1B\u8BE6\u7EC6\u539F\u56E0\u89C1 launcher.log\u3002" as critical'
 fi
 exit "$result"
 `, { mode: 448 });
-    await writePrivate(path12.join(stage, "\u4F7F\u7528\u8BF4\u660E.txt"), `\u51C6\u5907\u5B8C\u6210\uFF0C\u5C1A\u672A\u5207\u6362\u3002
+    await writePrivate(path14.join(stage, "\u4F7F\u7528\u8BF4\u660E.txt"), `\u51C6\u5907\u5B8C\u6210\uFF0C\u5C1A\u672A\u5207\u6362\u3002
 
 \u51C6\u5907\u5305\u4E0D\u4F1A\u4FEE\u6539\u5F53\u524D\u8FDE\u63A5\u3001\u7ED3\u675F\u8FDB\u7A0B\u6216\u590D\u5236\u4EFB\u52A1\u5386\u53F2\u3002
 \u684C\u9762\u4E0E CLI \u7248\u672C\u5339\u914D\u4E0D\u4EE3\u8868\u684C\u9762\u5DE5\u5177\u7684\u7B7E\u540D\u517C\u5BB9\u6027\u5DF2\u901A\u8FC7\u3002\u8BF7\u5148\u89E3\u51B3\u63A7\u5236\u53F0\u68C0\u67E5\u62A5\u544A\u4E2D\u7684\u5207\u6362\u963B\u585E\uFF0C\u518D\u8FDB\u884C\u6B63\u5F0F\u9A8C\u6536\u3002
@@ -6437,7 +6686,7 @@ CODEX_HOME\uFF1A${manifest.codexHome}
 \u5171\u4EAB\u7AEF\u70B9\uFF1A${manifest.endpoint}
 `);
     await checkpoint();
-    if (await digest(bundle) !== bundleHash || await digest(path12.join(stage, "shared-backend-cli.js")) !== bundleHash) throw new Error("\u51C6\u5907\u671F\u95F4\u63D2\u4EF6\u6784\u5EFA\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
+    if (await digest(bundle) !== bundleHash || await digest(path14.join(stage, "shared-backend-cli.js")) !== bundleHash) throw new Error("\u51C6\u5907\u671F\u95F4\u63D2\u4EF6\u6784\u5EFA\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
     await verify(manifest);
     await checkpoint();
     await fs10.rename(stage, manifest.root);
@@ -6447,18 +6696,159 @@ CODEX_HOME\uFF1A${manifest.codexHome}
   }
 }
 
+// server/shared-runtime-repair.js
+import fs11 from "node:fs/promises";
+import path15 from "node:path";
+import { execFile as execFile6 } from "node:child_process";
+import { promisify as promisify6 } from "node:util";
+var exec5 = promisify6(execFile6);
+var quiet2 = { info() {
+}, warn() {
+}, error() {
+} };
+var pause = () => new Promise((resolve) => setTimeout(resolve, 1e3));
+async function sharedTasksIdle(client) {
+  let cursor;
+  const seen = /* @__PURE__ */ new Set();
+  do {
+    const result = await client.request("thread/loaded/list", { limit: 100, ...cursor ? { cursor } : {} }, 3e3);
+    if (!Array.isArray(result.data)) return false;
+    for (const threadId of result.data) {
+      const { thread } = await client.request("thread/read", { threadId, includeTurns: false }, 3e3);
+      if (!["idle", "notLoaded"].includes(thread?.status?.type)) return false;
+    }
+    cursor = result.nextCursor;
+    if (cursor && seen.has(cursor)) return false;
+    seen.add(cursor);
+  } while (cursor);
+  return true;
+}
+async function repairSharedRuntime(environment, { checkpoint = async () => {
+}, onProgress = async () => {
+}, timeoutMs = 15 * 6e4, restart = replaceRuntime } = {}) {
+  const manifest = await configuredSharedManifest(environment);
+  if (!manifest || (await readJson(path15.join(manifest.root, "activation.json"), null))?.phase !== "active") throw new Error("\u672A\u627E\u5230\u5F53\u524D\u5DF2\u542F\u7528\u7684\u5171\u4EAB\u5B89\u88C5");
+  await verifyOfficialRuntime(manifest.desktopApp);
+  await checkCompatibility(manifest);
+  const runtime = await ownedRuntime(manifest);
+  if (!runtime) throw new Error("\u65E0\u6CD5\u786E\u8BA4\u5171\u4EAB\u8FDB\u7A0B\u5F52\u5C5E\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5\u73AF\u5883");
+  const client = new AppServerClient({ get: () => ({ codex: { connectionMode: "shared", appServerEndpoint: manifest.endpoint } }) }, quiet2, { initializeTimeoutMs: 3e3 });
+  const deadline = Date.now() + timeoutMs;
+  try {
+    await client.start();
+    while (Date.now() < deadline) {
+      await checkpoint();
+      const current = await configuredSharedManifest(environment);
+      if (current?.root !== manifest.root || (await ownedRuntime(manifest))?.identity !== runtime.identity) throw new Error("\u5171\u4EAB\u5B89\u88C5\u6216\u8FDB\u7A0B\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
+      const processes = await environment.inspectProcesses();
+      if (processes.state !== "ok") throw new Error("\u65E0\u6CD5\u786E\u8BA4\u684C\u9762\u662F\u5426\u9000\u51FA\uFF0C\u5DF2\u505C\u6B62\u4FEE\u590D");
+      if (processes.items.some((p) => p.kind === "desktop" && p.scope !== "other")) {
+        await onProgress("\u7B49\u5F85\u9000\u51FA Codex \u684C\u9762\uFF1B\u9000\u51FA\u540E\u81EA\u52A8\u4FEE\u590D\u5E76\u91CD\u65B0\u6253\u5F00\u3002\u8BF7\u52FF\u4ECE Flutter \u53D1\u8D77\u65B0\u4EFB\u52A1\uFF0C\u53EF\u968F\u65F6\u53D6\u6D88\u3002");
+      } else if (!await sharedTasksIdle(client)) {
+        await onProgress("\u7B49\u5F85\u5171\u4EAB\u4EFB\u52A1\u5B8C\u6210\uFF1B\u4E0D\u4F1A\u4E2D\u65AD\u6267\u884C\u3001\u5F85\u5BA1\u6279\u6216\u5F85\u56DE\u590D\u7684\u4EFB\u52A1\u3002");
+      } else {
+        await checkpoint();
+        const config = await readJson(manifest.relayConfig);
+        if (config.codex?.connectionMode !== "shared" || config.codex.appServerEndpoint !== manifest.endpoint) throw new Error("\u8FDE\u63A5\u914D\u7F6E\u5DF2\u53D8\u5316\uFF0C\u5DF2\u505C\u6B62\u4FEE\u590D");
+        await onProgress("\u6B63\u5728\u5207\u6362\u5230\u5B98\u65B9\u7B7E\u540D\u8FD0\u884C\u65F6\uFF1B\u5B8C\u6210\u540E\u81EA\u52A8\u91CD\u65B0\u6253\u5F00\u684C\u9762\u3002", { committing: true });
+        await checkpoint();
+        await restart(manifest, environment.pluginRoot, runtime);
+        return;
+      }
+      await pause();
+    }
+    throw new Error("\u7B49\u5F85\u9000\u51FA\u684C\u9762\u5DF2\u8D85\u65F6\uFF0C\u672A\u91CD\u542F\u5171\u4EAB\u670D\u52A1\uFF1B\u53EF\u91CD\u65B0\u63D0\u4EA4\u4FEE\u590D");
+  } finally {
+    await client.stop().catch(() => {
+    });
+  }
+}
+async function replaceRuntime(manifest, pluginRoot, expectedRuntime, dependencies = {}) {
+  const run = dependencies.exec || exec5;
+  const owned = dependencies.ownedRuntime || ownedRuntime;
+  const ready = dependencies.waitReady || waitReady;
+  const open = dependencies.openDesktop || openDesktop;
+  const domain = `gui/${process.getuid()}`;
+  const target = `${domain}/${manifest.label}`;
+  const definition = JSON.parse((await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", manifest.launchAgent])).stdout);
+  const expectedArgs = serviceDefinition(manifest).ProgramArguments.slice(1);
+  if (definition.Label !== manifest.label || JSON.stringify(definition.ProgramArguments?.slice(1)) !== JSON.stringify(expectedArgs)) throw new Error("\u5171\u4EAB\u670D\u52A1\u5B9A\u4E49\u5DF2\u6539\u53D8\uFF0C\u62D2\u7EDD\u8986\u76D6");
+  if ((await owned(manifest))?.identity !== expectedRuntime.identity) throw new Error("\u5171\u4EAB\u8FDB\u7A0B\u5DF2\u6539\u53D8\uFF0C\u5DF2\u505C\u6B62\u4FEE\u590D");
+  const job = (await run("/bin/launchctl", ["print", target])).stdout;
+  const parent = (await run("/bin/ps", ["-p", String(expectedRuntime.pid), "-o", "ppid="])).stdout.trim();
+  if (!/^\d+$/.test(parent) || job.match(/^\s*pid = (\d+)\s*$/m)?.[1] !== parent) throw new Error("\u5171\u4EAB\u8FDB\u7A0B\u4E0D\u5C5E\u4E8E\u5F53\u524D\u6CE8\u518C\u670D\u52A1\uFF0C\u62D2\u7EDD\u505C\u6B62\u5176\u4ED6\u8FDB\u7A0B");
+  const repaired = { ...manifest, node: officialNode(manifest.desktopApp) };
+  const cli = path15.join(manifest.root, "shared-backend-cli.js");
+  const manifestFile = path15.join(manifest.root, "manifest.json");
+  const proxy = path15.join(manifest.root, "codex-proxy");
+  const files = [manifestFile, cli, proxy, manifest.launchAgent];
+  const backup = path15.join(manifest.root, "backups", `runtime-${Date.now()}`);
+  await fs11.mkdir(backup, { recursive: true, mode: 448 });
+  for (const file of files) await fs11.copyFile(file, path15.join(backup, path15.basename(file)));
+  let stopped = false;
+  const stop = async () => {
+    await run("/bin/launchctl", ["bootout", target]);
+    const deadline = Date.now() + 1e4;
+    while (await owned(manifest)) {
+      if (Date.now() > deadline) throw new Error("\u5171\u4EAB\u670D\u52A1\u505C\u6B62\u8D85\u65F6\uFF0C\u672A\u542F\u52A8\u7B2C\u4E8C\u4E2A\u540E\u7AEF");
+      await pause();
+    }
+  };
+  try {
+    await stop();
+    stopped = true;
+    await writePrivate(cli, await fs11.readFile(path15.join(pluginRoot, "server/shared-backend-cli.js")));
+    await writePrivate(manifestFile, `${JSON.stringify(repaired, null, 2)}
+`);
+    await writePrivate(proxy, `#!/bin/sh
+exec ${shellQuote(repaired.node)} ${shellQuote(cli)} proxy --manifest ${shellQuote(manifestFile)} "$@"
+`);
+    await fs11.chmod(proxy, 448);
+    await writePrivate(manifest.launchAgent, plist(serviceDefinition(repaired)));
+    await run("/bin/launchctl", ["bootstrap", domain, manifest.launchAgent]);
+    await ready(repaired);
+    await open(repaired);
+  } catch (error) {
+    if (stopped) {
+      const loaded = await run("/bin/launchctl", ["print", target]).then(() => true, () => false);
+      if (loaded) await stop();
+      for (const file of files) await fs11.copyFile(path15.join(backup, path15.basename(file)), file);
+      await fs11.chmod(proxy, 448);
+      await run("/bin/launchctl", ["bootstrap", domain, manifest.launchAgent]);
+      await ready(manifest);
+      await open(manifest);
+    }
+    throw error;
+  }
+}
+
 // server/migration-preparation.js
-var exec4 = promisify5(execFile5);
+var exec6 = promisify7(execFile7);
 var UUID2 = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 var iso = () => (/* @__PURE__ */ new Date()).toISOString();
-var exists = (file) => fs11.access(file).then(() => true, () => false);
-var identity = async (pid) => exec4("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="], { timeout: 2e3, maxBuffer: 4096 }).then((result) => result.stdout.trim(), () => "");
+var exists = (file) => fs12.access(file).then(() => true, () => false);
+var STARTUP_TOOL_STATES = /* @__PURE__ */ new Set(["no_desktop", "no_pipe", "shared_unloaded", "shared_failed", "shared_timeout"]);
+async function verifyDesktopAfterRepair(environment, { verify = verifyDesktopCompatibility, checkpoint = async () => {
+}, delay = () => new Promise((resolve) => setTimeout(resolve, 500)), onProgress = async () => {
+} } = {}) {
+  const deadline = Date.now() + 6e4;
+  let proof;
+  for (let attempt = 0; attempt < 3 && Date.now() < deadline; attempt++) {
+    await checkpoint();
+    proof = await verify(environment, { checkpoint, timeoutMs: Math.min(2e4, deadline - Date.now()) });
+    if (proof.state === "passed" || !STARTUP_TOOL_STATES.has(proof.code) || attempt === 2) return proof;
+    await onProgress("\u684C\u9762\u5DF2\u91CD\u65B0\u6253\u5F00\uFF0C\u5DE5\u5177\u76EE\u5F55\u4ECD\u5728\u521D\u59CB\u5316\uFF0C\u6B63\u5728\u590D\u67E5\u2026");
+    await delay();
+  }
+  return proof;
+}
+var identity2 = async (pid) => exec6("/bin/ps", ["-p", String(pid), "-o", "lstart=,comm="], { timeout: 2e3, maxBuffer: 4096 }).then((result) => result.stdout.trim(), () => "");
 var jobPath = (root, id2) => {
   if (!UUID2.test(id2 || "")) throw new RelayError("INVALID_JOB", "\u51C6\u5907\u4EFB\u52A1\u7F16\u53F7\u65E0\u6548");
-  return path13.join(root, "jobs", `${id2}.json`);
+  return path16.join(root, "jobs", `${id2}.json`);
 };
-async function runPreparationJob(configDir2, id2, { createEnvironment, inspect = inspectPreparation, prepare = prepareSharedBackend, fingerprint = preparationFingerprint, verify = checkCompatibility, verifyDesktop = verifyDesktopCompatibility } = {}) {
-  const root = path13.join(configDir2, "migration");
+async function runPreparationJob(configDir2, id2, { createEnvironment, inspect = inspectPreparation, prepare = prepareSharedBackend, fingerprint = preparationFingerprint, verify = checkCompatibility, verifyDesktop = verifyDesktopCompatibility, repairRuntime = repairSharedRuntime } = {}) {
+  const root = path16.join(configDir2, "migration");
   const file = jobPath(root, id2);
   const lock = new InstanceLock(root, "worker.lock");
   await lock.acquire();
@@ -6480,7 +6870,7 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
       record = null;
       return;
     }
-    record.owner = { pid: process.pid, identity: await identity(process.pid) };
+    record.owner = { pid: process.pid, identity: await identity2(process.pid) };
     record.phase = "checking";
     record.step = "\u68C0\u67E5\u8FC1\u79FB\u6761\u4EF6";
     await save();
@@ -6490,17 +6880,35 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
     }, 2e3);
     await checkpoint();
     const environment = await createEnvironment(record.context);
-    if (record.operation === "verify-desktop") {
+    if (record.operation === "repair-runtime") {
+      await repairRuntime(environment, { checkpoint, onProgress: async (step, progress) => {
+        record.step = step;
+        if (progress?.committing) record.phase = "restarting";
+        await save();
+      } });
+      record.step = "\u5171\u4EAB\u670D\u52A1\u5DF2\u91CD\u542F\uFF0C\u7B49\u5F85\u684C\u9762\u5DE5\u5177\u8FDE\u63A5";
+      await save();
+      const deadline = Date.now() + 3e4;
+      while (Date.now() < deadline) {
+        const target = await desktopTarget(environment);
+        if (target?.pipe && target.serviceRuntime === "official") break;
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+      }
+    }
+    if (["verify-desktop", "repair-runtime"].includes(record.operation)) {
       record.step = "\u9A8C\u8BC1\u5B98\u65B9\u8FD0\u884C\u65F6\u7B7E\u540D\u4E0E\u771F\u5B9E\u684C\u9762\u5DE5\u5177\u76EE\u5F55";
       await save();
-      const proof = await verifyDesktop(environment, { checkpoint });
+      const proof = record.operation === "repair-runtime" ? await verifyDesktopAfterRepair(environment, { verify: verifyDesktop, checkpoint, onProgress: async (step) => {
+        record.step = step;
+        await save();
+      } }) : await verifyDesktop(environment, { checkpoint });
       await checkpoint();
-      record.report = { checkedAt: proof.checkedAt, readyToPrepare: false, readyToActivate: false, checks: [
-        { id: "signature", title: "\u5B98\u65B9\u8FD0\u884C\u65F6\u7B7E\u540D", state: proof.runtime?.verified ? "passed" : "blocked", detail: proof.runtime?.verified ? "\u5DF2\u9A8C\u8BC1\u5B98\u65B9\u7B7E\u540D\uFF1B\u7B7E\u540D\u901A\u8FC7\u4E0D\u80FD\u4EE3\u66FF\u684C\u9762\u8FDE\u63A5\u9A8C\u6536" : "\u8FD0\u884C\u65F6\u7B7E\u540D\u5C1A\u672A\u9A8C\u8BC1\u901A\u8FC7", scope: "activation" },
-        { id: "desktop_tools", title: "\u771F\u5B9E\u684C\u9762\u5DE5\u5177\u76EE\u5F55", state: proof.state, detail: proof.message, scope: "activation" }
+      record.report = { scope: proof.scope, code: proof.code, checkedAt: proof.checkedAt, readyToPrepare: false, readyToActivate: false, checks: [
+        { id: "signature", title: "\u5B98\u65B9\u8FD0\u884C\u65F6\u7B7E\u540D", state: proof.runtime?.verified ? "passed" : proof.code === "invalid_signature" ? "blocked" : "unchecked", detail: proof.runtime?.verified ? "\u5B98\u65B9\u8FD0\u884C\u65F6\u7B7E\u540D\u6709\u6548" : proof.code === "invalid_signature" ? "\u8FD0\u884C\u65F6\u7B7E\u540D\u9A8C\u8BC1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u5B98\u65B9\u5B89\u88C5" : "\u5C1A\u672A\u6267\u884C\u7B7E\u540D\u68C0\u67E5\uFF0C\u4E0D\u4EE3\u8868\u7B7E\u540D\u65E0\u6548", scope: "diagnostic" },
+        { id: "desktop_tools", title: "\u771F\u5B9E\u684C\u9762\u5DE5\u5177\u76EE\u5F55", state: proof.state, detail: proof.message, scope: "diagnostic" }
       ] };
       record.phase = proof.state === "passed" ? "complete" : "blocked";
-      record.step = proof.state === "passed" ? "\u5DE5\u5177\u76EE\u5F55\u9A8C\u6536\u901A\u8FC7\uFF0C\u6B63\u5F0F\u5207\u6362\u4ECD\u5F85\u9A8C\u6536" : "\u684C\u9762\u517C\u5BB9\u6027\u9A8C\u6536\u672A\u901A\u8FC7";
+      record.step = proof.state === "passed" ? "\u5DE5\u5177\u76EE\u5F55\u68C0\u67E5\u901A\u8FC7\uFF1B\u5177\u4F53\u5DE5\u5177\u8C03\u7528\u9700\u5728\u4EFB\u52A1\u4E2D\u9A8C\u8BC1" : "\u684C\u9762\u5DE5\u5177\u68C0\u67E5\u5B58\u5728\u5F85\u5904\u7406\u9879\uFF1B\u4E0D\u4EE3\u8868\u6D88\u606F\u6267\u884C\u5931\u8D25";
       return;
     }
     const result = await inspect(record.context, { environment, checkpoint, onProgress: async (report) => {
@@ -6521,7 +6929,7 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
       record.phase = "packaging";
       record.step = "\u751F\u6210\u8FC1\u79FB\u51C6\u5907\u5305";
       await save();
-      await fs11.mkdir(path13.dirname(record.context.packageRoot), { recursive: true, mode: 448 });
+      await fs12.mkdir(path16.dirname(record.context.packageRoot), { recursive: true, mode: 448 });
       const assertUnchanged = async () => {
         await checkpoint();
         if (await fingerprint(record.context) !== result.fingerprint) throw new RelayError("PREPARATION_CHANGED", "\u51C6\u5907\u671F\u95F4\u914D\u7F6E\u6216\u63D2\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5");
@@ -6531,14 +6939,14 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
         await assertUnchanged();
         await verify(manifest);
       } });
-      await writePrivate(path13.join(root, "prepared.json"), JSON.stringify({ id: id2, fingerprint: result.fingerprint, artifact: record.artifact }));
+      await writePrivate(path16.join(root, "prepared.json"), JSON.stringify({ id: id2, fingerprint: result.fingerprint, artifact: record.artifact }));
       record.phase = "complete";
       record.step = "\u51C6\u5907\u5305\u5DF2\u751F\u6210\uFF0C\u5C1A\u672A\u5207\u6362";
     }
   } catch (error) {
     if (!record) throw error;
     record.phase = error.code === "PREPARATION_CANCELLED" ? "cancelled" : "failed";
-    record.error = ["PREPARATION_CANCELLED", "PREPARATION_CHANGED"].includes(error.code) ? error.message : "\u8FC1\u79FB\u51C6\u5907\u5931\u8D25\uFF0C\u53EF\u91CD\u65B0\u68C0\u67E5\u540E\u91CD\u8BD5\uFF1B\u5F53\u524D\u8FDE\u63A5\u672A\u88AB\u5207\u6362";
+    record.error = ["PREPARATION_CANCELLED", "PREPARATION_CHANGED"].includes(error.code) ? error.message : record.operation === "repair-runtime" ? "\u5171\u4EAB\u8FD0\u884C\u65F6\u4FEE\u590D\u672A\u5B8C\u6210\uFF0C\u8BF7\u68C0\u67E5\u5F53\u524D\u670D\u52A1\u72B6\u6001\u540E\u91CD\u8BD5\uFF1B\u73B0\u6709\u5386\u53F2\u548C\u8FDE\u63A5\u914D\u7F6E\u5DF2\u4FDD\u7559" : "\u8FC1\u79FB\u51C6\u5907\u5931\u8D25\uFF0C\u53EF\u91CD\u65B0\u68C0\u67E5\u540E\u91CD\u8BD5\uFF1B\u5F53\u524D\u8FDE\u63A5\u672A\u88AB\u5207\u6362";
     record.step = record.phase === "cancelled" ? "\u51C6\u5907\u5DF2\u53D6\u6D88" : "\u51C6\u5907\u672A\u5B8C\u6210";
   } finally {
     clearInterval(timer);
@@ -6556,7 +6964,7 @@ async function runPreparationJob(configDir2, id2, { createEnvironment, inspect =
 // server/migration-cli.js
 var [configFlag, configDir, jobFlag, id] = process.argv.slice(2);
 try {
-  if (configFlag !== "--config-dir" || jobFlag !== "--job-id" || !path14.isAbsolute(configDir || "")) throw new Error("Invalid preparation arguments");
+  if (configFlag !== "--config-dir" || jobFlag !== "--job-id" || !path17.isAbsolute(configDir || "")) throw new Error("Invalid preparation arguments");
   await runPreparationJob(configDir, id, { createEnvironment: async (context) => {
     const configStore = new ConfigStore({ configDir });
     await configStore.load();

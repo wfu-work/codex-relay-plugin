@@ -23,6 +23,7 @@
 - 状态、诊断和脱敏日志 MCP 工具
 - 运行环境页与迁移向导：独立显示网络、后端、桌面共用和工具验证；支持执行路径修复、迁移预检、生成未激活准备包、取消和失败重试。准备任务独立运行，页面刷新后可恢复进度。
 - 独立常驻 Relay Agent：MCP 重载、Dashboard 重开或插件更新不会重复创建 Connector；更新时按构建代际优雅回收旧进程
+- 官方 Remote Control 探测与受控操作：支持检测 standalone 安装、启动/停止 daemon、生成短时配对码；未获得官方端点时提供安全的桌面桥接探测
 
 ## 架构
 
@@ -36,6 +37,18 @@ Flutter App  ⇄  Relay (WSS)  ⇄  Codex Relay Connector  ⇄  codex app-server
 ```
 
 Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出站 WSS、认证 Space Endpoint 并转发协议消息；图片资源由 Relay 内存短期托管，不落盘。MCP Server 通过本机受 Bearer key 保护的 Dashboard API 调用 Agent，stdin 关闭只会结束 MCP 代理，不会误杀 Agent 或 App Server。
+
+### 官方 Remote Control 与桌面桥接
+
+运行环境页和 MCP 工具会优先探测官方 `codex remote-control`。该命令要求官方安装器维护的
+`~/.codex/packages/standalone/current/codex`；桌面内置或 Homebrew CLI 不能冒充这个 daemon。
+在 standalone 可用时，可从控制台启动、停止并生成一次性配对码。配对码只返回给当前本机调用者，
+不会写入日志或 Relay 状态。
+
+官方 Remote Control 的控制 Socket 是官方客户端控制面，不是第三方可直接连接的 App Server。
+因此插件提供桌面桥接探测：只允许当前用户拥有的本机 Unix Socket 或回环 WebSocket，并在
+`initialize` 阶段继续执行官方授权。找不到官方授权端点时，桥接状态明确显示为阻断，不会修改
+代码签名、注入桌面进程或启动第二个执行后端。
 
 ### 共享执行后端
 
@@ -356,6 +369,7 @@ Relay 只接受 `image/*`，单张默认不超过 6 MiB、内存总量不超过 
 | `thread.list` | `cursor?`, `limit?`, `sortKey?`, `sortDirection?` | `readThreads` |
 | `thread.read` | `threadId`, `snapshotHash?` | `readThreads` |
 | `thread.status` | `threadId` | `readThreads` |
+| `thread.settings.update` | `threadId`, `model?`, `effort?`, `permissionMode?` | `sendMessages`；权限模式还需 `respondToApprovals` |
 | `thread.create` | `cwd?` | `createThreads` |
 | `thread.resume` / `thread.select` | `threadId` | `readThreads` |
 | `turn.start` | `threadId`, `text`, `cwd?`, `model?`, `effort?` | `sendMessages` |
@@ -369,9 +383,24 @@ App Server 会自动回退到 `updated_at`。`project.list` 返回官方项目�
 
 审批 `decision` 仅允许 `accept`、`acceptForSession`、`decline`、`cancel`。远程审批默认关闭。
 
+## 输入框设置双向同步
+
+Flutter 和 Codex 桌面端连接同一个 shared App Server 时，同一任务的模型、推理等级和权限
+通过 `thread/settings/update` 更新。Relay 将 `thread/settings/updated` 转为
+`thread.settings.updated`，并在 `thread.read` / `thread.status` 中附带 `threadSettings`
+快照和递增的 `revision`，用于首次打开任务、切换任务和断线恢复。
+
+`permissionMode` 支持 `默认权限`、`自动审查`、`完全访问权限` 和 `只读权限`；分别映射到
+Codex 的官方权限 profile 及 approval reviewer。修改权限需要现有 `respondToApprovals`
+授权，插件不会自动开启该授权。自定义 profile 会原样回传，Flutter 显示其名称。
+
+新任务先确认输入框设置再发送第一条消息；现有任务发送消息时沿用后端当前设置。
+Flutter 的默认设置只作用于新任务，模型列表刷新和桌面端通知不会反向覆盖任务设置。
+此功能需要更新 Flutter 客户端和 Relay 插件，并使用支持上述设置接口的 Codex 版本。
+
 ## 实时事件与断线恢复
 
-插件发出 `codex.event`，包含递增 `sequence`、`eventId`、可选的 `threadId` / `turnId` 和 `event`。Relay v1 只转发当前 Codex App Server schema 对应的 canonical 事件：`thread.created`、`thread.updated`、`thread.queue.changed`、`turn.started`、`turn.completed`、`message.assistant.delta`、`reasoning.delta`、`tool.output`、`diff.updated`、`item.started`、`item.updated`、`item.completed`、`usage.updated` 和 `approval.requested`。失败或中断由 `turn.completed` 的 `event.data.turn.status`（分别为 `failed` 或 `interrupted`）表达，不再接受旧版别名或独立终态事件。
+插件发出 `codex.event`，包含递增 `sequence`、`eventId`、可选的 `threadId` / `turnId` 和 `event`。Relay v1 只转发当前 Codex App Server schema 对应的 canonical 事件：`thread.created`、`thread.updated`、`thread.settings.updated`、`thread.queue.changed`、`turn.started`、`turn.completed`、`message.assistant.delta`、`reasoning.delta`、`tool.output`、`diff.updated`、`item.started`、`item.updated`、`item.completed`、`usage.updated` 和 `approval.requested`。失败或中断由 `turn.completed` 的 `event.data.turn.status`（分别为 `failed` 或 `interrupted`）表达，不再接受旧版别名或独立终态事件。
 
 历史任务在本机 App Server 中通过持久化快照读取，不会为了轮询而自动执行 `thread/resume`。这样官方桌面端正在运行的任务仍由桌面 App Server 持有 writer，Relay 以最终一致的方式读取其已持久化状态，不会因争抢 writer 而制造假完成或重复重试。Relay 自己创建的任务仍可通过 `turn.start` 正常恢复未加载的历史线程并接收本进程事件；项目白名单的事件访问探测只读元数据，不会在权限校验前恢复未授权任务。
 

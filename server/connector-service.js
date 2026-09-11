@@ -12,6 +12,7 @@ import { eventEnvelope, extractContext, normalizeCodexNotification } from "./pro
 import { RelayClient } from "./relay-client.js";
 import { prepareEventImages } from "./resource-images.js";
 import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js";
+import { inspectRemoteControl, installOfficialStandalone, runRemoteControl } from "./remote-control.js";
 
 export class ConnectorService extends EventEmitter {
   #unsupportedNotificationMethods = new Set();
@@ -24,6 +25,14 @@ export class ConnectorService extends EventEmitter {
     this.configStore = options.configStore || new ConfigStore({ configDir: options.configDir, logger: this.logger });
     this.instanceLock = options.instanceLock || null;
     this.appServer = options.appServer || new AppServerClient(this.configStore, this.logger);
+    this.remoteControl = options.remoteControl || {
+      inspect: () => inspectRemoteControl(),
+      start: () => runRemoteControl("start"),
+      stop: () => runRemoteControl("stop"),
+      pair: () => runRemoteControl("pair"),
+      install: () => installOfficialStandalone(),
+    };
+    this.remoteControlInstalling = false;
     this.relay = options.relay || new RelayClient(this.configStore, this.logger);
     this.eventBuffer = new EventBuffer(options.eventBufferSize || 1000, {
       maxBytes: options.eventBufferMaxBytes,
@@ -115,9 +124,54 @@ export class ConnectorService extends EventEmitter {
     return this.status();
   }
 
+  // Reconnect only this plugin's App Server transport. In shared mode the
+  // shared backend process remains owned by its service, so desktop and
+  // Flutter clients are not asked to stop or migrate anything.
+  async restartAppServerConnection() {
+    await this.appServer.stop();
+    await this.appServer.start();
+    this.emit("status", await this.status());
+    return this.status();
+  }
+
+  async reconnectRelay() {
+    await this.disconnect("dashboard reconnect");
+    return this.connect();
+  }
+
   async testConnection() {
     await this.start();
     return this.relay.test(await this.configStore.relayCredential());
+  }
+
+  async remoteControlStatus() {
+    return this.remoteControl.inspect();
+  }
+
+  async remoteControlStart() {
+    const result = await this.remoteControl.start();
+    this.emit("status", await this.status());
+    return result;
+  }
+
+  async remoteControlStop() {
+    const result = await this.remoteControl.stop();
+    this.emit("status", await this.status());
+    return result;
+  }
+
+  async remoteControlPair() {
+    return this.remoteControl.pair();
+  }
+
+  async remoteControlInstall() {
+    if (this.remoteControlInstalling) {
+      const error = new RelayError("REMOTE_CONTROL_INSTALL_BUSY", "官方 standalone 正在安装，请稍候");
+      throw error;
+    }
+    this.remoteControlInstalling = true;
+    try { return await this.remoteControl.install(); }
+    finally { this.remoteControlInstalling = false; }
   }
 
   async updateConfig(patch, credentialPatch) {

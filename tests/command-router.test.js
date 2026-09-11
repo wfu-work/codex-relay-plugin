@@ -362,3 +362,51 @@ test('remote answers require approval permission and authorize the registry thre
   assert.equal((await router.handle({ ...envelope(command, 'revoked'), threadId: 'real-thread' })).error.code, 'PROJECT_NOT_ALLOWED');
   assert.equal(answered, 1);
 });
+
+test('composer writes wait in arrival order and a send follows the accepted settings', async () => {
+  const { router, appServer, calls } = setup();
+  let release;
+  appServer.updateThreadSettings = async (id, patch) => {
+    calls.push(['settings', id, patch]);
+    if (patch.effort === 'high') await new Promise(resolve => { release = resolve; });
+    return { threadId: id, threadSettings: { model: 'remote-model', ...patch } };
+  };
+  const first = router.handle(envelope({ type: 'thread.settings.update', threadId: 'thread-1', effort: 'high' }, 's1'));
+  const second = router.handle(envelope({ type: 'thread.settings.update', threadId: 'thread-1', effort: 'ultra' }, 's2'));
+  const turn = router.handle(envelope({ type: 'turn.start', threadId: 'thread-1', text: 'hello' }, 'send'));
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.some(([name]) => name === 'startTurn'), false);
+  release();
+  assert.ok((await first).success);
+  assert.ok((await second).success);
+  assert.ok((await turn).success);
+  assert.deepEqual(calls.filter(([name]) => ['settings', 'startTurn'].includes(name)).map(([name, , patch]) => [name, patch?.effort]), [['settings', 'high'], ['settings', 'ultra'], ['startTurn', undefined]]);
+});
+
+test('settings enforce read-only, project, and approval access and retain snapshot settings', async () => {
+  const { router, appServer, config } = setup();
+  let updates = 0;
+  appServer.updateThreadSettings = async id => { updates++; return { threadId: id }; };
+  const send = (patch, id) => router.handle(envelope({ type: 'thread.settings.update', threadId: 'thread-1', ...patch }, id));
+  config.readOnly = true;
+  assert.equal((await send({ model: 'm' }, 'ro')).error.code, 'COMMAND_NOT_ALLOWED');
+  config.readOnly = false;
+  config.allowedProjects = ['/private'];
+  assert.equal((await send({ model: 'm' }, 'project')).error.code, 'PROJECT_NOT_ALLOWED');
+  config.allowedProjects = ['/workspace/allowed'];
+  config.permissions.respondToApprovals = false;
+  assert.equal((await send({ permissionMode: '完全访问权限' }, 'permission')).error.code, 'COMMAND_NOT_ALLOWED');
+  assert.equal(updates, 0);
+  config.permissions.respondToApprovals = true;
+  const request = envelope({ type: 'thread.settings.update', threadId: 'thread-1', permissionMode: '默认权限' }, 'once');
+  assert.equal((await router.handle(request)).success, true);
+  assert.equal((await router.handle(request)).success, true);
+  assert.equal(updates, 1, 'replay must not repeat the mutation');
+  config.permissions.respondToApprovals = false;
+  assert.equal((await router.handle(request)).error.code, 'COMMAND_NOT_ALLOWED');
+  appServer.threadSettings = () => ({ model: 'm', effort: 'ultra', revision: 1 });
+  for (const type of ['thread.read', 'thread.status']) {
+    const read = await router.handle(envelope({ type, threadId: 'thread-1' }, type));
+    assert.equal(read.result.threadSettings.effort, 'ultra');
+  }
+});

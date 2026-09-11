@@ -38,8 +38,8 @@ export async function inspectPreparation(context, { environment, checkpoint = as
     manifest = defaultManifest(context.packageRoot, { desktopApp, codexHome: context.codexHome, relayConfig: path.join(context.configDir, "config.json"), relayAgent: path.join(context.pluginRoot, "server/agent-cli.js"), originalIcon: true });
     manifest.activationBlocked = true;
     manifest.binaryHash = await digest(manifest.binary);
-    await verify(manifest);
-    await add("versions", "桌面与 CLI 版本", "passed", `${manifest.desktopVersion} / ${manifest.cliVersion}，符合启动器版本要求；桌面工具需单独验收`);
+    const compatibility = await verify(manifest);
+    await add("versions", "桌面与 CLI 版本", "passed", `${compatibility?.desktopVersion || "当前桌面版本"} / ${compatibility?.cliVersion || "当前 CLI 版本"}，满足最低启动器兼容要求；桌面工具需单独验收`);
   } catch {
     manifest = null;
     await add("versions", "桌面与 CLI 版本", "blocked", "桌面、CLI 或安装路径不符合当前启动器要求，请更新兼容实现后重新检查");

@@ -5,7 +5,25 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { backupData, defaultManifest, patchRelay, plist, processConflicts, restoreRelay, serviceDefinition, shellQuote } from "../server/shared-backend-manager.js";
+import { backupData, defaultManifest, isActiveSharedInstallation, isVersionAtLeast, patchRelay, plist, processConflicts, restoreRelay, serviceDefinition, shellQuote, writePrivate } from "../server/shared-backend-manager.js";
+
+test("only an activated installation with the exact configured endpoint can use service recovery", async t => {
+  const root = await fs.mkdtemp('/tmp/shared-recovery-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const manifest = { root, relayConfig: path.join(root, 'config.json'), endpoint: `unix://${root}/rpc.sock` };
+  await writePrivate(manifest.relayConfig, JSON.stringify({ codex: { connectionMode: 'shared', appServerEndpoint: manifest.endpoint } }));
+  assert.equal(await isActiveSharedInstallation(manifest), false);
+  await writePrivate(path.join(root, 'activation.json'), '{"phase":"active"}');
+  assert.equal(await isActiveSharedInstallation(manifest), true);
+  assert.equal(await isActiveSharedInstallation({ ...manifest, endpoint: 'unix:///other/rpc.sock' }), false);
+});
+
+test("compatibility accepts newer desktop builds without pinning an exact build number", () => {
+  assert.equal(isVersionAtLeast("26.903.71938", "26.901.51231"), true);
+  assert.equal(isVersionAtLeast("26.901.51230", "26.901.51231"), false);
+  assert.equal(isVersionAtLeast("codex-cli 0.153.4", "0.153.4"), true);
+  assert.equal(isVersionAtLeast("0.152.9", "0.153.4"), false);
+});
 
 test("switching mode and rolling back preserve credentials, permissions and later edits", () => {
   const original = { relay: { spaceId: "space", token: "fixture-only" }, codex: { executable: "/codex" }, allowedProjects: ["/old"], readOnly: true };
@@ -52,6 +70,8 @@ test("launchd and shell entries preserve paths containing spaces and metacharact
   assert.equal(await promisify(execFile)("/bin/sh", ["-c", `printf '%s' ${shellQuote("hello ' & $(false)")}`]).then(result => result.stdout), "hello ' & $(false)");
   const manifest = defaultManifest("/tmp/Shared & Backend");
   const definition = serviceDefinition(manifest);
+  assert.equal(manifest.node, '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node');
+  assert.equal(serviceDefinition({ ...manifest, node: '/usr/local/bin/node' }).ProgramArguments[0], manifest.node);
   assert.equal(definition.RunAtLoad, true);
   assert.equal(definition.KeepAlive.SuccessfulExit, false);
   assert.equal(definition.ProgramArguments[1], "/tmp/Shared & Backend/shared-backend-cli.js");
@@ -64,4 +84,18 @@ test("launchd and shell entries preserve paths containing spaces and metacharact
     await fs.writeFile(file, plist(definition));
     await promisify(execFile)("/usr/bin/plutil", ["-lint", file]);
   }
+});
+
+test('fixed desktop pipe and signed runtime cannot be shadowed by inherited MCP environment', async t => {
+  const { desktopToolDefinition } = await import('../server/shared-backend-manager.js');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-env-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const app = path.join(root, 'Codex.app');
+  const plugin = path.join(app, 'Contents/Resources/plugins/openai-bundled/plugins/codex-app-tools');
+  await fs.mkdir(plugin, { recursive: true });
+  await fs.writeFile(path.join(plugin, 'desktop-mcp.json'), JSON.stringify({ mcpServers: { codex_app: { command: './launch', env_vars: ['CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_MCP_NODE_PATH', 'PATH'], env: {} } } }));
+  const definition = await desktopToolDefinition({ root, desktopApp: app });
+  assert.deepEqual(definition.env_vars, ['PATH']);
+  assert.equal(definition.env.CODEX_MCP_NODE_PATH, path.join(app, 'Contents/Resources/cua_node/bin/node'));
+  assert.equal(definition.env.CODEX_APP_TOOLS_PIPE_PATH, path.join(root, 'desktop-tools.sock'));
 });

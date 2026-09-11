@@ -115,6 +115,13 @@ export class DashboardServer {
     if (!contained) return this.#json(response, 404, { error: { code: "NOT_FOUND", message: "资源不存在" } });
     try {
       const body = await fs.readFile(file);
+      // The dashboard is bound to loopback and is commonly opened directly
+      // as http://127.0.0.1:3210. In that flow there is no bootstrap key in
+      // the URL fragment, so establish a fresh HttpOnly local session while
+      // serving the app shell. This also recovers tabs that retain a stale
+      // sessionStorage key after the plugin restarts; API authorization will
+      // fall back to the newly issued cookie.
+      if (!this.#authorized(request).ok) this.#setSessionCookie(response);
       response.writeHead(200, {
         "Content-Type": CONTENT_TYPES[path.extname(file)] || "application/octet-stream",
         "Cache-Control": "no-store",
@@ -131,7 +138,7 @@ export class DashboardServer {
     if (url.pathname.startsWith("/api/environment/migration/")) {
       try {
         if (request.method === "GET" && url.pathname === "/api/environment/migration/status") return this.#json(response, 200, await this.preparation.status());
-        if (request.method === "POST" && ["/api/environment/migration/check", "/api/environment/migration/prepare", "/api/environment/migration/verify-desktop"].includes(url.pathname)) {
+        if (request.method === "POST" && ["/api/environment/migration/check", "/api/environment/migration/prepare", "/api/environment/migration/verify-desktop", "/api/environment/migration/repair-runtime"].includes(url.pathname)) {
           const body = await this.#body(request);
           return this.#json(response, 202, await this.preparation.start(url.pathname.split("/").at(-1), body.requestId));
         }
@@ -147,6 +154,28 @@ export class DashboardServer {
     }
     if (request.method === "GET" && url.pathname === "/api/environment") {
       return this.#json(response, 200, await this.environment.inspect());
+    }
+    if (request.method === "GET" && url.pathname === "/api/remote-control") {
+      return this.#json(response, 200, await this.service.remoteControlStatus());
+    }
+    if (request.method === "POST" && url.pathname === "/api/remote-control/install") {
+      try { return this.#json(response, 200, await this.service.remoteControlInstall()); }
+      catch (error) {
+        const known = ["REMOTE_CONTROL_INSTALL_BUSY", "REMOTE_CONTROL_INSTALL_URL_INVALID", "REMOTE_CONTROL_INSTALL_DOWNLOAD_FAILED", "REMOTE_CONTROL_INSTALL_SCRIPT_INVALID", "REMOTE_CONTROL_INSTALL_FAILED", "REMOTE_CONTROL_INSTALL_TIMEOUT", "REMOTE_CONTROL_INSTALL_INCOMPLETE"].includes(error.code);
+        return this.#json(response, known ? 409 : 500, { error: { code: known ? error.code : "REMOTE_CONTROL_INSTALL_FAILED", message: known ? error.message : "官方 standalone 安装失败，请稍后重试" } });
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/api/remote-control/start") {
+      try { return this.#json(response, 200, await this.service.remoteControlStart()); }
+      catch (error) { return this.#json(response, 409, { error: { code: error.code || "REMOTE_CONTROL_FAILED", message: error.message } }); }
+    }
+    if (request.method === "POST" && url.pathname === "/api/remote-control/stop") {
+      try { return this.#json(response, 200, await this.service.remoteControlStop()); }
+      catch (error) { return this.#json(response, 409, { error: { code: error.code || "REMOTE_CONTROL_FAILED", message: error.message } }); }
+    }
+    if (request.method === "POST" && url.pathname === "/api/remote-control/pair") {
+      try { return this.#json(response, 200, await this.service.remoteControlPair()); }
+      catch (error) { return this.#json(response, 409, { error: { code: error.code || "REMOTE_CONTROL_FAILED", message: error.message } }); }
     }
     if (request.method === "POST" && url.pathname === "/api/environment/check") {
       return this.#json(response, 200, await this.environment.inspect(true));
@@ -198,8 +227,16 @@ export class DashboardServer {
     if (request.method === "POST" && url.pathname === "/api/connection/disconnect") {
       return this.#json(response, 200, await this.service.disconnect());
     }
+    if (request.method === "POST" && url.pathname === "/api/connection/reconnect") {
+      try { return this.#json(response, 200, await this.service.reconnectRelay()); }
+      catch (error) { return this.#json(response, 409, { error: { code: error.code || "RELAY_RECONNECT_FAILED", message: error.message } }); }
+    }
     if (request.method === "POST" && url.pathname === "/api/app-server/start") {
       return this.#json(response, 200, await this.service.appServer.start());
+    }
+    if (request.method === "POST" && url.pathname === "/api/app-server/restart") {
+      try { return this.#json(response, 200, await this.service.restartAppServerConnection()); }
+      catch (error) { return this.#json(response, 409, { error: { code: error.code || "APP_SERVER_RESTART_FAILED", message: error.message } }); }
     }
     if (request.method === "POST" && url.pathname === "/api/app-server/stop") {
       await this.service.appServer.stop();

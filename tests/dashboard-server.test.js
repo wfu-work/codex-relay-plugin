@@ -32,6 +32,13 @@ test("dashboard is local, bearer-protected, and does not expose its key in statu
   const page = await fetch(`${origin}/`);
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Codex Relay/);
+  const directPageCookie = page.headers.get("set-cookie");
+  assert.match(directPageCookie, /codex_relay_session=/);
+  const directPageApi = await fetch(`${origin}/api/status`, {
+    headers: { Cookie: directPageCookie.split(";", 1)[0] },
+  });
+  assert.equal(directPageApi.status, 200);
+  assert.deepEqual(await directPageApi.json(), { connector: { state: "running" } });
 
   const unauthorized = await fetch(`${origin}/api/status`);
   assert.equal(unauthorized.status, 401);
@@ -67,6 +74,27 @@ test("dashboard session survives a new server instance", async (t) => {
   t.after(() => second.stop());
   const direct = await fetch(`${new URL(secondUrl).origin}/api/status`, { headers: { Cookie: cookie } });
   assert.equal(direct.status, 200);
+});
+
+test("dashboard exposes authenticated visual recovery actions", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-relay-dashboard-actions-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const calls = [];
+  const service = {
+    logger: new Logger(), configStore: { configDir },
+    status: async () => ({}), diagnostics: async () => ({}),
+    appServer: { start: async () => { calls.push("start"); return { state: "ready" }; } },
+    restartAppServerConnection: async () => { calls.push("backend"); return { appServer: { state: "ready" } }; },
+    reconnectRelay: async () => { calls.push("relay"); return { relay: { state: "connected" } }; },
+  };
+  const dashboard = new DashboardServer(service, service.logger, { port: 0 });
+  const url = new URL(await dashboard.start());
+  t.after(() => dashboard.stop());
+  const headers = { Authorization: `Bearer ${new URLSearchParams(url.hash.slice(1)).get("key")}` };
+  assert.equal((await fetch(`${url.origin}/api/app-server/restart`, { method: "POST" })).status, 401);
+  assert.deepEqual(await (await fetch(`${url.origin}/api/app-server/restart`, { method: "POST", headers })).json(), { appServer: { state: "ready" } });
+  assert.deepEqual(await (await fetch(`${url.origin}/api/connection/reconnect`, { method: "POST", headers })).json(), { relay: { state: "connected" } });
+  assert.deepEqual(calls, ["backend", "relay"]);
 });
 
 test("environment actions require dashboard authentication and only pass expected repair fields", async t => {
@@ -110,7 +138,7 @@ test('migration preparation APIs require authentication, filter input, and canno
   const url = new URL(await dashboard.start());
   t.after(() => dashboard.stop());
   const headers = { Authorization: `Bearer ${new URLSearchParams(url.hash.slice(1)).get('key')}`, 'Content-Type': 'application/json' };
-  for (const action of ['check', 'prepare', 'verify-desktop', 'cancel', 'activate']) assert.equal((await fetch(`${url.origin}/api/environment/migration/${action}`, { method: 'POST' })).status, 401);
+  for (const action of ['check', 'prepare', 'verify-desktop', 'repair-runtime', 'cancel', 'activate']) assert.equal((await fetch(`${url.origin}/api/environment/migration/${action}`, { method: 'POST' })).status, 401);
   assert.equal((await fetch(`${url.origin}/api/environment/migration/status`)).status, 401);
   assert.equal(calls.length, 0);
   const submitted = await fetch(`${url.origin}/api/environment/migration/prepare`, { method: 'POST', headers, body: JSON.stringify({ requestId: id, root: '/malicious', command: 'arbitrary shell', force: true }) });
@@ -124,4 +152,6 @@ test('migration preparation APIs require authentication, filter input, and canno
   assert.equal(calls.length, 2);
   assert.equal((await fetch(`${url.origin}/api/environment/migration/verify-desktop`, { method: 'POST', headers, body: JSON.stringify({ requestId: id, pipe: '/untrusted', command: '/bin/sh' }) })).status, 202);
   assert.deepEqual(calls[2], ['verify-desktop', id]);
+  assert.equal((await fetch(`${url.origin}/api/environment/migration/repair-runtime`, { method: 'POST', headers, body: JSON.stringify({ requestId: id, pid: 123, node: '/untrusted', force: true }) })).status, 202);
+  assert.deepEqual(calls[3], ['repair-runtime', id]);
 });

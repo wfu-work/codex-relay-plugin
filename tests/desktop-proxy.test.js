@@ -80,9 +80,10 @@ test("stable desktop pipe changes only after the prior desktop closes", async t 
   });
   await new Promise(resolve => first.listen(`${root}/first.sock`, resolve));
   await new Promise(resolve => second.listen(`${root}/second.sock`, resolve));
-  const config = name => ({ "mcp_servers.codex_app": { enabled: true, env: { CODEX_APP_TOOLS_PIPE_PATH: `${root}/${name}.sock` } } });
+  const config = name => ({ "mcp_servers.codex_app": { enabled: true, env: { CODEX_APP_TOOLS_PIPE_PATH: `${root}/${name}.sock` }, env_vars: ['CODEX_APP_TOOLS_PIPE_PATH', 'PATH'] } });
   const normalized = await bindDesktopPipe(root, config("first"));
   assert.equal(normalized["mcp_servers.codex_app"].env.CODEX_APP_TOOLS_PIPE_PATH, `${root}/desktop-tools.sock`);
+  assert.deepEqual(normalized["mcp_servers.codex_app"].env_vars, ['PATH']);
   await assert.rejects(bindDesktopPipe(root, config("second")), /已有桌面/);
   await new Promise(resolve => first.close(resolve));
   await bindDesktopPipe(root, config("second"));

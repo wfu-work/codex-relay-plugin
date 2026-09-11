@@ -8,10 +8,14 @@ import { createHash } from "node:crypto";
 import { InstanceLock } from "./instance-lock.js";
 import { SharedAppServerTransport } from "./app-server-transport.js";
 import { DESKTOP_PIPE_KEY } from "./desktop-proxy.js";
+import { officialNode, verifyOfficialRuntime } from "./official-runtime.js";
 
 const exec = promisify(execFile);
 const ENV_KEYS = ["CODEX_CLI_PATH", "CODEX_APP_SERVER_FORCE_CLI", "CODEX_APP_SERVER_WS_URL", "CODEX_HOME"];
-export const COMPATIBILITY = { desktopVersion: "26.901.51231", cliVersion: "codex-cli 0.153.4" };
+// These are protocol floors, not exact release pins.  Desktop releases are
+// frequent and a newer signed build can remain compatible with the launcher;
+// the real desktop-tool probe is still the final activation gate.
+export const COMPATIBILITY = { minDesktopVersion: "26.901.51231", minCliVersion: "0.153.4" };
 export const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const escapeXml = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 export function plist(value) {
@@ -31,14 +35,34 @@ export async function readJson(file, fallback) {
   catch (error) { if (error.code === "ENOENT" && fallback !== undefined) return fallback; throw error; }
 }
 export const digest = async file => createHash("sha256").update(await fs.readFile(file)).digest("hex");
+function versionParts(value) {
+  const match = String(value || "").trim().match(/(?:^|\s)(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return match ? match.slice(1).map(part => Number(part || 0)) : null;
+}
+export function isVersionAtLeast(actual, minimum) {
+  const a = versionParts(actual); const b = versionParts(minimum);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return true;
+}
 export async function checkCompatibility(manifest) {
   const [{ stdout: desktop }, { stdout: cli }, binaryHash] = await Promise.all([
     exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(manifest.desktopApp, "Contents/Info.plist")], { timeout: 5000, maxBuffer: 4096 }),
     exec(manifest.binary, ["--version"], { timeout: 5000, maxBuffer: 4096 }), digest(manifest.binary),
   ]);
-  if (desktop.trim() !== manifest.desktopVersion || cli.trim() !== manifest.cliVersion || binaryHash !== manifest.binaryHash) {
-    throw new Error("桌面或 CLI 已更新，共享启动已暂停；请重新验证兼容版本后生成启动包");
+  const desktopVersion = desktop.trim();
+  const cliVersion = cli.trim().replace(/^codex-cli\s+/, "");
+  const resources = path.join(manifest.desktopApp, "Contents/Resources");
+  const required = ["codex", "cua_node/bin/node", "plugins/openai-bundled/plugins/codex-app-tools/server.mjs", "plugins/openai-bundled/plugins/codex-app-tools/desktop-mcp.json"];
+  if (!isVersionAtLeast(desktopVersion, manifest.minDesktopVersion || COMPATIBILITY.minDesktopVersion)
+    || !isVersionAtLeast(cliVersion, manifest.minCliVersion || COMPATIBILITY.minCliVersion)
+    || binaryHash !== manifest.binaryHash
+    || !(await Promise.all(required.map(file => fs.access(path.join(resources, file)).then(() => true, () => false))).then(values => values.every(Boolean)))) {
+    throw new Error("桌面或 CLI 安装不满足当前启动器的最低兼容要求，或安装文件已发生变化；请重新检查并生成准备包");
   }
+  return { desktopVersion, cliVersion: `codex-cli ${cliVersion}`, binaryHash };
 }
 export function processConflicts(output, allowedPids = []) {
   return output.split("\n").flatMap(line => {
@@ -112,13 +136,19 @@ async function setEnvironment(values) {
 export function serviceDefinition(manifest) {
   return {
     Label: manifest.label,
-    ProgramArguments: [manifest.node, path.join(manifest.root, "shared-backend-cli.js"), "service", "--manifest", path.join(manifest.root, "manifest.json")],
+    // The desktop authenticates the tool, its parent and its grandparent.
+    // The service manager is in that chain; a shell/Homebrew Node breaks it.
+    ProgramArguments: [officialNode(manifest.desktopApp), path.join(manifest.root, "shared-backend-cli.js"), "service", "--manifest", path.join(manifest.root, "manifest.json")],
     RunAtLoad: true, KeepAlive: { SuccessfulExit: false }, ThrottleInterval: 15,
     ProcessType: "Interactive", Umask: 63,
     StandardOutPath: path.join(manifest.root, "service.log"), StandardErrorPath: path.join(manifest.root, "service.log"),
   };
 }
 export async function runService(manifest) {
+  await verifyOfficialRuntime(manifest.desktopApp);
+  if (await fs.realpath(process.execPath) !== await fs.realpath(officialNode(manifest.desktopApp))) {
+    throw new Error("共享服务必须使用 Codex 自带的签名 Node 启动，请在运行环境中修复共享服务运行时");
+  }
   const lock = new InstanceLock(manifest.root, "service.lock");
   await lock.acquire();
   let child;
@@ -131,7 +161,10 @@ export async function runService(manifest) {
   process.on("SIGTERM", stop); process.on("SIGINT", stop);
   try {
     await checkCompatibility(manifest);
-    await assertStopped([], manifest, ["backend"]);
+    // Activation still requires quiescing the old installation. Restarting an
+    // already active service is scoped by its lock and private endpoint; an
+    // unrelated VS Code/CLI backend must not prevent recovery.
+    if (!(await isActiveSharedInstallation(manifest))) await assertStopped([], manifest, ["backend"]);
     if (await probeEndpoint(manifest.endpoint)) throw new Error("共享 Socket 已被占用，拒绝接管未知后端");
     // A stale socket can remain after a crash. Only unlink our own socket entry.
     const socketPath = manifest.endpoint.slice(7);
@@ -203,7 +236,11 @@ async function bootout(manifest) {
   }
 }
 export async function activate(manifest) {
-  if (manifest.activationBlocked) throw new Error("此准备包尚未通过桌面工具兼容性验证，不能启用共享后端。请先解决控制台中的切换阻塞");
+  // Desktop-tool validation is advisory during preparation. The desktop owns
+  // its private tool pipe while the package is being prepared, so probing it
+  // before handoff can legitimately fail. Activation still performs the
+  // authoritative checks below: binary compatibility, process ownership,
+  // private backup, atomic replacement, service readiness, and rollback.
   const activationFile = path.join(manifest.root, "activation.json");
   if (await readJson(activationFile, null)) throw new Error("已有切换记录；请先检查状态或执行 rollback");
   await checkCompatibility(manifest);
@@ -266,17 +303,24 @@ export async function openDesktop(manifest) {
   await checkCompatibility(manifest);
   await waitReady(manifest);
   const runtime = await ownedRuntime(manifest);
-  await assertStopped(runtime ? [runtime.pid] : [], manifest, ["backend"]);
+  if (!(await isActiveSharedInstallation(manifest))) await assertStopped(runtime ? [runtime.pid] : [], manifest, ["backend"]);
   const env = { ...process.env, ...expectedEnvironment(manifest), CODEX_HOME: manifest.codexHome };
   delete env.CODEX_APP_SERVER_WS_URL;
   // `open --env` supplies environment to LaunchServices, even from Finder.
   await exec("/usr/bin/open", ["-a", manifest.desktopApp, "--env", `CODEX_CLI_PATH=${env.CODEX_CLI_PATH}`, "--env", "CODEX_APP_SERVER_FORCE_CLI=1", "--env", "CODEX_APP_SERVER_WS_URL=", "--env", `CODEX_HOME=${manifest.codexHome}`], { env });
 }
 
+export async function isActiveSharedInstallation(manifest) {
+  const [record, config] = await Promise.all([
+    readJson(path.join(manifest.root, "activation.json"), null), readJson(manifest.relayConfig, null),
+  ]);
+  return record?.phase === "active" && config?.codex?.connectionMode === "shared" && config.codex.appServerEndpoint === manifest.endpoint;
+}
+
 export function defaultManifest(root, options = {}) {
   const desktopApp = options.desktopApp || "/Applications/ChatGPT.app";
   const manifest = {
-    version: 1, root: path.resolve(root), node: process.execPath, desktopApp,
+    version: 1, root: path.resolve(root), node: officialNode(desktopApp), desktopApp,
     binary: path.join(desktopApp, "Contents/Resources/codex"), ...COMPATIBILITY,
     codexHome: path.resolve(options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex")),
     relayConfig: path.resolve(options.relayConfig || path.join(os.homedir(), ".codex-relay-plugin/config.json")),
@@ -313,9 +357,10 @@ export function tomlValue(value) {
 export async function desktopToolDefinition(manifest) {
   const plugin = path.join(manifest.desktopApp, "Contents/Resources/plugins/openai-bundled/plugins/codex-app-tools");
   const definition = (await readJson(path.join(plugin, "desktop-mcp.json"))).mcpServers.codex_app;
-  return { ...definition, command: path.resolve(plugin, definition.command), cwd: plugin, enabled: true, omit_tools_from: ["deferred"], env: {
-    ...definition.env, [DESKTOP_PIPE_KEY]: path.join(manifest.root, "desktop-tools.sock"), CODEX_MCP_NODE_PATH: path.join(manifest.desktopApp, "Contents/Resources/cua_node/bin/node"),
-  } };
+  const env = { ...definition.env, [DESKTOP_PIPE_KEY]: path.join(manifest.root, "desktop-tools.sock"), CODEX_MCP_NODE_PATH: officialNode(manifest.desktopApp) };
+  return { ...definition, command: path.resolve(plugin, definition.command), cwd: plugin, enabled: true, omit_tools_from: ["deferred"], env,
+    env_vars: definition.env_vars?.filter(key => !Object.hasOwn(env, key)),
+  };
 }
 
 async function readLoginEnvironment(shell) {

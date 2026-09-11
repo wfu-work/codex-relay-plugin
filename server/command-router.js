@@ -5,6 +5,7 @@ import { filterProjectList, filterThreadList, safeProjectPath } from "./utils.js
 import { CommandJournal } from "./command-journal.js";
 import { composerSettingsPatch } from "./composer-settings.js";
 import { ImageUploads } from "./image-uploads.js";
+import { buildTurnContext, listSkills, resolveSkills, resolveWorkspaceReferences, searchWorkspace } from "./workspace-tools.js";
 
 // A thread can contain unbounded command output. Returning that complete
 // history through a Relay frame can exceed the authenticated connection's
@@ -112,7 +113,7 @@ export class CommandRouter {
   }
 
   async #executeSharedRead(command, envelope) {
-    if (!['project.list', 'thread.list', 'thread.read', 'thread.status', 'thread.resume', 'sync.request'].includes(command.type)) {
+    if (!['project.list', 'thread.list', 'thread.read', 'thread.status', 'thread.resume', 'sync.request', 'workspace.search', 'skills.list'].includes(command.type)) {
       return this.#execute(command, envelope);
     }
     const key = JSON.stringify({
@@ -163,6 +164,17 @@ export class CommandRouter {
     if (command.type === "sync.request") {
       return this.service.syncAfter(Object.hasOwn(command, "lastSequence") ? command.lastSequence : null, command.eventStreamId);
     }
+    // Local discovery must remain usable while Codex is starting or when the
+    // configured executable is unavailable. It only touches an allowlisted
+    // workspace and does not require an App Server connection.
+    if (command.type === "workspace.search") {
+      const cwd = this.#allowedCwd(command.cwd, true);
+      return searchWorkspace({ ...command, cwd, allowedProjects: this.configStore.get().allowedProjects });
+    }
+    if (command.type === "skills.list") {
+      const cwd = command.cwd ? this.#allowedCwd(command.cwd, true) : undefined;
+      return listSkills({ cwd, allowedProjects: this.configStore.get().allowedProjects, codexHome: process.env.CODEX_HOME });
+    }
     if (command.type.startsWith("image.upload.")) {
       const owner = this.images.owner(this.configStore.get(), envelope);
       if (command.type === "image.upload.append") return this.images.append(command, owner);
@@ -185,6 +197,14 @@ export class CommandRouter {
         return this.appServer.listModels(command);
       case "project.list":
         return filterProjectList(await this.appServer.listProjects(command), this.configStore.get().allowedProjects);
+      case "workspace.search": {
+        const cwd = this.#allowedCwd(command.cwd, true);
+        return searchWorkspace({ ...command, cwd, allowedProjects: this.configStore.get().allowedProjects });
+      }
+      case "skills.list": {
+        const cwd = command.cwd ? this.#allowedCwd(command.cwd, true) : undefined;
+        return listSkills({ cwd, allowedProjects: this.configStore.get().allowedProjects, codexHome: process.env.CODEX_HOME });
+      }
       case "thread.list":
         return filterThreadList(await this.appServer.listThreads(command), this.configStore.get().allowedProjects);
       case "thread.read": {
@@ -243,18 +263,30 @@ export class CommandRouter {
         const threadId = requireString(command.threadId || envelope.threadId || this.#selectedThreadId, "threadId");
         await this.#assertThreadAllowed(threadId);
         let images;
+        let references = [];
+        let skills = [];
+        let threadCwd = this.#allowedCwd(command.cwd);
+        if (command.workspaceRefs !== undefined || command.skills !== undefined) {
+          const read = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus || this.appServer.readThread;
+          const result = await read.call(this.appServer, threadId);
+          this.#assertThreadResultAllowed(result);
+          threadCwd = this.#allowedCwd((result.thread || result).cwd, true);
+          references = await resolveWorkspaceReferences({ cwd: threadCwd, references: command.workspaceRefs || [], allowedProjects: this.configStore.get().allowedProjects });
+          skills = await resolveSkills({ cwd: threadCwd, skills: command.skills || [], allowedProjects: this.configStore.get().allowedProjects, codexHome: process.env.CODEX_HOME });
+        }
         if (command.attachmentIds !== undefined) {
           const read = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus || this.appServer.readThread;
           const result = await read.call(this.appServer, threadId);
           this.#assertThreadResultAllowed(result);
           const cwd = this.#allowedCwd((result.thread || result).cwd, true);
+          threadCwd = threadCwd || cwd;
           images = await this.images.resolve(command.attachmentIds, this.images.owner(this.configStore.get(), envelope), { cwd, threadId });
         }
         return this.appServer.startTurn({
           threadId,
-          text: images?.length ? optionalString(command.text) || "" : requireString(command.text, "text"),
+          text: `${buildTurnContext(references, skills)}${images?.length ? optionalString(command.text) || "" : requireString(command.text, "text")}`,
           ...(images ? { images } : {}),
-          cwd: this.#allowedCwd(command.cwd),
+          cwd: threadCwd,
           model: optionalString(command.model),
           effort: optionalString(command.effort),
         });

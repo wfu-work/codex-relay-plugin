@@ -159,6 +159,33 @@ test("live usage notifications and terminal/history snapshots carry the same tur
   assert.equal((await reader.read(thread)).notifications.length, 0);
 });
 
+test("terminal events reconcile final token usage before completion", async (t) => {
+  const { reader, thread, oldFile, header } = await fixture(t);
+  await fs.writeFile(oldFile, header + start("current"));
+  await reader.read(thread);
+  const final = tokens(180, 24, 120);
+  await fs.appendFile(oldFile, event({
+    type: "task_complete",
+    turn_id: "current",
+    // Some builds use `info` for completion metadata and put counters in
+    // `usage`; the relay should try the later candidates as well.
+    info: { completion_reason: "stop" },
+    usage: { total: final, last: final },
+  }));
+  const snapshot = await reader.read(thread);
+  assert.equal(snapshot.notifications.length, 2);
+  assert.equal(snapshot.notifications[0][0], "thread/tokenUsage/updated");
+  assert.deepEqual(snapshot.notifications[0][1].turnUsage, {
+    inputTokens: 180,
+    outputTokens: 24,
+    totalTokens: 204,
+    cachedInputTokens: 120,
+  });
+  assert.equal(snapshot.notifications[1][0], "turn/completed");
+  assert.deepEqual(snapshot.notifications[1][1].turn.turnUsage,
+    snapshot.notifications[0][1].turnUsage);
+});
+
 test("missing/inherited baselines and counter resets never claim an exact turn total", async (t) => {
   const { reader, thread, oldFile, header } = await fixture(t);
   await fs.writeFile(oldFile, header + start("inherited")

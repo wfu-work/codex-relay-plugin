@@ -13,9 +13,14 @@ function usage(value) {
   for (const [key, snake] of Object.entries(FIELDS)) {
     const count = value[snake] ?? value[key];
     if (count === undefined && !REQUIRED.includes(key)) continue;
+    // Some Codex/model combinations publish only a total counter. Preserve
+    // that information for diagnostics and UI display; exact per-turn deltas
+    // still require all three required counters below.
+    if (count === undefined && REQUIRED.includes(key)) continue;
     if (!Number.isSafeInteger(count) || count < 0) return null;
     result[key] = count;
   }
+  if (!REQUIRED.some((key) => result[key] !== undefined)) return null;
   return result;
 }
 
@@ -34,9 +39,11 @@ export class RolloutUsage {
   }
 
   update(turn, info, updatedAt) {
-    const total = usage(info?.total_token_usage);
+    // Journal token_count rows wrap counters in total_token_usage, while
+    // some terminal responses expose the counters directly (or under total).
+    const total = usage(info?.total_token_usage ?? info?.total ?? info);
     if (!total) return false;
-    const last = usage(info?.last_token_usage);
+    const last = usage(info?.last_token_usage ?? info?.last);
     if (!turn) { this.#total = total; return false; }
     const state = this.#turns.get(turn.id);
     if (!state) return false;

@@ -6,10 +6,13 @@ import path from "node:path";
 // project identities from this one preference are projected into Relay replies.
 export class DesktopProjectPins {
   #file;
+  #codexHome;
   #positions = new Map();
+  #pathPositions = new Map();
 
   constructor({ codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex") } = {}) {
-    this.#file = path.join(codexHome, ".codex-global-state.json");
+    this.#codexHome = path.resolve(codexHome);
+    this.#file = path.join(this.#codexHome, ".codex-global-state.json");
   }
 
   async enrich(result) {
@@ -19,7 +22,23 @@ export class DesktopProjectPins {
       if (state && typeof state === "object" && !Array.isArray(state)) {
         const ids = state["pinned-project-ids"] ?? [];
         if (Array.isArray(ids) && ids.every((id) => typeof id === "string" && id.trim())) {
-          this.#positions = new Map([...new Set(ids)].map((id, index) => [id, index]));
+          const positions = [...new Set(ids)].map((id, index) => [id, index]);
+          const mappings = state["app-server-project-id-by-legacy-project-id-by-host"];
+          const hostMapping = mappings?.[`local:${this.#codexHome}`];
+          const resolved = positions.map(([legacyId, index]) => [
+            typeof hostMapping?.[legacyId] === "string" ? hostMapping[legacyId] : legacyId,
+            index,
+          ]);
+          this.#positions = new Map([...positions, ...resolved]);
+
+          const localProjects = state["local-projects"];
+          this.#pathPositions = new Map(positions.flatMap(([legacyId, index]) => {
+            const roots = localProjects?.[legacyId]?.rootPaths;
+            return Array.isArray(roots)
+              ? roots.filter((root) => typeof root === "string" && root.trim())
+                  .map((root) => [path.resolve(root), index])
+              : [];
+          }));
         }
       }
     } catch {
@@ -30,7 +49,17 @@ export class DesktopProjectPins {
       ...result,
       data: result.data.map((project) => {
         if (!project || typeof project !== "object" || Array.isArray(project)) return project;
-        const pinnedPosition = this.#positions.get(project.id);
+        let pinnedPosition = this.#positions.get(project.id);
+        if (pinnedPosition === undefined) {
+          const roots = Array.isArray(project.roots) ? project.roots : [];
+          const candidates = project.path ? [project.path, ...roots] : roots;
+          for (const root of candidates) {
+            const projectPath = typeof root === "string" ? root : root?.path;
+            if (typeof projectPath !== "string" || !projectPath.trim()) continue;
+            pinnedPosition = this.#pathPositions.get(path.resolve(projectPath));
+            if (pinnedPosition !== undefined) break;
+          }
+        }
         return { ...project, isPinned: pinnedPosition !== undefined, pinnedPosition: pinnedPosition ?? null };
       }),
     };

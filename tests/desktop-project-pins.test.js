@@ -31,6 +31,32 @@ test("projects get exact desktop pins and order without exposing other preferenc
   assert.equal(Object.hasOwn(result.data[0], "isPinned"), false);
 });
 
+test("resolves legacy desktop pin ids to current App Server ids and falls back to project paths", async (t) => {
+  const { codexHome, write } = await fixture(t);
+  await write({
+    "pinned-project-ids": ["legacy-gpt", "legacy-tools"],
+    "app-server-project-id-by-legacy-project-id-by-host": {
+      [`local:${codexHome}`]: { "legacy-gpt": "app-gpt" },
+    },
+    "local-projects": {
+      "legacy-tools": { rootPaths: ["/Users/example/tools"] },
+    },
+  });
+  const pins = new DesktopProjectPins({ codexHome });
+  const result = await pins.enrich({
+    data: [
+      { id: "app-gpt", roots: [{ path: "/Users/example/gpt" }] },
+      { id: "new-tools-id", roots: [{ path: "/Users/example/tools" }] },
+      { id: "other", roots: [{ path: "/Users/example/other" }] },
+    ],
+  });
+  assert.deepEqual(result.data.map(({ id, isPinned, pinnedPosition }) => [id, isPinned, pinnedPosition]), [
+    ["app-gpt", true, 0],
+    ["new-tools-id", true, 1],
+    ["other", false, null],
+  ]);
+});
+
 test("refresh keeps the last valid pins through transient failures and accepts unpinning", async (t) => {
   const { codexHome, file, write } = await fixture(t);
   const pins = new DesktopProjectPins({ codexHome });

@@ -168,6 +168,29 @@ function projectRow(record, row, notifications, threadId) {
   } else if (event.type === "task_complete" || event.type === "turn_aborted") {
     const turn = event.turn_id ? record.turns.find((turn) => turn.id === event.turn_id) : record.current;
     if (!turn) return;
+    // A few App Server builds attach the final token counters to the terminal
+    // event instead of emitting a separate token_count row. Feed that final
+    // sample through the same monotonic accounting path before publishing the
+    // completion notification.
+    const finalUsageCandidates = [
+      event.info,
+      event.usage,
+      event.tokenUsage,
+      event.token_usage,
+    ];
+    let usageUpdated = false;
+    for (const candidate of finalUsageCandidates) {
+      if (candidate && record.usage.update(turn, candidate, row.timestamp)) {
+        usageUpdated = true;
+        break;
+      }
+    }
+    if (usageUpdated) {
+      notifications.push(["thread/tokenUsage/updated", {
+        threadId, turnId: turn.id, tokenUsage: turn.tokenUsage,
+        ...(turn.turnUsage ? { turnUsage: turn.turnUsage } : {}),
+      }]);
+    }
     turn.status = event.type === "turn_aborted" ? "interrupted" : event.error ? "failed" : "completed";
     turn.completedAt = event.completed_at ?? Date.parse(row.timestamp) / 1000;
     turn.durationMs = event.duration_ms ?? Math.max(0, (turn.completedAt - turn.startedAt) * 1000);

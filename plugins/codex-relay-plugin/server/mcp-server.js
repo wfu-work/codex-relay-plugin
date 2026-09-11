@@ -20030,9 +20030,11 @@ function usage(value) {
   for (const [key, snake] of Object.entries(FIELDS)) {
     const count = value[snake] ?? value[key];
     if (count === void 0 && !REQUIRED.includes(key)) continue;
+    if (count === void 0 && REQUIRED.includes(key)) continue;
     if (!Number.isSafeInteger(count) || count < 0) return null;
     result[key] = count;
   }
+  if (!REQUIRED.some((key) => result[key] !== void 0)) return null;
   return result;
 }
 var RolloutUsage = class {
@@ -20047,9 +20049,9 @@ var RolloutUsage = class {
     while (this.#turns.size > 12) this.#turns.delete(this.#turns.keys().next().value);
   }
   update(turn, info, updatedAt) {
-    const total = usage(info?.total_token_usage);
+    const total = usage(info?.total_token_usage ?? info?.total ?? info);
     if (!total) return false;
-    const last = usage(info?.last_token_usage);
+    const last = usage(info?.last_token_usage ?? info?.last);
     if (!turn) {
       this.#total = total;
       return false;
@@ -20281,6 +20283,27 @@ function projectRow(record2, row, notifications, threadId) {
   } else if (event.type === "task_complete" || event.type === "turn_aborted") {
     const turn = event.turn_id ? record2.turns.find((turn2) => turn2.id === event.turn_id) : record2.current;
     if (!turn) return;
+    const finalUsageCandidates = [
+      event.info,
+      event.usage,
+      event.tokenUsage,
+      event.token_usage
+    ];
+    let usageUpdated = false;
+    for (const candidate of finalUsageCandidates) {
+      if (candidate && record2.usage.update(turn, candidate, row.timestamp)) {
+        usageUpdated = true;
+        break;
+      }
+    }
+    if (usageUpdated) {
+      notifications.push(["thread/tokenUsage/updated", {
+        threadId,
+        turnId: turn.id,
+        tokenUsage: turn.tokenUsage,
+        ...turn.turnUsage ? { turnUsage: turn.turnUsage } : {}
+      }]);
+    }
     turn.status = event.type === "turn_aborted" ? "interrupted" : event.error ? "failed" : "completed";
     turn.completedAt = event.completed_at ?? Date.parse(row.timestamp) / 1e3;
     turn.durationMs = event.duration_ms ?? Math.max(0, (turn.completedAt - turn.startedAt) * 1e3);
@@ -20412,9 +20435,12 @@ import os4 from "node:os";
 import path7 from "node:path";
 var DesktopProjectPins = class {
   #file;
+  #codexHome;
   #positions = /* @__PURE__ */ new Map();
+  #pathPositions = /* @__PURE__ */ new Map();
   constructor({ codexHome = process.env.CODEX_HOME || path7.join(os4.homedir(), ".codex") } = {}) {
-    this.#file = path7.join(codexHome, ".codex-global-state.json");
+    this.#codexHome = path7.resolve(codexHome);
+    this.#file = path7.join(this.#codexHome, ".codex-global-state.json");
   }
   async enrich(result) {
     if (!Array.isArray(result?.data)) return result;
@@ -20423,7 +20449,19 @@ var DesktopProjectPins = class {
       if (state && typeof state === "object" && !Array.isArray(state)) {
         const ids = state["pinned-project-ids"] ?? [];
         if (Array.isArray(ids) && ids.every((id) => typeof id === "string" && id.trim())) {
-          this.#positions = new Map([...new Set(ids)].map((id, index) => [id, index]));
+          const positions = [...new Set(ids)].map((id, index) => [id, index]);
+          const mappings = state["app-server-project-id-by-legacy-project-id-by-host"];
+          const hostMapping = mappings?.[`local:${this.#codexHome}`];
+          const resolved = positions.map(([legacyId, index]) => [
+            typeof hostMapping?.[legacyId] === "string" ? hostMapping[legacyId] : legacyId,
+            index
+          ]);
+          this.#positions = new Map([...positions, ...resolved]);
+          const localProjects = state["local-projects"];
+          this.#pathPositions = new Map(positions.flatMap(([legacyId, index]) => {
+            const roots = localProjects?.[legacyId]?.rootPaths;
+            return Array.isArray(roots) ? roots.filter((root) => typeof root === "string" && root.trim()).map((root) => [path7.resolve(root), index]) : [];
+          }));
         }
       }
     } catch {
@@ -20432,7 +20470,17 @@ var DesktopProjectPins = class {
       ...result,
       data: result.data.map((project) => {
         if (!project || typeof project !== "object" || Array.isArray(project)) return project;
-        const pinnedPosition = this.#positions.get(project.id);
+        let pinnedPosition = this.#positions.get(project.id);
+        if (pinnedPosition === void 0) {
+          const roots = Array.isArray(project.roots) ? project.roots : [];
+          const candidates = project.path ? [project.path, ...roots] : roots;
+          for (const root of candidates) {
+            const projectPath = typeof root === "string" ? root : root?.path;
+            if (typeof projectPath !== "string" || !projectPath.trim()) continue;
+            pinnedPosition = this.#pathPositions.get(path7.resolve(projectPath));
+            if (pinnedPosition !== void 0) break;
+          }
+        }
         return { ...project, isPinned: pinnedPosition !== void 0, pinnedPosition: pinnedPosition ?? null };
       })
     };
@@ -25100,8 +25148,8 @@ var EnvironmentService = class {
       if (app) desktopVersion = await this.exec("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path18.join(app, "Contents/Info.plist")], { timeout: 2e3, maxBuffer: 4096 }).then((r) => clean(r.stdout.trim()), () => null);
     }
     const lastToolFailure = migration.last?.failedPhase === "verifying_shared_runtime" && /工具|签名|signing|pipe/i.test(migration.last.error || "");
-    const runningVersion = "1.0.0+codex.20260911125639";
-    const runningBuild = "1.0.0+codex.20260911125639:1789131412605";
+    const runningVersion = "1.0.0+codex.20260911144740";
+    const runningBuild = "1.0.0+codex.20260911144740:1789138075046";
     const diskBundle = runningBuild ? await fs14.readFile(path18.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && p.kind === "backend");
@@ -25684,8 +25732,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260911125639",
-      buildId: "1.0.0+codex.20260911125639:1789131412605",
+      version: "1.0.0+codex.20260911144740",
+      buildId: "1.0.0+codex.20260911144740:1789138075046",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -25845,7 +25893,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260911125639:1789131412605";
+  const expectedBuild = "1.0.0+codex.20260911144740:1789138075046";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

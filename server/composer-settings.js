@@ -3,11 +3,20 @@ import { RelayError } from "./errors.js";
 // Only expose composer state, never collaboration-mode developer instructions
 // or arbitrary config from a resume response.
 export function composerSettings(value) {
-  const source = value?.threadSettings && typeof value.threadSettings === "object"
-    ? value.threadSettings
-    : value?.settings && typeof value.settings === "object"
-      ? value.settings
-      : value;
+  // `thread/read` in current Codex versions puts model/reasoningEffort on the
+  // nested Thread object, while older Relay responses used threadSettings at
+  // the envelope level. Merge both shapes so a read from Desktop is enough to
+  // hydrate the phone composer without waiting for a settings event.
+  const thread = value?.thread && typeof value.thread === "object" ? value.thread : null;
+  const source = {
+    ...(thread || {}),
+    ...(value && typeof value === "object" ? value : {}),
+    ...(thread?.settings && typeof thread.settings === "object" ? thread.settings : {}),
+    ...(thread?.composerSettings && typeof thread.composerSettings === "object" ? thread.composerSettings : {}),
+    ...(value?.settings && typeof value.settings === "object" ? value.settings : {}),
+    ...(value?.composerSettings && typeof value.composerSettings === "object" ? value.composerSettings : {}),
+    ...(value?.threadSettings && typeof value.threadSettings === "object" ? value.threadSettings : {}),
+  };
   if (!source || typeof source !== "object") return null;
   // App Server emits both complete settings and field-level patches. Keep
   // partial patches so the caller can merge them with the cached task state;

@@ -48,3 +48,25 @@ test("uploads an allowed temporary image path without leaking the local path", a
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+test("rewrites Markdown screenshots so phone clients receive a Relay resource", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "recodex-markdown-image-test-"));
+  const file = path.join(directory, "capture.png");
+  await fs.writeFile(file, Buffer.from("temporary-image"));
+  try {
+    const prepared = await prepareEventImages(
+      { text: `截图如下：![Pixel 6](${file})` },
+      async () => ({
+        resourceUrl: "https://relay.example/api/resources/markdown",
+        expiresAt: "2030-01-01T00:00:00Z",
+      }),
+    );
+    assert.match(
+      prepared.text,
+      /!\[Pixel 6\]\(https:\/\/relay\.example\/api\/resources\/markdown\)/,
+    );
+    assert.equal(prepared.text.includes(file), false);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});

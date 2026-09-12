@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -180,6 +181,43 @@ test("App Server snapshot reads do not contend for another client's writer", asy
   assert.equal(snapshot.thread.id, "thread-active-writer");
   assert.equal(snapshot.thread.resumed, false);
   assert.equal(snapshot.thread.resumeCount, 0);
+});
+
+test("snapshot reads project the live Desktop rollout over a stale interrupted turn", async (t) => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "recodex-live-rollout-"));
+  const cwd = path.join(codexHome, "project");
+  const sessions = path.join(codexHome, "sessions");
+  const threadId = "11111111-1111-4111-8111-111111111111";
+  const turnId = "22222222-2222-4222-8222-222222222222";
+  const file = path.join(sessions, `rollout-2026-09-13T12-00-00-${threadId}.jsonl`);
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(sessions, { recursive: true });
+  const event = (payload, timestamp) => JSON.stringify({ type: "event_msg", timestamp, payload });
+  await fs.writeFile(file, [
+    JSON.stringify({ type: "session_meta", timestamp: "2026-09-13T12:00:00.000Z", payload: { id: threadId, cwd } }),
+    event({ type: "task_started", thread_id: threadId, turn_id: turnId, started_at: 1 }, "2026-09-13T12:00:01.000Z"),
+  ].join("\n") + "\n");
+  const configStore = {
+    get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger(), { codexHome });
+  client.request = async () => ({
+    thread: {
+      id: threadId,
+      path: file,
+      cwd,
+      status: { type: "idle" },
+      currentTurn: { id: "old-turn", status: "interrupted", items: [] },
+      turns: [{ id: "old-turn", status: "interrupted", items: [] }],
+    },
+  });
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+
+  const result = await client.readThreadSnapshot(threadId);
+  assert.equal(result.thread.status.type, "active");
+  assert.equal(result.thread.currentTurn.id, turnId);
+  assert.equal(result.thread.currentTurn.status, "inProgress");
+  assert.equal(result.thread.turns.at(-1).id, turnId);
 });
 
 test("thread catalog collapses duplicate ids across persisted pages", async () => {

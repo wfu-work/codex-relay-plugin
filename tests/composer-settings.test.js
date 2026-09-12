@@ -7,6 +7,7 @@ test('resume and settings notifications expose the same composer fields without 
   const common = { model: 'gpt-6-astra', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', activePermissionProfile: { id: ':workspace' } };
   const expected = { ...common, effort: 'high', sandboxPolicy: { type: 'workspaceWrite' } };
   assert.deepEqual(composerSettings({ ...common, reasoningEffort: 'high', sandbox: expected.sandboxPolicy, instructionSources: ['private'] }), expected);
+  assert.deepEqual(composerSettings({ thread: { ...common, reasoningEffort: 'high', sandboxPolicy: expected.sandboxPolicy } }), expected);
   assert.deepEqual(composerSettings({ threadSettings: { ...expected, collaborationMode: { settings: { developer_instructions: 'private' } } } }), expected);
   assert.deepEqual(composerSettings({ threadSettings: { effort: 'xhigh' } }), { effort: 'xhigh' });
   assert.deepEqual(composerSettings({ threadSettings: { permissions: ':danger-full-access', approvalPolicy: 'never' } }), { permissions: ':danger-full-access', approvalPolicy: 'never' });

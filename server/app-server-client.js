@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
 import { StdioAppServerTransport } from "./app-server-transport.js";
-import { RolloutSnapshots } from "./rollout-snapshot.js";
+import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
 import { DesktopProjectPins } from "./desktop-project-pins.js";
@@ -432,6 +432,20 @@ export class AppServerClient extends EventEmitter {
     const snapshot = await this.#rollouts.read(thread);
     if (!snapshot) return result;
 
+    // Desktop owns its private App Server writer, so a second managed
+    // App Server can briefly return the previous persisted turn (often
+    // `interrupted`) while the current rollout is still running. The rollout
+    // journal is the shared source of truth in that situation. Project its
+    // current turn onto both status and history before the response reaches
+    // the phone; otherwise the client can oscillate between running and
+    // interrupted on every refresh.
+    const projected = applyRolloutSnapshot(thread, snapshot, {
+      includeTurns: Array.isArray(thread.turns),
+    });
+    const projectedResult = result?.thread
+      ? { ...result, thread: projected }
+      : projected;
+
     // Replay newly appended token_count rows immediately. The App Server may
     // not emit them to this connection when Desktop owns the writer.
     for (const [method, params] of snapshot.notifications || []) {
@@ -439,7 +453,7 @@ export class AppServerClient extends EventEmitter {
     }
 
     const sourceTurns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
-    const targetTurns = Array.isArray(thread.turns) ? thread.turns : [];
+    const targetTurns = Array.isArray(projected.turns) ? projected.turns : [];
     const byId = new Map(targetTurns.map(turn => [turn?.id, turn]));
     let changed = false;
     for (const source of sourceTurns) {
@@ -455,8 +469,8 @@ export class AppServerClient extends EventEmitter {
         changed = true;
       }
     }
-    if (!changed) return result;
-    const hydrated = { ...thread, turns: targetTurns };
+    if (!changed) return projectedResult;
+    const hydrated = { ...projected, turns: targetTurns };
     return result?.thread ? { ...result, thread: hydrated } : hydrated;
   }
 

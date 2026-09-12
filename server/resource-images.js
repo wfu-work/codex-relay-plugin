@@ -54,7 +54,10 @@ function localPathFromValue(value) {
 async function parseLocalImage(value, declaredMime, allowedRoots) {
   const candidate = localPathFromValue(value);
   if (!candidate) return null;
-  const roots = await Promise.all([os.tmpdir(), ...(allowedRoots || [])]
+  // macOS exposes the shared temporary directory as `/tmp` while Node's
+  // os.tmpdir() points at the per-user `/var/folders/.../T` directory. Both
+  // locations are safe transient roots for screenshots produced by Codex.
+  const roots = await Promise.all([os.tmpdir(), "/tmp", ...(allowedRoots || [])]
     .filter((root) => typeof root === "string" && path.isAbsolute(root))
     .map(async (root) => {
       try { return await fs.realpath(root); } catch { return path.resolve(root); }
@@ -115,6 +118,9 @@ export async function prepareEventImages(value, upload, seen = new WeakSet(), op
   if (Array.isArray(value)) {
     return Promise.all(value.map((entry) => prepareEventImages(entry, upload, seen, options)));
   }
+  if (typeof value === "string") {
+    return prepareMarkdownImages(value, upload, options);
+  }
   if (!value || typeof value !== "object" || Buffer.isBuffer(value)) return value;
   if (seen.has(value)) return value;
   seen.add(value);
@@ -173,4 +179,44 @@ export async function prepareEventImages(value, upload, seen = new WeakSet(), op
     delete result[sourceKey];
   }
   return result;
+}
+
+// Codex sometimes emits a screenshot as Markdown in an ordinary text event
+// (`![caption](/tmp/capture.png)`) instead of as a structured attachment. A
+// host path cannot be opened by a phone, so resolve it while the event is on
+// the connector and replace it with the same protected Relay URL used by
+// structured image attachments. Small images retain a data URL fallback if a
+// Relay upload is temporarily unavailable.
+async function prepareMarkdownImages(value, upload, options) {
+  const pattern = /!\[([^\]]*)\]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^)]*["'])?\s*\)/g;
+  let match;
+  let cursor = 0;
+  let output = "";
+  let changed = false;
+  while ((match = pattern.exec(value)) !== null) {
+    const rawTarget = match[2].trim();
+    const target = rawTarget.startsWith("<") && rawTarget.endsWith(">")
+      ? rawTarget.slice(1, -1).trim()
+      : rawTarget;
+    const source = await parseLocalImage(target, "", options.allowedRoots);
+    if (!source) continue;
+
+    let replacement = "";
+    try {
+      const ready = await upload({ mime: source.mime, bytes: source.bytes });
+      replacement = ready?.resourceUrl || "";
+    } catch {
+      // Keep the thumbnail fallback below when Relay is briefly unavailable.
+    }
+    if (!replacement) replacement = await createThumbnailDataUrl(source.mime, source.bytes);
+    if (!replacement) continue;
+
+    output += value.slice(cursor, match.index);
+    output += `![${match[1]}](${replacement})`;
+    cursor = pattern.lastIndex;
+    changed = true;
+  }
+  if (!changed) return value;
+  output += value.slice(cursor);
+  return output;
 }

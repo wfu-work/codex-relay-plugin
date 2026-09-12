@@ -16525,6 +16525,20 @@ function projectRow(record2, row, notifications, threadId) {
   }
   record2.updatedAt = row.timestamp || record2.updatedAt;
 }
+function applyRolloutSnapshot(thread, snapshot, { includeTurns = false } = {}) {
+  if (!snapshot) return thread;
+  const turn = snapshot.currentTurn;
+  const currentTurn = { ...turn, items: [] };
+  const updatedAt = Date.parse(snapshot.updatedAt) / 1e3;
+  return {
+    ...thread,
+    path: snapshot.file,
+    status: { type: turn.status === "inProgress" ? "active" : "idle", activeFlags: [] },
+    currentTurn,
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : thread.updatedAt,
+    ...includeTurns ? { turns: snapshot.turns } : {}
+  };
+}
 
 // server/pending-interactions.js
 import { randomUUID } from "node:crypto";
@@ -16593,7 +16607,16 @@ var PendingInteractions = class {
 
 // server/composer-settings.js
 function composerSettings(value) {
-  const source = value?.threadSettings && typeof value.threadSettings === "object" ? value.threadSettings : value?.settings && typeof value.settings === "object" ? value.settings : value;
+  const thread = value?.thread && typeof value.thread === "object" ? value.thread : null;
+  const source = {
+    ...thread || {},
+    ...value && typeof value === "object" ? value : {},
+    ...thread?.settings && typeof thread.settings === "object" ? thread.settings : {},
+    ...thread?.composerSettings && typeof thread.composerSettings === "object" ? thread.composerSettings : {},
+    ...value?.settings && typeof value.settings === "object" ? value.settings : {},
+    ...value?.composerSettings && typeof value.composerSettings === "object" ? value.composerSettings : {},
+    ...value?.threadSettings && typeof value.threadSettings === "object" ? value.threadSettings : {}
+  };
   if (!source || typeof source !== "object") return null;
   const settings = {};
   if (typeof source.model === "string" && source.model.trim()) settings.model = source.model.trim();
@@ -17090,11 +17113,15 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
     if (!thread || typeof thread !== "object") return result;
     const snapshot = await this.#rollouts.read(thread);
     if (!snapshot) return result;
+    const projected = applyRolloutSnapshot(thread, snapshot, {
+      includeTurns: Array.isArray(thread.turns)
+    });
+    const projectedResult = result?.thread ? { ...result, thread: projected } : projected;
     for (const [method, params] of snapshot.notifications || []) {
       if (method === "thread/tokenUsage/updated") this.emit("notification", method, params);
     }
     const sourceTurns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
-    const targetTurns = Array.isArray(thread.turns) ? thread.turns : [];
+    const targetTurns = Array.isArray(projected.turns) ? projected.turns : [];
     const byId = new Map(targetTurns.map((turn) => [turn?.id, turn]));
     let changed = false;
     for (const source of sourceTurns) {
@@ -17110,8 +17137,8 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
         changed = true;
       }
     }
-    if (!changed) return result;
-    const hydrated = { ...thread, turns: targetTurns };
+    if (!changed) return projectedResult;
+    const hydrated = { ...projected, turns: targetTurns };
     return result?.thread ? { ...result, thread: hydrated } : hydrated;
   }
   /** Metadata-only persisted read used by snapshot reconciliation. */
@@ -20189,7 +20216,7 @@ function localPathFromValue(value) {
 async function parseLocalImage(value, declaredMime, allowedRoots) {
   const candidate = localPathFromValue(value);
   if (!candidate) return null;
-  const roots = await Promise.all([os5.tmpdir(), ...allowedRoots || []].filter((root) => typeof root === "string" && path11.isAbsolute(root)).map(async (root) => {
+  const roots = await Promise.all([os5.tmpdir(), "/tmp", ...allowedRoots || []].filter((root) => typeof root === "string" && path11.isAbsolute(root)).map(async (root) => {
     try {
       return await fs10.realpath(root);
     } catch {
@@ -20239,6 +20266,9 @@ async function prepareEventImages(value, upload, seen = /* @__PURE__ */ new Weak
   if (Array.isArray(value)) {
     return Promise.all(value.map((entry) => prepareEventImages(entry, upload, seen, options)));
   }
+  if (typeof value === "string") {
+    return prepareMarkdownImages(value, upload, options);
+  }
   if (!value || typeof value !== "object" || Buffer.isBuffer(value)) return value;
   if (seen.has(value)) return value;
   seen.add(value);
@@ -20284,6 +20314,34 @@ async function prepareEventImages(value, upload, seen = /* @__PURE__ */ new Weak
     delete result[sourceKey];
   }
   return result;
+}
+async function prepareMarkdownImages(value, upload, options) {
+  const pattern = /!\[([^\]]*)\]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^)]*["'])?\s*\)/g;
+  let match;
+  let cursor = 0;
+  let output = "";
+  let changed = false;
+  while ((match = pattern.exec(value)) !== null) {
+    const rawTarget = match[2].trim();
+    const target = rawTarget.startsWith("<") && rawTarget.endsWith(">") ? rawTarget.slice(1, -1).trim() : rawTarget;
+    const source = await parseLocalImage(target, "", options.allowedRoots);
+    if (!source) continue;
+    let replacement = "";
+    try {
+      const ready = await upload({ mime: source.mime, bytes: source.bytes });
+      replacement = ready?.resourceUrl || "";
+    } catch {
+    }
+    if (!replacement) replacement = await createThumbnailDataUrl(source.mime, source.bytes);
+    if (!replacement) continue;
+    output += value.slice(cursor, match.index);
+    output += `![${match[1]}](${replacement})`;
+    cursor = pattern.lastIndex;
+    changed = true;
+  }
+  if (!changed) return value;
+  output += value.slice(cursor);
+  return output;
 }
 
 // server/remote-control.js
@@ -21075,8 +21133,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error2) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error2.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260912223014";
-    const runningBuild = "1.0.0+codex.20260912223014:1789252227083";
+    const runningVersion = "1.0.0+codex.20260912232657";
+    const runningBuild = "1.0.0+codex.20260912232657:1789255630881";
     const diskBundle = runningBuild ? await fs12.readFile(path13.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -21456,8 +21514,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260912223014",
-      buildId: "1.0.0+codex.20260912223014:1789252227083",
+      version: "1.0.0+codex.20260912232657",
+      buildId: "1.0.0+codex.20260912232657:1789255630881",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -21617,7 +21675,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260912223014:1789252227083";
+  const expectedBuild = "1.0.0+codex.20260912232657:1789255630881";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

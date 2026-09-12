@@ -355,6 +355,10 @@ export class CommandRouter {
       result = await read.call(this.appServer, threadId, { ensureResumed: false });
       this.#assertThreadResultAllowed(result);
     }
+    // A desktop client can change composer settings without emitting an event
+    // to this Relay connection. Reconcile the cache from every authoritative
+    // read before returning it, so mobile reads never keep an older effort.
+    this.appServer.rememberThreadSettings?.(threadId, result);
     const settings = this.appServer.threadSettings?.(threadId);
     return settings ? { ...result, threadSettings: settings } : result;
   }

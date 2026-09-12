@@ -5,9 +5,14 @@ import { RelayError } from "./errors.js";
 export function composerSettings(value) {
   const source = value?.threadSettings && typeof value.threadSettings === "object"
     ? value.threadSettings
-    : value;
+    : value?.settings && typeof value.settings === "object"
+      ? value.settings
+      : value;
   if (!source || typeof source.model !== "string") return null;
-  const settings = { model: source.model, effort: source.effort ?? source.reasoningEffort ?? null };
+  const settings = {
+    model: source.model,
+    effort: source.effort ?? source.reasoningEffort ?? source.reasoning_effort ?? source.reasoning ?? null,
+  };
   for (const key of ["approvalPolicy", "approvalsReviewer", "activePermissionProfile"]) {
     if (source[key] !== undefined) settings[key] = source[key];
   }

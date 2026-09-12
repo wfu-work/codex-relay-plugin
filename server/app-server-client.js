@@ -601,6 +601,11 @@ export class AppServerClient extends EventEmitter {
     return value ? structuredClone(value) : null;
   }
 
+  /** Refresh the process-local composer cache from an authoritative read. */
+  rememberThreadSettings(threadId, value) {
+    this.#rememberThreadSettings(threadId, value);
+  }
+
   #rememberThreadSettings(threadId, value) {
     const settings = composerSettings(value);
     if (!settings || !threadId) return;

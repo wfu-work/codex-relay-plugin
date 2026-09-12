@@ -88,26 +88,25 @@ test("legacy resume polling never acquires the desktop writer and enforces acces
   assert.equal(denied.error.code, "PROJECT_NOT_ALLOWED");
 });
 
-test("shared reads subscribe only after project authorization, including unchanged snapshots", async () => {
+test("reads subscribe only after project authorization, including unchanged snapshots", async () => {
   const { router, appServer, config } = setup({ readOnly: true });
   const subscriptions = [];
-  appServer.isShared = () => true;
   appServer.subscribeThread = async id => subscriptions.push(id);
   for (const [i, type] of ["thread.read", "thread.status", "thread.resume", "thread.select"].entries()) {
-    const response = await router.handle(envelope({ type, threadId: "thread-1" }, `shared-${i}`));
+    const response = await router.handle(envelope({ type, threadId: "thread-1" }, `read-${i}`));
     assert.equal(response.success, true);
-    if (type === "thread.resume") assert.equal(response.result.syncMode, "live");
+    if (type === "thread.resume") assert.equal(response.result.syncMode, "snapshot");
   }
   assert.equal(subscriptions.length, 4);
   config.allowedProjects = ["/private"];
   for (const [i, type] of ["thread.read", "thread.status", "thread.resume", "thread.select"].entries()) {
-    const response = await router.handle(envelope({ type, threadId: "thread-1" }, `denied-shared-${i}`));
+    const response = await router.handle(envelope({ type, threadId: "thread-1" }, `denied-read-${i}`));
     assert.equal(response.error.code, "PROJECT_NOT_ALLOWED");
   }
   assert.equal(subscriptions.length, 4);
 });
 
-test("first shared status read returns runtime state after subscribing, not the old notLoaded snapshot", async () => {
+test("first status read returns runtime state after subscribing, not the old notLoaded snapshot", async () => {
   const { router, appServer } = setup();
   let subscribed = false;
   let reads = 0;

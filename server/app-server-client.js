@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
-import { SharedAppServerTransport, StdioAppServerTransport } from "./app-server-transport.js";
+import { StdioAppServerTransport } from "./app-server-transport.js";
 import { RolloutSnapshots } from "./rollout-snapshot.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
@@ -61,16 +61,15 @@ export class AppServerClient extends EventEmitter {
 
   status() {
     const config = this.#connectionConfig || this.configStore.get().codex;
-    const shared = config.connectionMode === "shared";
     const transport = this.#transport;
     return {
       state: this.state,
       version: this.version,
       pid: transport?.pid || null,
-      connectionMode: shared ? "shared" : "managed",
-      transport: shared ? (transport?.address?.kind || "unix") : "stdio",
-      ownsProcess: shared ? false : Boolean(transport?.pid),
-      endpoint: shared ? (transport?.address?.endpoint || config.appServerEndpoint || null) : null,
+      connectionMode: "managed",
+      transport: "stdio",
+      ownsProcess: Boolean(transport?.pid),
+      endpoint: null,
       reconnectAttempt: this.#retryAttempt,
       nextRetryAt: this.nextRetryAt || null,
       subscribedThreads: this.#resumedThreads.size,
@@ -83,18 +82,6 @@ export class AppServerClient extends EventEmitter {
   async checkAvailability() {
     const codex = this.configStore.get().codex;
     const executable = codex.executable || "codex";
-    if (codex.connectionMode === "shared") {
-      // Constructing the transport validates the endpoint without opening a
-      // second App Server. The version is learned from initialize below.
-      const shared = new SharedAppServerTransport(codex.appServerEndpoint);
-      return {
-        executable,
-        version: this.version,
-        connectionMode: "shared",
-        transport: shared.address.kind,
-        endpoint: shared.address.endpoint,
-      };
-    }
     const { stdout, stderr } = await execFileAsync(executable, ["--version"], { timeout: 10_000 });
     this.version = (stdout || stderr).trim();
     return { executable, version: this.version, connectionMode: "managed", transport: "stdio" };
@@ -131,9 +118,7 @@ export class AppServerClient extends EventEmitter {
     let transport;
     try {
       await this.checkAvailability();
-      transport = config.connectionMode === "shared"
-        ? new SharedAppServerTransport(config.appServerEndpoint)
-        : new StdioAppServerTransport(config);
+      transport = new StdioAppServerTransport(config);
       if (generation !== this.#generation || !this.#wanted) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
       this.#transport = transport;
       transport.on("message", line => { if (this.#transport === transport) this.#handleLine(line); });
@@ -346,7 +331,8 @@ export class AppServerClient extends EventEmitter {
       ...first,
       // Some App Server builds can repeat a historical thread at a page
       // boundary while the on-disk index is being updated. The thread id is
-      // the stable identity shared by desktop and Relay; collapse duplicates
+      // the thread id is the stable identity across paginated responses;
+      // collapse duplicates
       // before exposing the catalog so clients do not render two rows for one
       // task during eventual convergence.
       data: sortThreadList(
@@ -410,7 +396,7 @@ export class AppServerClient extends EventEmitter {
    * writer or subscribe this connection to future notifications.
    *
    * The official desktop client owns some threads through its private stdio
-   * App Server. Those threads are still readable from the shared Codex
+   * App Server. Those threads are still readable from the persisted Codex
    * history, but `thread/resume` is rejected with an active-writer error.
    * Relay reads used for reconciliation must therefore be side-effect free;
    * starting a new turn remains responsible for resuming the thread when

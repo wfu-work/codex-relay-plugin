@@ -20,7 +20,7 @@ const MAX_THREAD_ARRAY_ITEMS = 128;
 export class CommandRouter {
   #completed = new Map();
   #inflight = new Map();
-  #sharedReads = new Map();
+  #readRequests = new Map();
   #threadReadTails = new Map();
   #settingsWriteTails = new Map();
   #nextSnapshotRevision = 0;
@@ -89,7 +89,7 @@ export class CommandRouter {
         await this.#authorizeReplay(message, entry.response);
         return entry.response;
       }
-      const result = await this.#executeSharedRead(message.command, message);
+      const result = await this.#executeRead(message.command, message);
       const response = commandResult(config, message.requestId, result ?? {}, message.deviceId);
       try { await this.journal.finish(entry, response); }
       catch { throw new RelayError("COMMAND_OUTCOME_UNKNOWN", "后端可能已执行命令，但回执未能保存；请刷新任务核对结果"); }
@@ -112,7 +112,7 @@ export class CommandRouter {
     if (threadId) await this.#assertThreadAllowed(threadId);
   }
 
-  async #executeSharedRead(command, envelope) {
+  async #executeRead(command, envelope) {
     if (!['project.list', 'thread.list', 'thread.read', 'thread.status', 'thread.resume', 'sync.request', 'workspace.search', 'skills.list'].includes(command.type)) {
       return this.#execute(command, envelope);
     }
@@ -121,7 +121,7 @@ export class CommandRouter {
       threadId: envelope.threadId || null,
       command: stableValue(command),
     });
-    const existing = this.#sharedReads.get(key);
+    const existing = this.#readRequests.get(key);
     if (existing) return existing;
     // `thread.status` and `thread.read` are two projections of the same
     // persisted snapshot. Serialize them per thread so an older status read
@@ -134,12 +134,12 @@ export class CommandRouter {
     const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
       .then(() => this.#execute(command, envelope))
       .finally(() => {
-        if (this.#sharedReads.get(key) === pending) this.#sharedReads.delete(key);
+        if (this.#readRequests.get(key) === pending) this.#readRequests.delete(key);
         if (threadId && this.#threadReadTails.get(threadId) === pending) {
           this.#threadReadTails.delete(threadId);
         }
       });
-    this.#sharedReads.set(key, pending);
+    this.#readRequests.set(key, pending);
     if (threadId) this.#threadReadTails.set(threadId, pending);
     return pending;
   }
@@ -240,11 +240,11 @@ export class CommandRouter {
       case "thread.resume": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");
         // Legacy clients use resume as a subscription. Managed mode keeps
-        // snapshot-only behavior; shared mode subscribes after authorization.
+        // Resume is a local subscription in the managed App Server process.
         const readStatus = this.appServer.readThreadStatusSnapshot || this.appServer.readThreadStatus;
         const result = await this.#readSubscribedThread(threadId, readStatus);
         this.#selectedThreadId = threadId;
-        return { ...result, syncMode: this.appServer.isShared?.() ? "live" : "snapshot" };
+        return { ...result, syncMode: "snapshot" };
       }
       case "thread.select": {
         const threadId = requireString(command.threadId || envelope.threadId, "threadId");

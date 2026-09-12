@@ -341,9 +341,9 @@ App Server 会自动回退到 `updated_at`。`project.list` 返回官方项目�
 
 审批 `decision` 仅允许 `accept`、`acceptForSession`、`decline`、`cancel`。远程审批默认关闭。
 
-## 输入框设置双向同步
+## 输入框设置同步
 
-Flutter 和 Codex 桌面端连接同一个 shared App Server 时，同一任务的模型、推理等级和权限
+Flutter 和 Relay 的独立 App Server 会为同一任务同步模型、推理等级和权限
 通过 `thread/settings/update` 更新。Relay 将 `thread/settings/updated` 转为
 `thread.settings.updated`，并在 `thread.read` / `thread.status` 中附带 `threadSettings`
 快照和递增的 `revision`，用于首次打开任务、切换任务和断线恢复。
@@ -366,7 +366,7 @@ Flutter 的默认设置只作用于新任务，模型列表刷新和桌面端通
 
 历史响应、事件与图片上传共用有界发送队列，默认按 512 KiB/s 和每秒最多约 29 帧发送（单个大帧完整发送后等待其占用的字节时间）。队列最多 16 MiB / 512 帧，等待超过 25 秒会报告需要重新同步。同一图片在同一 Relay / Space / Endpoint 内合并并发上传，并在资源 URL 到期前复用。收到 `rate.limited` 后暂停 60 秒并降低发送速率；随后发生的 WebSocket 错误保留限流原因。连接更换时丢弃旧连接的排队响应，由客户端恢复同步，不重放过期请求。
 
-两端共享的前提是使用同一个 macOS 用户和同一个 Codex 数据目录（`CODEX_HOME`）。如果官方桌面端配置了自定义 `CODEX_HOME`，启动 Relay Connector 时也必须传入同一个值；不同数据目录不会共享任务历史。官方桌面端的任务列表是否立即刷新仍由桌面端 UI 决定，必要时手动刷新任务列表或重新打开项目即可看到 Relay 创建的任务。
+Relay 使用独立托管的 App Server 和配置的数据目录（`CODEX_HOME`）。桌面端保持自己的执行进程和会话；两者通过 Relay 的远程协议传递任务状态，不依赖桌面端内部 Socket。
 
 手机端保存最后确认的 `sequence`，重连后发送 `sync.request`。缓冲仍覆盖该序号时返回增量事件；序号缺口或首次同步时返回 thread 快照。事件缓冲只在内存中，插件重启后序号重置。
 

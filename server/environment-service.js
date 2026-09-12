@@ -84,15 +84,11 @@ export class EnvironmentService {
       plugin: { installedVersion: installed?.version || null, runningVersion, needsRestart, pid: process.pid, startedAt: status.connector?.startedAt, root: this.pluginRoot },
       desktop: { version: null, running: processes.state === "ok" ? processes.items.some(p => p.kind === "desktop" && p.scope === "same") : null },
       executable, processes,
-      backend: { mode: status.appServer?.connectionMode || "managed", state: status.appServer?.state || "unknown", pid: status.appServer?.pid ?? null, ownsProcess: status.appServer?.ownsProcess ?? null, endpoint: status.appServer?.endpoint || null, error: clean(status.appServer?.lastError) },
-      desktopBackend: status.appServer?.connectionMode === "shared"
-        ? { state: "detected", pid: null, transport: status.appServer?.transport || "unix", endpoint: status.appServer?.endpoint || null, attachable: true, reason: "Relay 与桌面端使用同一个 App Server 连接；插件不会拥有或停止该进程" }
-        : { state: "unavailable", pid: null, transport: null, endpoint: null, attachable: false, reason: "桌面版 App Server 不由 Relay 插件管理" },
+      backend: { mode: "managed", state: status.appServer?.state || "unknown", pid: status.appServer?.pid ?? null, ownsProcess: status.appServer?.ownsProcess ?? null, endpoint: null, error: clean(status.appServer?.lastError) },
+      desktopBackend: { state: "unavailable", pid: null, transport: null, endpoint: null, attachable: false, reason: "桌面版 App Server 与 Relay 独立运行；Relay 使用自己的托管进程" },
       remoteControl: remoteControl || { checkedAt, official: { state: "unavailable", installed: false, reason: "未检查" }, bridge: { state: "blocked", endpoint: null, attachable: false, reason: "未检查" } },
       relay: { state: status.relay?.state || "unknown", lastHeartbeat: status.relay?.lastHeartbeat || null, reconnectAttempt: status.relay?.reconnectAttempt || 0 },
-      sharing: status.appServer?.connectionMode === "shared"
-        ? { state: "shared", label: "已共享桌面 App Server", message: "Flutter Relay 和 Codex 桌面端通过同一个 App Server 实时共享会话与任务状态。" }
-        : { state: "managed", label: "插件托管已启用", message: "Codex App Server 由插件在本机管理，Relay 负责认证、外网桥接和协议转发。" },
+      sharing: { state: "managed", label: "插件托管已启用", message: "Codex App Server 由插件在本机管理，Relay 负责认证、外网桥接和协议转发。" },
       desktopTools: { state: "unchecked", label: "当前连接未验证", message: "桌面工具由 Codex App Server 本地配置管理。" },
       paths: { configDir, codexHome: this.codexHome },
       actions: { repair: { enabled: Boolean(repairAllowed), candidate: executable.candidate?.path || null, reason: !executable.candidate ? "尚未找到可用程序，请先安装 Codex 或在高级设置中指定路径" : !executable.needsRepair ? "当前已使用验证过的完整路径，无需修复" : !repairAllowed ? "后端正在使用中，请在停止执行后通过高级设置修改路径" : "验证候选路径后保存；自动连接已开启时会尝试恢复连接" } },

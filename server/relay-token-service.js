@@ -66,7 +66,7 @@ export class RelayTokenService {
       this.#refreshingKey = refreshKey;
       // Attach both handlers so replacing an in-flight refresh for a different
       // pairing never creates an unhandled rejection. Only the promise that is
-      // still current may clear the shared slot.
+      // still current may clear the in-flight refresh slot.
       refreshPromise.then(
         () => this.#clearRefresh(refreshPromise),
         () => this.#clearRefresh(refreshPromise),

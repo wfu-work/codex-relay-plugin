@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
-import { StdioAppServerTransport } from "./app-server-transport.js";
+import { SharedAppServerTransport, StdioAppServerTransport } from "./app-server-transport.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
 import { DesktopProjectPins } from "./desktop-project-pins.js";
@@ -54,14 +54,16 @@ export class AppServerClient extends EventEmitter {
 
   status() {
     const config = this.#connectionConfig || this.configStore.get().codex;
+    const shared = config.connectionMode === "shared";
+    const transport = this.#transport;
     return {
       state: this.state,
       version: this.version,
-      pid: this.#transport?.pid || null,
-      connectionMode: "managed",
-      transport: "stdio",
-      ownsProcess: Boolean(this.#transport?.pid),
-      endpoint: null,
+      pid: transport?.pid || null,
+      connectionMode: shared ? "shared" : "managed",
+      transport: shared ? (transport?.address?.kind || "unix") : "stdio",
+      ownsProcess: shared ? false : Boolean(transport?.pid),
+      endpoint: shared ? (transport?.address?.endpoint || config.appServerEndpoint || null) : null,
       reconnectAttempt: this.#retryAttempt,
       nextRetryAt: this.nextRetryAt || null,
       subscribedThreads: this.#resumedThreads.size,
@@ -72,7 +74,20 @@ export class AppServerClient extends EventEmitter {
   }
 
   async checkAvailability() {
-    const executable = this.configStore.get().codex.executable || "codex";
+    const codex = this.configStore.get().codex;
+    const executable = codex.executable || "codex";
+    if (codex.connectionMode === "shared") {
+      // Constructing the transport validates the endpoint without opening a
+      // second App Server. The version is learned from initialize below.
+      const shared = new SharedAppServerTransport(codex.appServerEndpoint);
+      return {
+        executable,
+        version: this.version,
+        connectionMode: "shared",
+        transport: shared.address.kind,
+        endpoint: shared.address.endpoint,
+      };
+    }
     const { stdout, stderr } = await execFileAsync(executable, ["--version"], { timeout: 10_000 });
     this.version = (stdout || stderr).trim();
     return { executable, version: this.version, connectionMode: "managed", transport: "stdio" };
@@ -109,7 +124,9 @@ export class AppServerClient extends EventEmitter {
     let transport;
     try {
       await this.checkAvailability();
-      transport = new StdioAppServerTransport(config);
+      transport = config.connectionMode === "shared"
+        ? new SharedAppServerTransport(config.appServerEndpoint)
+        : new StdioAppServerTransport(config);
       if (generation !== this.#generation || !this.#wanted) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
       this.#transport = transport;
       transport.on("message", line => { if (this.#transport === transport) this.#handleLine(line); });

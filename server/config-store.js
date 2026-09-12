@@ -30,6 +30,10 @@ export function defaultConfig() {
     codex: {
       executable: "codex",
       autoStartAppServer: true,
+      // managed starts a private stdio process; shared attaches to the
+      // desktop-owned App Server endpoint and never starts a process.
+      connectionMode: "managed",
+      appServerEndpoint: "",
       defaultWorkingDirectory: "",
     },
     permissions: { ...DEFAULT_PERMISSIONS },
@@ -210,7 +214,7 @@ function mergeConfig(base, patch) {
     ...base,
     ...patch,
     relay: { ...base.relay, ...relayPatch, spaceId },
-    codex: (() => { const next = { ...base.codex, ...(patch.codex || {}) }; delete next.connectionMode; delete next.appServerEndpoint; return next; })(),
+    codex: { ...base.codex, ...(patch.codex || {}) },
     permissions: { ...base.permissions, ...(patch.permissions || {}) },
     allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects,
   };
@@ -271,6 +275,29 @@ export function validateConfig(config) {
   if (typeof config.relay.autoConnect !== "boolean") throw new Error("自动连接配置必须是布尔值");
   if (!config.codex || typeof config.codex !== "object") throw new Error("Codex 配置无效");
   if (typeof config.codex.executable !== "string" || !config.codex.executable.trim()) throw new Error("Codex 命令无效");
+  const connectionMode = config.codex.connectionMode || "managed";
+  if (!["managed", "shared"].includes(connectionMode)) throw new Error("App Server 连接模式无效");
+  config.codex.connectionMode = connectionMode;
+  if (connectionMode === "shared") {
+    if (typeof config.codex.appServerEndpoint !== "string" || !config.codex.appServerEndpoint.trim()) {
+      throw new Error("共享模式必须配置 App Server 地址");
+    }
+    const endpoint = config.codex.appServerEndpoint.trim();
+    if (endpoint.startsWith("unix://")) {
+      const socketPath = endpoint.slice("unix://".length);
+      if (!path.isAbsolute(socketPath) || /[\0\r\n?#]/.test(socketPath)) throw new Error("共享 Socket 必须使用绝对路径");
+    } else {
+      let parsed;
+      try { parsed = new URL(endpoint); } catch { throw new Error("共享后端地址必须使用 ws://、wss:// 或 unix://"); }
+      if (!["ws:", "wss:"].includes(parsed.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) {
+        throw new Error("共享 App Server 仅支持本机 ws 地址或 unix Socket");
+      }
+      if (parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error("共享后端地址不能包含凭据、query 或 hash");
+    }
+    config.codex.appServerEndpoint = endpoint;
+  } else if (config.codex.appServerEndpoint == null) {
+    config.codex.appServerEndpoint = "";
+  }
   if (typeof config.codex.defaultWorkingDirectory !== "string") throw new Error("默认工作目录无效");
   if (config.codex.defaultWorkingDirectory && !path.isAbsolute(config.codex.defaultWorkingDirectory)) {
     throw new Error("默认工作目录必须是绝对路径");

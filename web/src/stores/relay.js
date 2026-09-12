@@ -30,6 +30,8 @@ export const relayState = reactive({
     heartbeatSeconds: 20,
     reconnectMaxSeconds: 30,
     codexExecutable: 'codex',
+    connectionMode: 'managed',
+    appServerEndpoint: '',
     defaultWorkingDirectory: '',
     autoStartAppServer: true,
     readOnly: false,
@@ -196,6 +198,8 @@ function applyConfig(config) {
   relayState.form.heartbeatSeconds = config.relay?.heartbeatSeconds ?? 20;
   relayState.form.reconnectMaxSeconds = config.relay?.reconnectMaxSeconds ?? 30;
   relayState.form.codexExecutable = config.codex?.executable || 'codex';
+  relayState.form.connectionMode = config.codex?.connectionMode || 'managed';
+  relayState.form.appServerEndpoint = config.codex?.appServerEndpoint || '';
   relayState.form.defaultWorkingDirectory = config.codex?.defaultWorkingDirectory || '';
   relayState.form.autoStartAppServer = Boolean(config.codex?.autoStartAppServer);
   relayState.form.readOnly = Boolean(config.readOnly);
@@ -227,6 +231,8 @@ function collectConfig() {
     },
     codex: {
       executable: relayState.form.codexExecutable.trim() || 'codex',
+      connectionMode: relayState.form.connectionMode,
+      appServerEndpoint: relayState.form.appServerEndpoint.trim(),
       defaultWorkingDirectory: relayState.form.defaultWorkingDirectory.trim(),
       autoStartAppServer: relayState.form.autoStartAppServer,
     },

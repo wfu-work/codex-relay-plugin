@@ -5478,15 +5478,13 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
       }
     });
     this.appServer.on("notification", (method, params) => {
-      const event = normalizeCodexNotification(method, params);
-      if (!event) {
-        if (!this.#unsupportedNotificationMethods.has(method)) {
-          this.#unsupportedNotificationMethods.add(method);
-          this.logger.warn("app-server", "\u5FFD\u7565\u4E0D\u652F\u6301\u7684 Codex \u901A\u77E5", { method });
-        }
-        return;
-      }
-      this.#enqueueEvent(event, params);
+      this.#forwardNotificationAfterReconciliation(method, params).catch((error) => {
+        this.logger.warn("app-server", "\u901A\u77E5\u72B6\u6001\u6821\u9A8C\u5931\u8D25\uFF0C\u7EE7\u7EED\u8F6C\u53D1\u539F\u59CB\u901A\u77E5", {
+          method,
+          message: error.message
+        });
+        this.#forwardNormalizedNotification(method, params);
+      });
     });
     this.appServer.on("approval", (approval) => {
       this.#enqueueEvent({ type: "approval.requested", ...approval }, approval.params);
@@ -5494,6 +5492,61 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
     this.appServer.on("interactionResolved", (interaction) => {
       this.#enqueueEvent({ type: "interaction.resolved", ...interaction }, interaction.params);
     });
+  }
+  async #forwardNotificationAfterReconciliation(method, params) {
+    const threadId = params?.threadId || params?.thread?.id || params?.turn?.threadId;
+    const terminalMethod = method === "turn/completed";
+    const statusValue = params?.status || params?.thread?.status;
+    const statusType = statusValue?.type || statusValue?.state || statusValue;
+    const terminalStatus = typeof statusType === "string" && [
+      "interrupted",
+      "aborted",
+      "cancelled",
+      "canceled",
+      "failed",
+      "error"
+    ].includes(statusType.trim().toLowerCase());
+    const statusMethod = method === "thread/status/changed" && terminalStatus;
+    if ((terminalMethod || statusMethod) && threadId) {
+      const snapshot = await this.appServer.readThreadStatus(threadId, { ensureResumed: false });
+      const thread = snapshot?.thread || snapshot;
+      const currentTurn = thread?.currentTurn || thread?.current_turn || thread?.turn;
+      const currentStatusValue = currentTurn?.status || thread?.status;
+      const currentStatus = currentStatusValue?.type || currentStatusValue?.state || currentStatusValue;
+      const currentIsActive = typeof currentStatus === "string" && [
+        "active",
+        "running",
+        "inprogress",
+        "in_progress",
+        "processing",
+        "queued",
+        "starting"
+      ].includes(currentStatus.trim().toLowerCase());
+      const eventTurnId = params?.turnId || params?.turn?.id;
+      const currentTurnId = currentTurn?.id || thread?.currentTurnId || thread?.current_turn_id;
+      const staleTerminal = currentIsActive && (eventTurnId && currentTurnId && eventTurnId !== currentTurnId || !eventTurnId && currentTurnId);
+      if (staleTerminal) {
+        this.logger.info("app-server", "\u5FFD\u7565\u8986\u76D6\u8FDB\u884C\u4E2D\u4EFB\u52A1\u7684\u65E7\u7EC8\u6B62\u901A\u77E5", {
+          method,
+          threadId,
+          eventTurnId,
+          currentTurnId
+        });
+        return;
+      }
+    }
+    this.#forwardNormalizedNotification(method, params);
+  }
+  #forwardNormalizedNotification(method, params) {
+    const event = normalizeCodexNotification(method, params);
+    if (!event) {
+      if (!this.#unsupportedNotificationMethods.has(method)) {
+        this.#unsupportedNotificationMethods.add(method);
+        this.logger.warn("app-server", "\u5FFD\u7565\u4E0D\u652F\u6301\u7684 Codex \u901A\u77E5", { method });
+      }
+      return;
+    }
+    this.#enqueueEvent(event, params);
   }
   async #forwardEvent(event, params = {}, eventStreamId = this.eventStreamId) {
     if (!await this.#isEventAllowed(params)) return;
@@ -5645,8 +5698,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260912232657";
-    const runningBuild = "1.0.0+codex.20260912232657:1789255630881";
+    const runningVersion = "1.0.0+codex.20260912234611";
+    const runningBuild = "1.0.0+codex.20260912234611:1789256784798";
     const diskBundle = runningBuild ? await fs12.readFile(path13.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -6026,8 +6079,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260912232657",
-      buildId: "1.0.0+codex.20260912232657:1789255630881",
+      version: "1.0.0+codex.20260912234611",
+      buildId: "1.0.0+codex.20260912234611:1789256784798",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);

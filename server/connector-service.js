@@ -440,17 +440,18 @@ export class ConnectorService extends EventEmitter {
       }
     });
     this.appServer.on("notification", (method, params) => {
-      const event = normalizeCodexNotification(method, params);
-      if (!event) {
-        // Keep protocol drift visible without flooding the log when Codex
-        // repeats an unsupported notification on every turn.
-        if (!this.#unsupportedNotificationMethods.has(method)) {
-          this.#unsupportedNotificationMethods.add(method);
-          this.logger.warn("app-server", "忽略不支持的 Codex 通知", { method });
-        }
-        return;
-      }
-      this.#enqueueEvent(event, params);
+      // A private Desktop App Server and the Relay App Server can briefly
+      // disagree about the latest turn. Validate terminal/status patches
+      // against the shared rollout before forwarding them; otherwise a late
+      // `interrupted` patch from the previous turn can overwrite a live
+      // Desktop turn on the phone.
+      this.#forwardNotificationAfterReconciliation(method, params).catch(error => {
+        this.logger.warn("app-server", "通知状态校验失败，继续转发原始通知", {
+          method,
+          message: error.message,
+        });
+        this.#forwardNormalizedNotification(method, params);
+      });
     });
     this.appServer.on("approval", (approval) => {
       this.#enqueueEvent({ type: "approval.requested", ...approval }, approval.params);
@@ -458,6 +459,59 @@ export class ConnectorService extends EventEmitter {
     this.appServer.on("interactionResolved", (interaction) => {
       this.#enqueueEvent({ type: "interaction.resolved", ...interaction }, interaction.params);
     });
+  }
+
+  async #forwardNotificationAfterReconciliation(method, params) {
+    const threadId = params?.threadId || params?.thread?.id || params?.turn?.threadId;
+    const terminalMethod = method === "turn/completed";
+    const statusValue = params?.status || params?.thread?.status;
+    const statusType = statusValue?.type || statusValue?.state || statusValue;
+    const terminalStatus = typeof statusType === "string" && [
+      "interrupted", "aborted", "cancelled", "canceled", "failed", "error",
+    ].includes(statusType.trim().toLowerCase());
+    const statusMethod = method === "thread/status/changed" && terminalStatus;
+
+    if ((terminalMethod || statusMethod) && threadId) {
+      const snapshot = await this.appServer.readThreadStatus(threadId, { ensureResumed: false });
+      const thread = snapshot?.thread || snapshot;
+      const currentTurn = thread?.currentTurn || thread?.current_turn || thread?.turn;
+      const currentStatusValue = currentTurn?.status || thread?.status;
+      const currentStatus = currentStatusValue?.type || currentStatusValue?.state || currentStatusValue;
+      const currentIsActive = typeof currentStatus === "string" && [
+        "active", "running", "inprogress", "in_progress", "processing", "queued", "starting",
+      ].includes(currentStatus.trim().toLowerCase());
+      const eventTurnId = params?.turnId || params?.turn?.id;
+      const currentTurnId = currentTurn?.id || thread?.currentTurnId || thread?.current_turn_id;
+      // If rollout reconciliation exposes a different active turn, this
+      // terminal notification belongs to stale App Server history. Ignore it
+      // and let the subsequent snapshot/turn.started event carry the live
+      // state. A terminal event for the same turn remains authoritative.
+      const staleTerminal = currentIsActive && (
+        (eventTurnId && currentTurnId && eventTurnId !== currentTurnId) ||
+        (!eventTurnId && currentTurnId)
+      );
+      if (staleTerminal) {
+        this.logger.info("app-server", "忽略覆盖进行中任务的旧终止通知", {
+          method, threadId, eventTurnId, currentTurnId,
+        });
+        return;
+      }
+    }
+    this.#forwardNormalizedNotification(method, params);
+  }
+
+  #forwardNormalizedNotification(method, params) {
+    const event = normalizeCodexNotification(method, params);
+    if (!event) {
+      // Keep protocol drift visible without flooding the log when Codex
+      // repeats an unsupported notification on every turn.
+      if (!this.#unsupportedNotificationMethods.has(method)) {
+        this.#unsupportedNotificationMethods.add(method);
+        this.logger.warn("app-server", "忽略不支持的 Codex 通知", { method });
+      }
+      return;
+    }
+    this.#enqueueEvent(event, params);
   }
 
   async #forwardEvent(event, params = {}, eventStreamId = this.eventStreamId) {

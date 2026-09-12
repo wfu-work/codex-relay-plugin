@@ -2,8 +2,7 @@ import { EventEmitter } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
-import { SharedAppServerTransport, StdioAppServerTransport, parseAppServerEndpoint } from "./app-server-transport.js";
-import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
+import { StdioAppServerTransport } from "./app-server-transport.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
 import { DesktopProjectPins } from "./desktop-project-pins.js";
@@ -34,11 +33,7 @@ export class AppServerClient extends EventEmitter {
   #resumeRetryAt = new Map();
   #threadSettings = new Map();
   #settingsRevision = 0;
-  #rollouts = new RolloutSnapshots();
   #projectPins;
-  #observedThreads = new Map();
-  #rolloutTimer = null;
-  #pollingRollouts = false;
   static MAX_RESUMED_THREADS = 1000;
 
   static APPROVAL_METHODS = new Set([
@@ -59,15 +54,14 @@ export class AppServerClient extends EventEmitter {
 
   status() {
     const config = this.#connectionConfig || this.configStore.get().codex;
-    const shared = config.connectionMode === "shared";
     return {
       state: this.state,
       version: this.version,
       pid: this.#transport?.pid || null,
-      connectionMode: config.connectionMode || "managed",
-      transport: shared ? parseAppServerEndpoint(config.appServerEndpoint).kind : "stdio",
-      ownsProcess: !shared && Boolean(this.#transport?.pid),
-      endpoint: shared ? config.appServerEndpoint : null,
+      connectionMode: "managed",
+      transport: "stdio",
+      ownsProcess: Boolean(this.#transport?.pid),
+      endpoint: null,
       reconnectAttempt: this.#retryAttempt,
       nextRetryAt: this.nextRetryAt || null,
       subscribedThreads: this.#resumedThreads.size,
@@ -78,29 +72,17 @@ export class AppServerClient extends EventEmitter {
   }
 
   async checkAvailability() {
-    const config = this.configStore.get().codex;
-    if (config.connectionMode === "shared") {
-      const probe = new SharedAppServerTransport(config.appServerEndpoint, this.options);
-      // A transport probe does not initialize, subscribe, or stop the server.
-      probe.on("closed", () => {});
-      try { await probe.open(); return { connectionMode: "shared", endpoint: probe.address.endpoint, version: this.version }; }
-      finally { await probe.close(); }
-    }
     const executable = this.configStore.get().codex.executable || "codex";
     const { stdout, stderr } = await execFileAsync(executable, ["--version"], { timeout: 10_000 });
     this.version = (stdout || stderr).trim();
-    return { executable, version: this.version };
-  }
-
-  isShared() {
-    return (this.#connectionConfig || this.configStore.get().codex).connectionMode === "shared";
+    return { executable, version: this.version, connectionMode: "managed", transport: "stdio" };
   }
 
   async start() {
     this.#wanted = true;
     if (this.#starting) return this.#starting;
     if (this.state === "ready") return this.status();
-    if (this.#retryTimer) throw new RelayError("APP_SERVER_UNAVAILABLE", "共享 App Server 正在重连，请稍后重试");
+    if (this.#retryTimer) throw new RelayError("APP_SERVER_UNAVAILABLE", "Codex App Server 正在重连，请稍后重试");
     const generation = ++this.#generation;
     const pending = this.#startInternal(generation);
     this.#starting = pending;
@@ -119,40 +101,33 @@ export class AppServerClient extends EventEmitter {
 
   async #startInternal(generation) {
     const config = this.configStore.get().codex;
-    this.#connectionConfig = { ...config, connectionMode: config.connectionMode || "managed" };
+    this.#connectionConfig = { ...config };
     this.state = "starting";
     this.lastError = null;
     this.version = null;
     this.#resetConnectionState();
     let transport;
     try {
-      if (this.isShared()) {
-        // No availability probe or spawn: a missing shared server must never
-        // silently create another writer, even if a local CLI is installed.
-        transport = new SharedAppServerTransport(config.appServerEndpoint, this.options);
-      } else {
-        await this.checkAvailability();
-        transport = new StdioAppServerTransport(config);
-      }
+      await this.checkAvailability();
+      transport = new StdioAppServerTransport(config);
       if (generation !== this.#generation || !this.#wanted) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
       this.#transport = transport;
       transport.on("message", line => { if (this.#transport === transport) this.#handleLine(line); });
       transport.on("log", message => { if (message) this.logger.info("app-server", message); });
       transport.on("closed", error => this.#handleExit(transport, error));
-      this.logger.info("app-server", this.isShared() ? "正在连接共享 App Server" : "正在启动 Codex App Server");
+      this.logger.info("app-server", "正在启动 Codex App Server");
       await transport.open();
       if (generation !== this.#generation || this.#transport !== transport) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
       const initialized = await this.request("initialize", {
         clientInfo: { name: "codex-relay-plugin", title: "Codex Relay Plugin", version: "1.0.0" },
         capabilities: { experimentalApi: true },
       }, this.options.initializeTimeoutMs || 15000);
-      if (this.isShared() && (!initialized || typeof initialized !== "object")) throw new Error("App Server initialize 响应无效");
       this.notify("initialized", {});
-      if (this.isShared()) this.version = initialized.userAgent || initialized.serverInfo?.version || null;
+      this.version = this.version || initialized?.serverInfo?.version || initialized?.userAgent || null;
       // Restore only explicit, authorized subscriptions. Never replay turns
       // whose responses may have been lost on the previous connection.
       for (const id of [...this.#subscriptions]) {
-        if (generation !== this.#generation || this.#transport !== transport) throw new Error("共享连接恢复已取消");
+        if (generation !== this.#generation || this.#transport !== transport) throw new Error("App Server 连接恢复已取消");
         try { await this.resumeThread(id); }
         catch (error) {
           if (!transport.writable) throw error;
@@ -181,7 +156,7 @@ export class AppServerClient extends EventEmitter {
   }
 
   #scheduleReconnect() {
-    if (!this.#wanted || !this.isShared()) return;
+    if (!this.#wanted) return;
     this.state = "reconnecting";
     if (this.#retryTimer) return;
     const delay = Math.min(this.options.reconnectMaxMs || 30000,
@@ -192,7 +167,7 @@ export class AppServerClient extends EventEmitter {
       this.nextRetryAt = null;
       // close/open cleanup may still be unwinding after a failed handshake.
       if (this.#starting) { this.#scheduleReconnect(); return; }
-      this.start().catch(error => this.logger.warn("app-server", "共享后端重连失败", { message: error.message }));
+      this.start().catch(error => this.logger.warn("app-server", "App Server 重连失败", { message: error.message }));
     }, delay);
     this.#retryTimer.unref();
   }
@@ -210,10 +185,6 @@ export class AppServerClient extends EventEmitter {
     this.#retryTimer = null;
     this.#retryAttempt = 0;
     this.nextRetryAt = null;
-    clearInterval(this.#rolloutTimer);
-    this.#rolloutTimer = null;
-    this.#observedThreads.clear();
-    this.#rollouts.clear();
     this.#subscriptions.clear();
     this.#resetConnectionState();
     const transport = this.#transport;
@@ -346,12 +317,6 @@ export class AppServerClient extends EventEmitter {
         cursor = nextCursor;
       }
     }
-    // Keep the visible recent catalog in step with foreign Desktop writers.
-    // Other rows are hydrated when selected; do not scan every old transcript
-    // on each catalog refresh.
-    for (let index = 0; index < Math.min(data.length, 5); index += 1) {
-      data[index] = await this.#reconcileRollout(data[index], false);
-    }
     return {
       ...first,
       // Some App Server builds can repeat a historical thread at a page
@@ -360,7 +325,7 @@ export class AppServerClient extends EventEmitter {
       // before exposing the catalog so clients do not render two rows for one
       // task during eventual convergence.
       data: sortThreadList(
-        dedupeThreadList(data.map((thread) => this.#observedThreads.get(thread.id)?.projected || thread)),
+        dedupeThreadList(data),
         requestedSortDirection,
         effectiveSortKey,
       ),
@@ -434,7 +399,7 @@ export class AppServerClient extends EventEmitter {
       this.#paginatedThreads = true;
       return this.#readPaginatedThread(id);
     });
-    return this.#reconcileRollout(result, true);
+    return result;
   }
 
   // Unlike readThread(), this explicitly disables includeTurns. Codex still
@@ -447,57 +412,9 @@ export class AppServerClient extends EventEmitter {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
     const result = await this.request("thread/read", { threadId: id, includeTurns: false });
-    return this.#reconcileRollout(result, false);
+    return result;
   }
 
-  async #reconcileRollout(result, includeTurns) {
-    const thread = result?.thread || result;
-    // This process's in-memory state is authoritative for its own writers.
-    // A foreign notLoaded thread needs the latest Desktop rollout instead.
-    if (this.isShared() || thread?.status?.type !== "notLoaded" || this.#resumedThreads.has(thread.id)) return result;
-    const snapshot = await this.#rollouts.read(thread);
-    if (!snapshot) return result;
-    const observed = this.#observedThreads.get(thread.id);
-    for (const [method, params] of snapshot.notifications) this.emit("notification", method, params);
-    const projected = applyRolloutSnapshot(thread, snapshot, { includeTurns });
-    this.#observedThreads.delete(thread.id);
-    this.#observedThreads.set(thread.id, { thread: { ...thread, turns: [] }, projected: { ...projected, turns: [] },
-      touchedAt: Date.now(), updatedAt: snapshot.updatedAt });
-    while (this.#observedThreads.size > 8) this.#observedThreads.delete(this.#observedThreads.keys().next().value);
-    if (observed && observed.updatedAt !== snapshot.updatedAt) {
-      this.emit("notification", "thread/status/changed", { threadId: thread.id, turnId: snapshot.currentTurn.id,
-        thread: { ...projected, turns: [] } });
-    }
-    this.#rolloutTimer ??= setInterval(() => this.#pollRollouts(), 1000);
-    this.#rolloutTimer.unref();
-    return result?.thread ? { ...result, thread: projected } : projected;
-  }
-
-  async #pollRollouts() {
-    if (this.#pollingRollouts) return;
-    this.#pollingRollouts = true;
-    try {
-      for (const [id, observed] of [...this.#observedThreads]) {
-        if (Date.now() - observed.touchedAt > 60_000 || this.#resumedThreads.has(id)) {
-          this.#observedThreads.delete(id);
-          continue;
-        }
-        const snapshot = await this.#rollouts.read(observed.thread);
-        if (!this.#rolloutTimer || this.#observedThreads.get(id) !== observed) continue;
-        if (!snapshot) continue;
-        for (const [method, params] of snapshot.notifications) this.emit("notification", method, params);
-        if (observed.updatedAt !== snapshot.updatedAt) {
-          observed.updatedAt = snapshot.updatedAt;
-          observed.projected = applyRolloutSnapshot(observed.thread, snapshot);
-          this.emit("notification", "thread/status/changed", { threadId: id, turnId: snapshot.currentTurn.id, thread: observed.projected });
-        }
-      }
-      if (!this.#observedThreads.size) {
-        clearInterval(this.#rolloutTimer);
-        this.#rolloutTimer = null;
-      }
-    } finally { this.#pollingRollouts = false; }
-  }
 
   /** Metadata-only persisted read used by snapshot reconciliation. */
   readThreadStatusSnapshot(threadId) {
@@ -527,7 +444,7 @@ export class AppServerClient extends EventEmitter {
         this.#resumeRetryAt.delete(id);
       })
       .catch((error) => {
-        if (this.isShared() || !isActiveWriterConflict(error)) throw error;
+        if (!isActiveWriterConflict(error)) throw error;
         // A different Codex client currently owns the thread writer. The
         // persisted read below is still useful. Explicit subscription probes
         // back off for a minute; ordinary reads never enter this path.
@@ -545,25 +462,20 @@ export class AppServerClient extends EventEmitter {
     return pending;
   }
 
-  // Call only after the command router has checked project access. Raw
-  // snapshot/status reads remain side-effect free in both modes.
-  async subscribeThread(threadId) {
-    if (!this.isShared()) return false;
-    const id = normalizeThreadId(threadId);
-    const alreadySubscribed = this.#resumedThreads.has(id);
-    await this.ensureThreadResumed(id);
-    return !alreadySubscribed && this.#resumedThreads.has(id);
+  // Call only after the command router has checked project access.
+  async subscribeThread(_threadId) {
+    // Historical snapshots remain side-effect free; turns are resumed lazily
+    // by the write path when this plugin becomes the active writer.
+    return false;
   }
 
   #rememberResumedThread(id) {
-    if (this.isShared()) {
-      this.#subscriptions.delete(id);
-      this.#subscriptions.add(id);
-      while (this.#subscriptions.size > AppServerClient.MAX_RESUMED_THREADS) {
-        const retired = this.#subscriptions.values().next().value;
-        this.#subscriptions.delete(retired);
-        this.request("thread/unsubscribe", { threadId: retired }).catch(() => {});
-      }
+    this.#subscriptions.delete(id);
+    this.#subscriptions.add(id);
+    while (this.#subscriptions.size > AppServerClient.MAX_RESUMED_THREADS) {
+      const retired = this.#subscriptions.values().next().value;
+      this.#subscriptions.delete(retired);
+      this.request("thread/unsubscribe", { threadId: retired }).catch(() => {});
     }
     this.#resumedThreads.delete(id);
     this.#resumedThreads.add(id);
@@ -682,6 +594,7 @@ export class AppServerClient extends EventEmitter {
     }
   }
 
+
   async updateThreadSettings(threadId, patch) {
     const id = normalizeThreadId(threadId);
     await this.ensureThreadResumed(id);
@@ -696,7 +609,6 @@ export class AppServerClient extends EventEmitter {
 
   async startTurn({ threadId, text, cwd, model, effort, images = [] }) {
     const id = normalizeThreadId(threadId);
-    if (this.isShared()) await this.ensureThreadResumed(id);
     const params = {
       threadId: id,
       input: [...(text ? [{ type: "text", text }] : []), ...images],
@@ -737,7 +649,7 @@ export class AppServerClient extends EventEmitter {
       while (true) {
         if (generation !== this.#generation || !this.#transport?.writable) throw new RelayError("APP_SERVER_UNAVAILABLE", "停止请求未确认，请恢复连接后检查任务状态");
         const recent = await this.request("thread/turns/list", { threadId, limit: 2, sortDirection: "desc", itemsView: "notLoaded" }).catch(async error => {
-          if (this.isShared()) throw error;
+          if (!isActiveWriterConflict(error)) throw error;
           return { data: (await this.readThreadSnapshot(threadId)).thread?.turns || [] };
         });
         const turns = recent.data || [];
@@ -801,7 +713,7 @@ export class AppServerClient extends EventEmitter {
       return;
     }
     if (message.id !== undefined && message.method) {
-      if (!this.isShared() && !AppServerClient.APPROVAL_METHODS.has(message.method) && !["tool/requestUserInput", "item/tool/requestUserInput"].includes(message.method)) {
+      if (!AppServerClient.APPROVAL_METHODS.has(message.method) && !["tool/requestUserInput", "item/tool/requestUserInput"].includes(message.method)) {
         this.logger.warn("app-server", "拒绝不受支持的 App Server 客户端请求", { method: message.method });
         this.#write({
           jsonrpc: "2.0",
@@ -810,8 +722,6 @@ export class AppServerClient extends EventEmitter {
         });
         return;
       }
-      // Shared requests are broadcast. An observer must not reject a request
-      // another client can answer: the first response resolves it for everyone.
       if (!message.params?.threadId) return;
       const entry = this.#interactions.add(message);
       this.emit("approval", this.#interactions.public(entry, this.configStore.get()));

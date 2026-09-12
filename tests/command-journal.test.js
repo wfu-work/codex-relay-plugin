@@ -38,8 +38,6 @@ test('pending intent survives a crash and returns unknown instead of repeating e
   await assert.rejects(new CommandJournal(f.dir).begin(f.config, f.message, 'fingerprint'), { code: 'COMMAND_OUTCOME_UNKNOWN' });
   await assert.rejects(new CommandJournal(f.dir).begin(f.config, f.message, 'changed'), { code: 'REQUEST_ID_REUSED' });
   assert.ok(await journal.begin(f.config, { ...f.message, deviceId: 'second-phone' }, 'fingerprint'));
-  f.config.codex.appServerEndpoint = 'unix:///tmp/other.sock';
-  assert.ok(await journal.begin(f.config, f.message, 'fingerprint'));
 });
 
 test('unavailable journal fails closed before any mutation', async t => {

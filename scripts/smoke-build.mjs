@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readRuntimeInfo } from "../server/runtime.js";
-import { WebSocketServer } from "ws";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.join(projectRoot, "plugins", "codex-relay-plugin");
@@ -39,7 +38,6 @@ const transport = new StdioClientTransport({
   stderr: "pipe",
 });
 const client = new Client({ name: "codex-relay-build-smoke", version: "1.0.0" });
-let sharedBackend;
 
 try {
   await client.connect(transport);
@@ -57,24 +55,9 @@ try {
   if (remoteStatus.isError || !remoteStatus.content?.some((item) => item.type === "text")) {
     throw new Error("relay_remote_control_status 没有返回有效文本结果");
   }
-  sharedBackend = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  await new Promise(resolve => sharedBackend.once("listening", resolve));
-  const configured = await client.callTool({ name: "relay_update_config", arguments: {
-    connectionMode: "shared", appServerEndpoint: `ws://127.0.0.1:${sharedBackend.address().port}`,
-  } });
-  if (configured.isError) throw new Error("生产包无法保存共享后端配置");
-  const diagnostics = await client.callTool({ name: "relay_diagnostics", arguments: {} });
-  const data = JSON.parse(diagnostics.content.find(item => item.type === "text").text);
-  if (diagnostics.isError || !data.checks.some(check => check.name === "codex" && check.ok && check.connectionMode === "shared")) {
-    throw new Error("生产包共享 WebSocket 连接诊断失败");
-  }
   console.log(`生产 MCP 冒烟测试通过（${actualTools.length} 个工具）`);
 } finally {
   await client.close().catch(() => {});
-  if (sharedBackend) {
-    for (const socket of sharedBackend.clients) socket.terminate();
-    await new Promise(resolve => sharedBackend.close(resolve));
-  }
   const agent = await readRuntimeInfo(configDir);
   if (agent?.pid && agent.pid !== process.pid) {
     try { process.kill(agent.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }

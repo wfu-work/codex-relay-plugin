@@ -4,37 +4,32 @@ import { message } from 'ant-design-vue';
 import { CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, ToolOutlined } from '@ant-design/icons-vue';
 import { useEnvironment } from '../stores/environment.js';
 import { useRelay } from '../stores/relay.js';
-import { useMigration } from '../stores/migration.js';
-import { describeEnvironmentError, migrationPhaseLabels } from '../lib/environment.js';
-import MigrationPreparationPanel from '../components/MigrationPreparationPanel.vue';
+import { describeEnvironmentError } from '../lib/environment.js';
 
 const { state, stale, refresh, repair, start, stop } = useEnvironment();
 const { state: relay, api } = useRelay();
 const maintenanceBusy = ref('');
-const { open: openMigration } = useMigration();
 const data = computed(() => state.data);
 const cards = computed(() => {
   if (!data.value) return [];
   const d = data.value;
   return [
     { title: 'Relay 网络', state: d.relay.state === 'connected' ? 'ok' : 'warning', value: ({ connected: '已连接', reconnecting: '正在重连', disconnected: '未连接', error: '连接异常' })[d.relay.state] || '连接中', help: `最近心跳 ${formatTime(d.relay.lastHeartbeat)}` },
-    { title: '执行后端', state: d.backend.state === 'ready' ? 'ok' : 'warning', value: ({ ready: '已就绪', error: '启动异常', stopped: '未启动', starting: '启动中', reconnecting: '正在重连' })[d.backend.state] || '未检查', help: d.backend.mode === 'shared' ? '插件连接共享服务' : '插件使用独立进程' },
-    { title: '执行模式', state: d.backend.mode === 'shared' && d.backend.state === 'ready' ? 'ok' : 'unknown', value: d.backend.mode === 'shared' ? '共享后端' : '独立后端', help: d.backend.mode === 'shared' ? '桌面工具可用性单独检查' : '桌面任务可能存在写入占用' },
+    { title: 'Codex App Server', state: d.backend.state === 'ready' ? 'ok' : 'warning', value: ({ ready: '已就绪', error: '启动异常', stopped: '未启动', starting: '启动中', reconnecting: '正在重连' })[d.backend.state] || '未检查', help: '由插件在本机托管，任务数据由 Codex Server 提供' },
     { title: '桌面工具', state: d.desktopTools.state === 'passed' ? 'ok' : d.desktopTools.state === 'blocked' ? 'warning' : 'unknown', value: d.desktopTools.label, help: d.desktopTools.message },
   ];
 });
-const sameProcesses = computed(() => data.value?.processes.items.filter(p => p.scope !== 'other') || []);
-const last = computed(() => data.value?.migration.last);
-const icon = state => state === 'ok' ? CheckCircleOutlined : state === 'warning' ? ExclamationCircleOutlined : ClockCircleOutlined;
-const phase = value => migrationPhaseLabels[value] || value || '未记录';
+const icon = value => value === 'ok' ? CheckCircleOutlined : value === 'warning' ? ExclamationCircleOutlined : ClockCircleOutlined;
+
 function formatTime(value) {
   const date = new Date(value);
   return value && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date) : '尚无记录';
 }
+
 async function maintenanceAction(action) {
   if (maintenanceBusy.value) return;
   maintenanceBusy.value = action;
-  const labels = { backend: '共享后端连接', relay: 'Relay 连接' };
+  const labels = { backend: 'Codex App Server', relay: 'Relay 连接' };
   try {
     await api(action === 'backend' ? '/api/app-server/restart' : '/api/connection/reconnect', { method: 'POST' });
     await refresh(true);
@@ -44,6 +39,7 @@ async function maintenanceAction(action) {
     await refresh(true);
   } finally { maintenanceBusy.value = ''; }
 }
+
 onMounted(start);
 onBeforeUnmount(stop);
 </script>
@@ -51,7 +47,7 @@ onBeforeUnmount(stop);
 <template>
   <section class="route-page environment-page">
     <div class="section-title environment-heading">
-      <div><div class="eyebrow">运行与恢复</div><h1>运行环境</h1><p>查看连接停在哪一步，检查本机环境与迁移结果。</p></div>
+      <div><div class="eyebrow">运行与恢复</div><h1>运行环境</h1><p>检查 Relay、Codex App Server 和本机工具状态。</p></div>
       <a-button type="primary" :loading="state.loading" :disabled="state.repairing" @click="refresh(true)"><ReloadOutlined aria-hidden="true" />检查环境</a-button>
     </div>
 
@@ -90,8 +86,7 @@ onBeforeUnmount(stop);
         </div>
         <details class="environment-details"><summary>进程与目录详情</summary><dl>
           <div><dt>插件进程</dt><dd>PID {{ data.plugin.pid }} · 启动于 {{ formatTime(data.plugin.startedAt) }}</dd></div>
-          <div><dt>插件持有的后端进程</dt><dd>{{ data.backend.pid ? 'PID ' + data.backend.pid : data.backend.mode === 'shared' ? '由共享服务管理' : '无' }}</dd></div>
-          <div v-if="data.backend.endpoint"><dt>共享端点</dt><dd><code>{{ data.backend.endpoint }}</code></dd></div>
+          <div><dt>Codex App Server 进程</dt><dd>{{ data.backend.pid ? 'PID ' + data.backend.pid : '未运行' }}</dd></div>
           <div><dt>桌面后端接入</dt><dd>{{ data.desktopBackend.state === 'detected' ? `PID ${data.desktopBackend.pid} · ${data.desktopBackend.transport}` : '未检测到' }}</dd></div>
           <div v-if="data.desktopBackend.reason"><dt>桌面后端说明</dt><dd>{{ data.desktopBackend.reason }}</dd></div>
           <div><dt>插件目录</dt><dd><code>{{ data.plugin.root }}</code></dd></div>
@@ -101,27 +96,11 @@ onBeforeUnmount(stop);
       </section>
 
       <section class="environment-panel environment-maintenance" aria-labelledby="environment-maintenance">
-        <div class="environment-panel-heading"><div><h2 id="environment-maintenance">运行维护</h2><p>常用恢复操作集中在这里完成。共享模式下只重连插件连接，不会停止桌面共享后端或删除历史数据。</p></div><a-tag color="blue">可视化操作</a-tag></div>
+        <div class="environment-panel-heading"><div><h2 id="environment-maintenance">运行维护</h2><p>分别重连本机执行后端或外网 Relay 通道。</p></div><a-tag color="blue">可视化操作</a-tag></div>
         <div class="environment-maintenance-grid">
-          <div><strong>重连共享后端</strong><p>修复插件与共享 App Server 的连接或订阅状态。</p><a-button :loading="maintenanceBusy === 'backend'" :disabled="Boolean(maintenanceBusy)" @click="maintenanceAction('backend')">重新连接后端</a-button></div>
-          <div><strong>重连 Relay</strong><p>重新建立 Flutter 与本机之间的 Relay 通道。</p><a-button :loading="maintenanceBusy === 'relay'" :disabled="Boolean(maintenanceBusy)" @click="maintenanceAction('relay')">重新连接 Relay</a-button></div>
-          <div><strong>安装与检查</strong><p>{{ data.backend.mode === 'shared' ? '查看已启用的共享安装，检查当前桌面工具。' : '检查迁移条件并生成准备包。' }}</p><a-button @click="openMigration">{{ data.backend.mode === 'shared' ? '查看共享安装' : '打开迁移向导' }}</a-button></div>
+          <div><strong>重连 Codex App Server</strong><p>重新建立插件与本机 Codex Server 的连接。</p><a-button :loading="maintenanceBusy === 'backend'" :disabled="Boolean(maintenanceBusy)" @click="maintenanceAction('backend')">重新连接后端</a-button></div>
+          <div><strong>重连 Relay</strong><p>重新建立手机、桌面端与外网 Relay 的桥接通道。</p><a-button :loading="maintenanceBusy === 'relay'" :disabled="Boolean(maintenanceBusy)" @click="maintenanceAction('relay')">重新连接 Relay</a-button></div>
         </div>
-      </section>
-
-      <section class="environment-panel" aria-labelledby="environment-migration">
-        <MigrationPreparationPanel :blockers="data.actions.migrate.blockers" :connection-mode="data.backend.mode" :backend-state="data.backend.state" />
-        <div class="environment-history-heading"><h3>当前安装记录</h3><span>{{ data.migration.label }}</span></div>
-        <template v-if="last">
-          <dl class="environment-history">
-            <div><dt>结果</dt><dd>{{ phase(last.phase) }} · {{ formatTime(last.updatedAt) }}</dd></div>
-            <div v-if="last.failedPhase"><dt>失败阶段</dt><dd>{{ phase(last.failedPhase) }}</dd></div>
-            <div v-if="last.error"><dt>原因</dt><dd>{{ describeEnvironmentError(last.error) }}</dd></div>
-            <div v-if="last.recovery"><dt>恢复记录</dt><dd>{{ last.recovery }}</dd></div>
-          </dl>
-          <details v-if="last.backup" class="environment-details"><summary>备份与历史验证</summary><p class="field-help">以下只代表上次迁移的结果，不能证明当前连接正常。</p><p>任务双连接验证：{{ last.checks.concurrentResume ? '上次通过' : '未记录通过结果' }} · 桌面工具：{{ last.checks.desktopTools ? '上次通过' : '未记录通过结果' }}</p><code>{{ last.backup }}</code></details>
-        </template>
-        <p v-else class="field-help">{{ data.migration.state === 'unreadable' ? '记录读取失败，请检查启动包目录。' : data.migration.state === 'different_environment' ? '启动包与当前配置目录不一致，未加载其他环境的迁移记录。' : data.migration.state === 'active' ? '共享后端已有启用记录，工具检查结果独立显示。' : '当前环境还没有迁移执行记录。' }}</p>
       </section>
     </template>
     <div v-else-if="state.error" class="environment-empty"><ExclamationCircleOutlined /><strong>暂时无法检查环境</strong><p>确认插件服务正在运行，再点击上方“检查环境”。</p></div>

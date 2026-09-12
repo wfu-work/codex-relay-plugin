@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { SharedAppServerTransport, parseAppServerEndpoint } from "./app-server-transport.js";
 import { redact } from "./utils.js";
 
 const exec = promisify(execFile);
@@ -224,37 +223,5 @@ export async function installOfficialStandalone({ home = os.homedir(), installer
   return { installed: true, alreadyPresent: false, executable: target };
 }
 
-export class DesktopBridge {
-  constructor(endpoint, { transportFactory = value => new SharedAppServerTransport(value) } = {}) {
-    this.endpoint = parseAppServerEndpoint(endpoint).endpoint;
-    this.transportFactory = transportFactory;
-    this.transport = null;
-    this.state = "stopped";
-  }
-
-  async inspect() {
-    const address = parseAppServerEndpoint(this.endpoint);
-    if (address.kind === "unix" && !(await ownSocket(address.socketPath))) {
-      return { state: "blocked", endpoint: this.endpoint, attachable: false, reason: "桥接 Socket 不存在、不是 Socket 或不属于当前用户" };
-    }
-    return { state: "available", endpoint: this.endpoint, attachable: true, reason: "端点通过本机地址和所有权检查；连接时仍需 App Server initialize 授权" };
-  }
-
-  async connect() {
-    const check = await this.inspect();
-    if (!check.attachable) { const error = new Error(check.reason); error.code = "DESKTOP_BRIDGE_UNAVAILABLE"; throw error; }
-    this.transport = this.transportFactory(this.endpoint);
-    this.transport.on("closed", () => { if (this.state === "ready") this.state = "error"; });
-    await this.transport.open();
-    this.state = "ready";
-    return { ...check, state: this.state };
-  }
-
-  async close() {
-    await this.transport?.close();
-    this.transport = null;
-    this.state = "stopped";
-  }
-}
 
 export const defaultRemoteControlSocket = CONTROL_SOCKET;

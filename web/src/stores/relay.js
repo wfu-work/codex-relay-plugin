@@ -30,8 +30,6 @@ export const relayState = reactive({
     heartbeatSeconds: 20,
     reconnectMaxSeconds: 30,
     codexExecutable: 'codex',
-    connectionMode: 'managed',
-    appServerEndpoint: '',
     defaultWorkingDirectory: '',
     autoStartAppServer: true,
     readOnly: false,
@@ -200,8 +198,6 @@ function applyConfig(config) {
   relayState.form.codexExecutable = config.codex?.executable || 'codex';
   relayState.form.defaultWorkingDirectory = config.codex?.defaultWorkingDirectory || '';
   relayState.form.autoStartAppServer = Boolean(config.codex?.autoStartAppServer);
-  relayState.form.connectionMode = config.codex?.connectionMode || 'managed';
-  relayState.form.appServerEndpoint = config.codex?.appServerEndpoint || '';
   relayState.form.readOnly = Boolean(config.readOnly);
   relayState.form.allowedProjects = (config.allowedProjects || []).join('\n');
   for (const name of permissionNames) relayState.form.permissions[name] = Boolean(config.permissions?.[name]);
@@ -233,8 +229,6 @@ function collectConfig() {
       executable: relayState.form.codexExecutable.trim() || 'codex',
       defaultWorkingDirectory: relayState.form.defaultWorkingDirectory.trim(),
       autoStartAppServer: relayState.form.autoStartAppServer,
-      connectionMode: relayState.form.connectionMode,
-      appServerEndpoint: relayState.form.appServerEndpoint.trim(),
     },
     permissions: { ...relayState.form.permissions },
     readOnly: relayState.form.readOnly,

@@ -101,14 +101,7 @@ export class ConnectorService extends EventEmitter {
     const credential = await this.configStore.relayCredential();
     await this.instanceLock.acquire();
     try {
-      if (config.codex.autoStartAppServer || config.codex.connectionMode === "shared") {
-        try { await this.appServer.start(); }
-        catch (error) {
-          if (config.codex.connectionMode !== "shared" || this.appServer.state !== "reconnecting") throw error;
-          // Keep Relay reachable so the phone can see backend recovery state.
-          this.logger.warn("connector", "共享后端暂不可用，保持 Relay 连接等待恢复", { message: error.message });
-        }
-      }
+      if (config.codex.autoStartAppServer) await this.appServer.start();
       return await this.relay.connect(credential);
     } catch (error) {
       // A transient socket failure schedules an internal reconnect, so retain
@@ -125,9 +118,7 @@ export class ConnectorService extends EventEmitter {
     return this.status();
   }
 
-  // Reconnect only this plugin's App Server transport. In shared mode the
-  // shared backend process remains owned by its service, so desktop and
-  // Flutter clients are not asked to stop or migrate anything.
+  // Restart the App Server process owned by this plugin.
   async restartAppServerConnection() {
     await this.appServer.stop();
     await this.appServer.start();
@@ -181,11 +172,11 @@ export class ConnectorService extends EventEmitter {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
     if (wasConnected) await this.disconnect("configuration changed");
     const config = await this.configStore.update(patch, credentialPatch);
-    const backendChanged = ["connectionMode", "appServerEndpoint", "executable", "defaultWorkingDirectory"]
+    const backendChanged = ["executable", "defaultWorkingDirectory", "autoStartAppServer"]
       .some(key => previous.codex[key] !== config.codex[key]);
     const accessChanged = JSON.stringify([previous.allowedProjects, previous.permissions, previous.readOnly])
       !== JSON.stringify([config.allowedProjects, config.permissions, config.readOnly]);
-    if (backendChanged || (previous.codex.connectionMode === "shared" && accessChanged)) {
+    if (backendChanged || accessChanged) {
       await this.appServer.stop();
       this.#pendingEvents.length = 0;
       await this.eventQueue.catch(() => {});

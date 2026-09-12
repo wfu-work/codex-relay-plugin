@@ -123,35 +123,3 @@ test("environment actions require dashboard authentication and only pass expecte
   assert.equal(mutations, 1);
   assert.equal((await fetch(`${url.origin}/api/environment/migrate`, { method: 'POST', headers })).status, 404);
 });
-
-test('migration preparation APIs require authentication, filter input, and cannot activate a backend', async t => {
-  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-preparation-api-'));
-  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
-  const id = randomUUID();
-  const calls = [];
-  const preparation = {
-    status: async () => ({ job: { id, phase: 'checking' }, prepared: null }),
-    start: async (...args) => { calls.push(args); return { id, phase: 'queued' }; },
-    cancel: async (...args) => { calls.push(args); return { id, cancelRequested: true }; },
-  };
-  const dashboard = new DashboardServer({ configStore: { configDir } }, new Logger(), { port: 0, preparation });
-  const url = new URL(await dashboard.start());
-  t.after(() => dashboard.stop());
-  const headers = { Authorization: `Bearer ${new URLSearchParams(url.hash.slice(1)).get('key')}`, 'Content-Type': 'application/json' };
-  for (const action of ['check', 'prepare', 'verify-desktop', 'repair-runtime', 'cancel', 'activate']) assert.equal((await fetch(`${url.origin}/api/environment/migration/${action}`, { method: 'POST' })).status, 401);
-  assert.equal((await fetch(`${url.origin}/api/environment/migration/status`)).status, 401);
-  assert.equal(calls.length, 0);
-  const submitted = await fetch(`${url.origin}/api/environment/migration/prepare`, { method: 'POST', headers, body: JSON.stringify({ requestId: id, root: '/malicious', command: 'arbitrary shell', force: true }) });
-  assert.equal(submitted.status, 202);
-  assert.deepEqual(calls, [['prepare', id]]);
-  const cancelled = await fetch(`${url.origin}/api/environment/migration/cancel`, { method: 'POST', headers, body: JSON.stringify({ id, pid: 123 }) });
-  assert.equal(cancelled.status, 200);
-  assert.deepEqual(calls[1], [id]);
-  assert.equal((await fetch(`${url.origin}/api/environment/migration/status`, { headers })).status, 200);
-  assert.equal((await fetch(`${url.origin}/api/environment/migration/activate`, { method: 'POST', headers })).status, 409);
-  assert.equal(calls.length, 2);
-  assert.equal((await fetch(`${url.origin}/api/environment/migration/verify-desktop`, { method: 'POST', headers, body: JSON.stringify({ requestId: id, pipe: '/untrusted', command: '/bin/sh' }) })).status, 202);
-  assert.deepEqual(calls[2], ['verify-desktop', id]);
-  assert.equal((await fetch(`${url.origin}/api/environment/migration/repair-runtime`, { method: 'POST', headers, body: JSON.stringify({ requestId: id, pid: 123, node: '/untrusted', force: true }) })).status, 202);
-  assert.deepEqual(calls[3], ['repair-runtime', id]);
-});

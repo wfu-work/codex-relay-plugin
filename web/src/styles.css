@@ -543,32 +543,3 @@ button, input, textarea { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
-.migration-job-summary, .migration-toolbar, .migration-final-action { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.migration-job-summary { justify-content: space-between; margin-top: 20px; }
-.migration-job-summary p, .migration-progress p, .migration-checks p { margin: 4px 0 0; color: var(--ink-soft); font-size: 13px; }
-.migration-wizard { padding-top: 4px; }
-.migration-steps { display: flex; flex-wrap: wrap; gap: 12px 24px; list-style: none; padding: 0; margin: 24px 0; }
-.migration-steps li { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 13px; }
-.migration-steps span { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid currentColor; border-radius: 50%; }
-.migration-steps .done, .migration-checks .passed { color: var(--brand); }
-.migration-progress { padding: 16px 0; border-bottom: 1px solid var(--line); }
-.migration-check-group h3 { margin: 20px 0 8px; font-size: 14px; }
-.migration-checks { margin: 0; padding: 0; list-style: none; }
-.migration-checks li { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-.migration-checks li > .anticon { margin-top: 4px; flex: 0 0 16px; }
-.migration-checks li > div { flex: 1; min-width: 0; }
-.migration-checks strong { font-size: 13px; }
-.migration-checks .blocked, .migration-checks .warning { color: var(--warning); }
-.migration-check-result { flex-shrink: 0; font-size: 12px; color: var(--ink-soft); }
-.migration-artifact { margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
-.migration-artifact code { display: block; margin: 12px 0; overflow-wrap: anywhere; font-size: 12px; }
-.migration-artifact > div { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.migration-final-action { margin-top: 20px; justify-content: space-between; }
-.migration-final-action p { flex: 1; min-width: 200px; margin: 0; color: var(--ink-soft); font-size: 12px; }
-.migration-wizard .environment-notice { margin-top: 16px; }
-.migration-modal .ant-modal { top: 32px; padding-bottom: 32px; }
-.migration-modal .ant-modal-body { max-height: calc(100dvh - 152px); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-@media (max-width: 600px) {
-  .migration-modal .ant-modal { top: 16px; padding-bottom: 16px; }
-  .migration-modal .ant-modal-body { max-height: calc(100dvh - 120px); }
-}

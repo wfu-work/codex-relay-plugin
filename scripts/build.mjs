@@ -62,16 +62,6 @@ await Promise.all([
     entryPoints: ["server/agent-cli.js"],
     outfile: path.join(outputRoot, "server", "agent-cli.js"),
   }),
-  build({
-    ...sharedBuildOptions,
-    entryPoints: ["server/shared-backend-cli.js"],
-    outfile: path.join(outputRoot, "server", "shared-backend-cli.js"),
-  }),
-  build({
-    ...sharedBuildOptions,
-    entryPoints: ["server/migration-cli.js"],
-    outfile: path.join(outputRoot, "server", "migration-cli.js"),
-  }),
 ]);
 
 const productionPackage = {

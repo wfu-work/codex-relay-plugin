@@ -11,7 +11,7 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 export class CommandJournal {
   constructor(configDir) { this.directory = configDir ? path.join(configDir, "command-journal") : null; }
   file(config, message) {
-    const scope = JSON.stringify([config.relay.url, config.relay.spaceId, config.relay.endpointId || config.relay.deviceId, config.codex.connectionMode, config.codex.appServerEndpoint, config.codex.executable]);
+    const scope = JSON.stringify([config.relay.url, config.relay.spaceId, config.relay.endpointId || config.relay.deviceId, config.codex.executable]);
     return path.join(this.directory, `${hash(`${scope}:${message.deviceId}:${message.requestId}`)}.json`);
   }
   async begin(config, message, fingerprint) {

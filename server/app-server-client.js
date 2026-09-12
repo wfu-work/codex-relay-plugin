@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
 import { SharedAppServerTransport, StdioAppServerTransport } from "./app-server-transport.js";
+import { RolloutSnapshots } from "./rollout-snapshot.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
 import { DesktopProjectPins } from "./desktop-project-pins.js";
@@ -33,6 +34,11 @@ export class AppServerClient extends EventEmitter {
   #resumeRetryAt = new Map();
   #threadSettings = new Map();
   #settingsRevision = 0;
+  // Codex keeps authoritative token_count rows in the local rollout journal.
+  // App Server history does not always project those rows into thread/read,
+  // especially for a thread owned by Desktop. Keep a read-only journal
+  // projection so Relay can recover per-turn usage without taking the writer.
+  #rollouts;
   #projectPins;
   static MAX_RESUMED_THREADS = 1000;
 
@@ -45,6 +51,7 @@ export class AppServerClient extends EventEmitter {
     super();
     this.options = options;
     this.#projectPins = new DesktopProjectPins({ codexHome: options.codexHome });
+    this.#rollouts = new RolloutSnapshots({ codexHome: options.codexHome });
     this.configStore = configStore;
     this.logger = logger;
     this.state = "stopped";
@@ -203,6 +210,7 @@ export class AppServerClient extends EventEmitter {
     this.#retryAttempt = 0;
     this.nextRetryAt = null;
     this.#subscriptions.clear();
+    this.#rollouts.clear();
     this.#resetConnectionState();
     const transport = this.#transport;
     this.#transport = null;
@@ -416,7 +424,7 @@ export class AppServerClient extends EventEmitter {
       this.#paginatedThreads = true;
       return this.#readPaginatedThread(id);
     });
-    return result;
+    return this.#reconcileRolloutUsage(result);
   }
 
   // Unlike readThread(), this explicitly disables includeTurns. Codex still
@@ -429,7 +437,41 @@ export class AppServerClient extends EventEmitter {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
     const result = await this.request("thread/read", { threadId: id, includeTurns: false });
-    return result;
+    return this.#reconcileRolloutUsage(result);
+  }
+
+  async #reconcileRolloutUsage(result) {
+    const thread = result?.thread || result;
+    if (!thread || typeof thread !== "object") return result;
+    const snapshot = await this.#rollouts.read(thread);
+    if (!snapshot) return result;
+
+    // Replay newly appended token_count rows immediately. The App Server may
+    // not emit them to this connection when Desktop owns the writer.
+    for (const [method, params] of snapshot.notifications || []) {
+      if (method === "thread/tokenUsage/updated") this.emit("notification", method, params);
+    }
+
+    const sourceTurns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
+    const targetTurns = Array.isArray(thread.turns) ? thread.turns : [];
+    const byId = new Map(targetTurns.map(turn => [turn?.id, turn]));
+    let changed = false;
+    for (const source of sourceTurns) {
+      if (!source?.id || (!source.turnUsage && !source.tokenUsage)) continue;
+      const target = byId.get(source.id);
+      if (!target) continue;
+      if (!target.turnUsage && source.turnUsage) {
+        target.turnUsage = source.turnUsage;
+        changed = true;
+      }
+      if (!target.tokenUsage && source.tokenUsage) {
+        target.tokenUsage = source.tokenUsage;
+        changed = true;
+      }
+    }
+    if (!changed) return result;
+    const hydrated = { ...thread, turns: targetTurns };
+    return result?.thread ? { ...result, thread: hydrated } : hydrated;
   }
 
 

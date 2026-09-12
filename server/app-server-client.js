@@ -637,8 +637,18 @@ export class AppServerClient extends EventEmitter {
   #rememberThreadSettings(threadId, value) {
     const settings = composerSettings(value);
     if (!settings || !threadId) return;
-    this.#threadSettings.delete(threadId);
-    this.#threadSettings.set(threadId, { ...settings, revision: ++this.#settingsRevision });
+    const id = normalizeThreadId(threadId);
+    if (!id) return;
+    const previous = this.#threadSettings.get(id) || {};
+    // Settings notifications may be field-level patches. Merge them into the
+    // last authoritative task settings so changing effort does not erase the
+    // model or permission profile (and vice versa).
+    this.#threadSettings.delete(id);
+    this.#threadSettings.set(id, {
+      ...previous,
+      ...settings,
+      revision: ++this.#settingsRevision,
+    });
     while (this.#threadSettings.size > AppServerClient.MAX_RESUMED_THREADS) {
       this.#threadSettings.delete(this.#threadSettings.keys().next().value);
     }

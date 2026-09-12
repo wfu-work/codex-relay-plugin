@@ -8,6 +8,8 @@ test('resume and settings notifications expose the same composer fields without 
   const expected = { ...common, effort: 'high', sandboxPolicy: { type: 'workspaceWrite' } };
   assert.deepEqual(composerSettings({ ...common, reasoningEffort: 'high', sandbox: expected.sandboxPolicy, instructionSources: ['private'] }), expected);
   assert.deepEqual(composerSettings({ threadSettings: { ...expected, collaborationMode: { settings: { developer_instructions: 'private' } } } }), expected);
+  assert.deepEqual(composerSettings({ threadSettings: { effort: 'xhigh' } }), { effort: 'xhigh' });
+  assert.deepEqual(composerSettings({ threadSettings: { permissions: ':danger-full-access', approvalPolicy: 'never' } }), { permissions: ':danger-full-access', approvalPolicy: 'never' });
   assert.equal(composerSettings({}), null);
   const event = normalizeCodexNotification('thread/settings/updated', { threadId: 'thread', threadSettings: expected });
   assert.equal(event.type, 'thread.settings.updated');

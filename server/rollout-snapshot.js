@@ -166,7 +166,17 @@ function projectRow(record, row, notifications, threadId) {
     const method = event.type.replace("item_", "item/");
     notifications.push([method, { threadId, turnId: turn.id, item }]);
   } else if (event.type === "task_complete" || event.type === "turn_aborted") {
-    const turn = event.turn_id ? record.turns.find((turn) => turn.id === event.turn_id) : record.current;
+    // A terminal journal row without turn_id is only safe when exactly one
+    // turn is active.  Using record.current here lets a delayed/old abort row
+    // terminate a newer desktop turn after overlapping retries or reconnects.
+    // Leave ambiguous terminal rows for the App Server's turn list, which has
+    // the identity needed to resolve them correctly.
+    const activeTurns = record.turns.filter((turn) => turn.status === "inProgress");
+    const turn = event.turn_id
+      ? record.turns.find((candidate) => candidate.id === event.turn_id)
+      : activeTurns.length === 1
+        ? activeTurns[0]
+        : null;
     if (!turn) return;
     // A few App Server builds attach the final token counters to the terminal
     // event instead of emitting a separate token_count row. Feed that final

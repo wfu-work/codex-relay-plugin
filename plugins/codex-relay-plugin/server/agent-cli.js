@@ -422,7 +422,8 @@ function projectRow(record, row, notifications, threadId) {
     const method = event.type.replace("item_", "item/");
     notifications.push([method, { threadId, turnId: turn.id, item }]);
   } else if (event.type === "task_complete" || event.type === "turn_aborted") {
-    const turn = event.turn_id ? record.turns.find((turn2) => turn2.id === event.turn_id) : record.current;
+    const activeTurns = record.turns.filter((turn2) => turn2.status === "inProgress");
+    const turn = event.turn_id ? record.turns.find((candidate) => candidate.id === event.turn_id) : activeTurns.length === 1 ? activeTurns[0] : null;
     if (!turn) return;
     const finalUsageCandidates = [
       event.info,
@@ -522,16 +523,26 @@ var PendingInteractions = class {
 // server/composer-settings.js
 function composerSettings(value) {
   const source = value?.threadSettings && typeof value.threadSettings === "object" ? value.threadSettings : value?.settings && typeof value.settings === "object" ? value.settings : value;
-  if (!source || typeof source.model !== "string") return null;
-  const settings = {
-    model: source.model,
-    effort: source.effort ?? source.reasoningEffort ?? source.reasoning_effort ?? source.reasoning ?? null
-  };
-  for (const key of ["approvalPolicy", "approvalsReviewer", "activePermissionProfile"]) {
+  if (!source || typeof source !== "object") return null;
+  const settings = {};
+  if (typeof source.model === "string" && source.model.trim()) settings.model = source.model.trim();
+  const effort = source.effort ?? source.reasoningEffort ?? source.reasoning_effort ?? source.reasoning;
+  if (effort !== void 0) settings.effort = effort;
+  for (const key of [
+    "approvalPolicy",
+    "approval_policy",
+    "approvalsReviewer",
+    "activePermissionProfile",
+    "permissions",
+    "permissionMode",
+    "permission_mode"
+  ]) {
     if (source[key] !== void 0) settings[key] = source[key];
   }
-  if (source.sandboxPolicy || source.sandbox) settings.sandboxPolicy = source.sandboxPolicy || source.sandbox;
-  return settings;
+  if (source.sandboxPolicy !== void 0 || source.sandbox !== void 0) {
+    settings.sandboxPolicy = source.sandboxPolicy ?? source.sandbox;
+  }
+  return Object.keys(settings).length ? settings : null;
 }
 function composerSettingsPatch(command, config) {
   const patch = {};
@@ -1179,8 +1190,15 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   #rememberThreadSettings(threadId, value) {
     const settings = composerSettings(value);
     if (!settings || !threadId) return;
-    this.#threadSettings.delete(threadId);
-    this.#threadSettings.set(threadId, { ...settings, revision: ++this.#settingsRevision });
+    const id = normalizeThreadId(threadId);
+    if (!id) return;
+    const previous = this.#threadSettings.get(id) || {};
+    this.#threadSettings.delete(id);
+    this.#threadSettings.set(id, {
+      ...previous,
+      ...settings,
+      revision: ++this.#settingsRevision
+    });
     while (this.#threadSettings.size > _AppServerClient.MAX_RESUMED_THREADS) {
       this.#threadSettings.delete(this.#threadSettings.keys().next().value);
     }
@@ -5569,8 +5587,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260912220346";
-    const runningBuild = "1.0.0+codex.20260912220346:1789250638670";
+    const runningVersion = "1.0.0+codex.20260912223014";
+    const runningBuild = "1.0.0+codex.20260912223014:1789252227083";
     const diskBundle = runningBuild ? await fs12.readFile(path13.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -5950,8 +5968,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260912220346",
-      buildId: "1.0.0+codex.20260912220346:1789250638670",
+      version: "1.0.0+codex.20260912223014",
+      buildId: "1.0.0+codex.20260912223014:1789252227083",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);

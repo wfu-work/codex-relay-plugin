@@ -8,16 +8,25 @@ export function composerSettings(value) {
     : value?.settings && typeof value.settings === "object"
       ? value.settings
       : value;
-  if (!source || typeof source.model !== "string") return null;
-  const settings = {
-    model: source.model,
-    effort: source.effort ?? source.reasoningEffort ?? source.reasoning_effort ?? source.reasoning ?? null,
-  };
-  for (const key of ["approvalPolicy", "approvalsReviewer", "activePermissionProfile"]) {
+  if (!source || typeof source !== "object") return null;
+  // App Server emits both complete settings and field-level patches. Keep
+  // partial patches so the caller can merge them with the cached task state;
+  // requiring `model` here used to discard desktop-only effort/permission
+  // changes before they reached the phone.
+  const settings = {};
+  if (typeof source.model === "string" && source.model.trim()) settings.model = source.model.trim();
+  const effort = source.effort ?? source.reasoningEffort ?? source.reasoning_effort ?? source.reasoning;
+  if (effort !== undefined) settings.effort = effort;
+  for (const key of [
+    "approvalPolicy", "approval_policy", "approvalsReviewer", "activePermissionProfile",
+    "permissions", "permissionMode", "permission_mode",
+  ]) {
     if (source[key] !== undefined) settings[key] = source[key];
   }
-  if (source.sandboxPolicy || source.sandbox) settings.sandboxPolicy = source.sandboxPolicy || source.sandbox;
-  return settings;
+  if (source.sandboxPolicy !== undefined || source.sandbox !== undefined) {
+    settings.sandboxPolicy = source.sandboxPolicy ?? source.sandbox;
+  }
+  return Object.keys(settings).length ? settings : null;
 }
 
 export function composerSettingsPatch(command, config) {

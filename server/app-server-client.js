@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
-import { StdioAppServerTransport } from "./app-server-transport.js";
+import { StdioAppServerTransport, UnixAppServerTransport } from "./app-server-transport.js";
 import { RolloutSnapshots, applyRolloutSnapshot } from "./rollout-snapshot.js";
 import { PendingInteractions } from "./pending-interactions.js";
 import { composerSettings } from "./composer-settings.js";
@@ -128,7 +128,9 @@ export class AppServerClient extends EventEmitter {
       if (config.appServerTransport === "unix" && config.autoStartAppServer !== false) {
         await ensureAppServerDaemon(config);
       }
-      transport = new StdioAppServerTransport(config);
+      transport = config.appServerTransport === "unix"
+        ? new UnixAppServerTransport(config)
+        : new StdioAppServerTransport(config);
       if (generation !== this.#generation || !this.#wanted) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
       this.#transport = transport;
       transport.on("message", line => { if (this.#transport === transport) this.#handleLine(line); });

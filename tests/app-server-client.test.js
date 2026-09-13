@@ -220,6 +220,31 @@ test("snapshot reads project the live Desktop rollout over a stale interrupted t
   assert.equal(result.thread.turns.at(-1).id, turnId);
 });
 
+test("status reads recover a desktop-owned active turn when the Relay index misses the thread", async (t) => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "recodex-live-status-fallback-"));
+  const cwd = path.join(codexHome, "project");
+  const sessions = path.join(codexHome, "sessions");
+  const threadId = "33333333-3333-4333-8333-333333333333";
+  const turnId = "44444444-4444-4444-8444-444444444444";
+  const file = path.join(sessions, `rollout-2026-09-13T12-00-00-${threadId}.jsonl`);
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(sessions, { recursive: true });
+  await fs.writeFile(file, [
+    JSON.stringify({ type: "session_meta", timestamp: "2026-09-13T12:00:00.000Z", payload: { id: threadId, cwd } }),
+    JSON.stringify({ type: "event_msg", timestamp: "2026-09-13T12:00:01.000Z", payload: { type: "task_started", thread_id: threadId, turn_id: turnId, started_at: 1 } }),
+  ].join("\n") + "\n");
+  const configStore = { get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }) };
+  const client = new AppServerClient(configStore, new Logger(), { codexHome });
+  client.request = async () => { throw new Error("thread not found"); };
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+
+  const result = await client.readThreadStatus(threadId);
+  assert.equal(result.thread.id, threadId);
+  assert.equal(result.thread.status.type, "active");
+  assert.equal(result.thread.currentTurn.id, turnId);
+  assert.equal(result.thread.currentTurn.status, "inProgress");
+});
+
 test("thread catalog collapses duplicate ids across persisted pages", async () => {
   const configStore = {
     get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),

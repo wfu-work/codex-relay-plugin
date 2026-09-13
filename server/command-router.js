@@ -22,6 +22,10 @@ export class CommandRouter {
   #inflight = new Map();
   #readRequests = new Map();
   #threadReadTails = new Map();
+  // Metadata-only status probes must not wait behind a potentially large
+  // thread/read. The client reconciles snapshots by lifecycle/turn identity,
+  // so an older status response cannot resurrect a terminal turn.
+  #threadStatusTails = new Map();
   #settingsWriteTails = new Map();
   #nextSnapshotRevision = 0;
   #selectedThreadId = null;
@@ -123,24 +127,24 @@ export class CommandRouter {
     });
     const existing = this.#readRequests.get(key);
     if (existing) return existing;
-    // `thread.status` and `thread.read` are two projections of the same
-    // persisted snapshot. Serialize them per thread so an older status read
-    // cannot finish after a newer full read and reintroduce a stale terminal
-    // state on the client. Different threads remain fully concurrent.
+    // Full history reads remain serialized per thread to avoid duplicate
+    // expensive reads. Metadata-only status probes use a separate queue so
+    // they can return promptly while a large history is being compacted.
     const threadId = command.type === 'thread.read' || command.type === 'thread.status'
       ? String(command.threadId || envelope.threadId || '').trim()
       : '';
-    const previous = threadId ? this.#threadReadTails.get(threadId) : null;
+    const tails = command.type === 'thread.status' ? this.#threadStatusTails : this.#threadReadTails;
+    const previous = threadId ? tails.get(threadId) : null;
     const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
       .then(() => this.#execute(command, envelope))
       .finally(() => {
         if (this.#readRequests.get(key) === pending) this.#readRequests.delete(key);
-        if (threadId && this.#threadReadTails.get(threadId) === pending) {
-          this.#threadReadTails.delete(threadId);
+        if (threadId && tails.get(threadId) === pending) {
+          tails.delete(threadId);
         }
       });
     this.#readRequests.set(key, pending);
-    if (threadId) this.#threadReadTails.set(threadId, pending);
+    if (threadId) tails.set(threadId, pending);
     return pending;
   }
 

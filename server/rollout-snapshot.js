@@ -8,6 +8,10 @@ const UUID = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const JOURNAL = new RegExp(`^rollout-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-(${UUID})(?:_${UUID})?\\.jsonl$`, "i");
 const MAX_READ_BYTES = 32 * 1024 * 1024;
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
+// Desktop rollouts can grow very large because compaction records contain
+// complete prompt snapshots. Status reconciliation only needs the newest
+// lifecycle window, so keep the bounded tail small enough for mobile polls.
+const MAX_TAIL_READ_BYTES = 16 * 1024 * 1024;
 
 /** Read-only projection for tasks owned by another Codex process.
  * A retried Desktop task can have several rollout files with the same id.
@@ -35,6 +39,102 @@ export class RolloutSnapshots {
     const pending = this.#read(thread).catch(() => null).finally(() => this.#pending.delete(thread.id));
     this.#pending.set(thread.id, pending);
     return pending;
+  }
+
+  /**
+   * Read the newest journal for a thread when the App Server index does not
+   * include path/cwd metadata. This happens for a thread owned by the
+   * desktop App Server: the Relay's private App Server can still emit an old
+   * terminal notification, but its lightweight `thread/read` response may
+   * omit the fields needed by the normal read path. The journal filename and
+   * session_meta row are the stable identity for that case.
+   */
+  async readLatest(threadId) {
+    const id = String(threadId || "").trim();
+    if (!id) return null;
+    await this.#refreshIndex();
+    const candidate = this.#index.get(id)?.[0];
+    if (!candidate) return null;
+    let meta;
+    try {
+      // Read only the metadata line. `readFile` here would allocate the
+      // entire journal before the bounded-tail fallback gets a chance to
+      // protect the Relay process from large desktop histories.
+      const handle = await fs.open(candidate, "r");
+      try {
+        const stat = await handle.stat();
+        const head = Buffer.alloc(Math.min(MAX_LINE_BYTES, stat.size));
+        const { bytesRead } = await handle.read(head, 0, head.length, 0);
+        const end = head.indexOf(10, 0, bytesRead);
+        if (end < 0) return null;
+        meta = JSON.parse(head.subarray(0, end).toString("utf8"));
+      } finally { await handle.close(); }
+    } catch {
+      return null;
+    }
+    const cwd = meta?.payload?.cwd;
+    if (meta?.type !== "session_meta" || meta.payload?.id !== id ||
+        typeof cwd !== "string" || !cwd) return null;
+    // Normal reads preserve the full transcript when the journal is small.
+    // For large desktop journals #read intentionally declines replacement;
+    // use a bounded tail projection so status still follows the live writer.
+    return (await this.read({ id, path: candidate, cwd })) ||
+      this.#readTail({ id, path: candidate, cwd });
+  }
+
+  async #readTail(thread) {
+    const root = await fs.realpath(this.#root);
+    const original = await fs.realpath(thread.path);
+    if (!inside(root, original)) return null;
+    const handle = await fs.open(original, "r");
+    try {
+      const stat = await handle.stat();
+      const start = Math.max(0, stat.size - MAX_TAIL_READ_BYTES);
+      const buffer = Buffer.alloc(stat.size - start);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+      if (!bytesRead) return null;
+      const text = buffer.subarray(0, bytesRead).toString("utf8");
+      // The first line is usually a fragment when the bounded window starts
+      // in the middle of a JSONL record. Discard it and parse complete rows.
+      const lines = text.split("\n");
+      if (start > 0) lines.shift();
+      const record = {
+        file: original,
+        cwd: path.resolve(thread.cwd),
+        ino: stat.ino,
+        offset: stat.size,
+        remainder: Buffer.alloc(0),
+        turns: [],
+        current: null,
+        itemCount: 0,
+        updatedAt: null,
+        complete: true,
+        usage: new RolloutUsage(),
+      };
+      const notifications = [];
+      for (const line of lines) {
+        if (!line || Buffer.byteLength(line) > MAX_LINE_BYTES) continue;
+        let row;
+        try { row = JSON.parse(line); } catch { continue; }
+        if (row.type === "session_meta") {
+          if (row.payload?.id !== thread.id ||
+              path.resolve(row.payload?.cwd || "") !== path.resolve(thread.cwd)) {
+            continue;
+          }
+        }
+        projectRow(record, row, notifications, thread.id);
+      }
+      if (!record.current) return null;
+      return {
+        file: original,
+        cwd: record.cwd,
+        turns: structuredClone(record.turns),
+        currentTurn: structuredClone(record.current),
+        updatedAt: record.updatedAt,
+        notifications,
+        replaced: true,
+      };
+    } finally { await handle.close(); }
   }
 
   async #refreshIndex() {
@@ -114,7 +214,7 @@ export class RolloutSnapshots {
         this.#records.set(thread.id, record);
         while (this.#records.size > 8) this.#records.delete(this.#records.keys().next().value);
         if (!record.current || !record.complete) return null;
-        return { file, turns: structuredClone(record.turns), currentTurn: structuredClone(record.current),
+        return { file, cwd: record.cwd, turns: structuredClone(record.turns), currentTurn: structuredClone(record.current),
           updatedAt: record.updatedAt, notifications: reusable ? notifications : [], replaced: file !== original };
       } finally { await handle.close(); }
     }

@@ -404,12 +404,44 @@ export class AppServerClient extends EventEmitter {
    */
   async readThreadSnapshot(threadId) {
     const id = normalizeThreadId(threadId);
+    // A live desktop-owned task can have a very large journal. Reading the
+    // complete App Server history first blocks the mobile refresh path even
+    // though the bounded rollout projection already contains the authoritative
+    // current turn, lifecycle and usage counters. Prefer that projection for
+    // active turns; completed tasks still use the normal full-history path.
+    const liveRollout = await this.#rollouts.readLatest(id);
+    if (liveRollout?.replaced === true && liveRollout.currentTurn?.status === "inProgress") {
+      return {
+        thread: applyRolloutSnapshot(
+          { id, path: liveRollout.file, cwd: liveRollout.cwd },
+          liveRollout,
+          { includeTurns: true },
+        ),
+      };
+    }
     const result = this.#paginatedThreads === true ? await this.#readPaginatedThread(id)
-      : await this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
-      if (!isPaginatedThreadReadError(error)) throw error;
-      this.#paginatedThreads = true;
-      return this.#readPaginatedThread(id);
-    });
+      : await this.request(
+        "thread/read",
+        { threadId: id, includeTurns: true },
+        this.options.threadReadTimeoutMs ?? 5_000,
+      ).catch(async (error) => {
+        if (isPaginatedThreadReadError(error)) {
+          this.#paginatedThreads = true;
+          return this.#readPaginatedThread(id);
+        }
+        // A very large desktop-owned history can exceed the App Server's
+        // response window. Return the bounded rollout projection immediately
+        // so the phone keeps its lifecycle and latest output in sync.
+        const snapshot = await this.#rollouts.readLatest(id);
+        if (!snapshot) throw error;
+        return {
+          thread: applyRolloutSnapshot(
+            { id, path: snapshot.file, cwd: snapshot.cwd },
+            snapshot,
+            { includeTurns: true },
+          ),
+        };
+      });
     return this.#reconcileRolloutUsage(result);
   }
 
@@ -422,14 +454,36 @@ export class AppServerClient extends EventEmitter {
   async readThreadStatus(threadId, { ensureResumed = false } = {}) {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
-    const result = await this.request("thread/read", { threadId: id, includeTurns: false });
+    let result;
+    try {
+      result = await this.request(
+        "thread/read",
+        { threadId: id, includeTurns: false },
+        this.options.threadStatusTimeoutMs ?? 5_000,
+      );
+    } catch (error) {
+      // A desktop-owned thread may not exist in this App Server's in-memory
+      // index yet. Use the single Codex session journal as a read-only
+      // fallback so a stale `turn/completed` notification cannot overwrite a
+      // newer active turn on the phone.
+      const snapshot = await this.#rollouts.readLatest(id);
+      if (!snapshot) throw error;
+      return {
+        thread: applyRolloutSnapshot(
+          { id, path: snapshot.file, cwd: snapshot.cwd },
+          snapshot,
+        ),
+      };
+    }
     return this.#reconcileRolloutUsage(result);
   }
 
   async #reconcileRolloutUsage(result) {
     const thread = result?.thread || result;
     if (!thread || typeof thread !== "object") return result;
-    const snapshot = await this.#rollouts.read(thread);
+    const snapshot =
+      (await this.#rollouts.read(thread)) ||
+      (thread?.id ? await this.#rollouts.readLatest(thread.id) : null);
     if (!snapshot) return result;
 
     // Desktop owns its private App Server writer, so a second managed

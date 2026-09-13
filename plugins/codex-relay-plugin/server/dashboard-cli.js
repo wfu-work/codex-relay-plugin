@@ -829,6 +829,7 @@ var UUID = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 var JOURNAL = new RegExp(`^rollout-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-(${UUID})(?:_${UUID})?\\.jsonl$`, "i");
 var MAX_READ_BYTES = 32 * 1024 * 1024;
 var MAX_LINE_BYTES = 4 * 1024 * 1024;
+var MAX_TAIL_READ_BYTES = 16 * 1024 * 1024;
 var RolloutSnapshots = class {
   #root;
   #index = /* @__PURE__ */ new Map();
@@ -850,6 +851,97 @@ var RolloutSnapshots = class {
     const pending = this.#read(thread).catch(() => null).finally(() => this.#pending.delete(thread.id));
     this.#pending.set(thread.id, pending);
     return pending;
+  }
+  /**
+   * Read the newest journal for a thread when the App Server index does not
+   * include path/cwd metadata. This happens for a thread owned by the
+   * desktop App Server: the Relay's private App Server can still emit an old
+   * terminal notification, but its lightweight `thread/read` response may
+   * omit the fields needed by the normal read path. The journal filename and
+   * session_meta row are the stable identity for that case.
+   */
+  async readLatest(threadId) {
+    const id = String(threadId || "").trim();
+    if (!id) return null;
+    await this.#refreshIndex();
+    const candidate = this.#index.get(id)?.[0];
+    if (!candidate) return null;
+    let meta;
+    try {
+      const handle = await fs4.open(candidate, "r");
+      try {
+        const stat = await handle.stat();
+        const head = Buffer.alloc(Math.min(MAX_LINE_BYTES, stat.size));
+        const { bytesRead } = await handle.read(head, 0, head.length, 0);
+        const end = head.indexOf(10, 0, bytesRead);
+        if (end < 0) return null;
+        meta = JSON.parse(head.subarray(0, end).toString("utf8"));
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return null;
+    }
+    const cwd = meta?.payload?.cwd;
+    if (meta?.type !== "session_meta" || meta.payload?.id !== id || typeof cwd !== "string" || !cwd) return null;
+    return await this.read({ id, path: candidate, cwd }) || this.#readTail({ id, path: candidate, cwd });
+  }
+  async #readTail(thread) {
+    const root = await fs4.realpath(this.#root);
+    const original = await fs4.realpath(thread.path);
+    if (!inside(root, original)) return null;
+    const handle = await fs4.open(original, "r");
+    try {
+      const stat = await handle.stat();
+      const start = Math.max(0, stat.size - MAX_TAIL_READ_BYTES);
+      const buffer = Buffer.alloc(stat.size - start);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+      if (!bytesRead) return null;
+      const text3 = buffer.subarray(0, bytesRead).toString("utf8");
+      const lines = text3.split("\n");
+      if (start > 0) lines.shift();
+      const record = {
+        file: original,
+        cwd: path5.resolve(thread.cwd),
+        ino: stat.ino,
+        offset: stat.size,
+        remainder: Buffer.alloc(0),
+        turns: [],
+        current: null,
+        itemCount: 0,
+        updatedAt: null,
+        complete: true,
+        usage: new RolloutUsage()
+      };
+      const notifications = [];
+      for (const line of lines) {
+        if (!line || Buffer.byteLength(line) > MAX_LINE_BYTES) continue;
+        let row;
+        try {
+          row = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (row.type === "session_meta") {
+          if (row.payload?.id !== thread.id || path5.resolve(row.payload?.cwd || "") !== path5.resolve(thread.cwd)) {
+            continue;
+          }
+        }
+        projectRow(record, row, notifications, thread.id);
+      }
+      if (!record.current) return null;
+      return {
+        file: original,
+        cwd: record.cwd,
+        turns: structuredClone(record.turns),
+        currentTurn: structuredClone(record.current),
+        updatedAt: record.updatedAt,
+        notifications,
+        replaced: true
+      };
+    } finally {
+      await handle.close();
+    }
   }
   async #refreshIndex() {
     if (this.#indexing) return this.#indexing;
@@ -944,6 +1036,7 @@ var RolloutSnapshots = class {
         if (!record.current || !record.complete) return null;
         return {
           file,
+          cwd: record.cwd,
           turns: structuredClone(record.turns),
           currentTurn: structuredClone(record.current),
           updatedAt: record.updatedAt,
@@ -1606,10 +1699,34 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
    */
   async readThreadSnapshot(threadId) {
     const id = normalizeThreadId(threadId);
-    const result = this.#paginatedThreads === true ? await this.#readPaginatedThread(id) : await this.request("thread/read", { threadId: id, includeTurns: true }).catch(async (error) => {
-      if (!isPaginatedThreadReadError(error)) throw error;
-      this.#paginatedThreads = true;
-      return this.#readPaginatedThread(id);
+    const liveRollout = await this.#rollouts.readLatest(id);
+    if (liveRollout?.replaced === true && liveRollout.currentTurn?.status === "inProgress") {
+      return {
+        thread: applyRolloutSnapshot(
+          { id, path: liveRollout.file, cwd: liveRollout.cwd },
+          liveRollout,
+          { includeTurns: true }
+        )
+      };
+    }
+    const result = this.#paginatedThreads === true ? await this.#readPaginatedThread(id) : await this.request(
+      "thread/read",
+      { threadId: id, includeTurns: true },
+      this.options.threadReadTimeoutMs ?? 5e3
+    ).catch(async (error) => {
+      if (isPaginatedThreadReadError(error)) {
+        this.#paginatedThreads = true;
+        return this.#readPaginatedThread(id);
+      }
+      const snapshot = await this.#rollouts.readLatest(id);
+      if (!snapshot) throw error;
+      return {
+        thread: applyRolloutSnapshot(
+          { id, path: snapshot.file, cwd: snapshot.cwd },
+          snapshot,
+          { includeTurns: true }
+        )
+      };
     });
     return this.#reconcileRolloutUsage(result);
   }
@@ -1622,13 +1739,29 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   async readThreadStatus(threadId, { ensureResumed = false } = {}) {
     const id = normalizeThreadId(threadId);
     if (ensureResumed) await this.ensureThreadResumed(id);
-    const result = await this.request("thread/read", { threadId: id, includeTurns: false });
+    let result;
+    try {
+      result = await this.request(
+        "thread/read",
+        { threadId: id, includeTurns: false },
+        this.options.threadStatusTimeoutMs ?? 5e3
+      );
+    } catch (error) {
+      const snapshot = await this.#rollouts.readLatest(id);
+      if (!snapshot) throw error;
+      return {
+        thread: applyRolloutSnapshot(
+          { id, path: snapshot.file, cwd: snapshot.cwd },
+          snapshot
+        )
+      };
+    }
     return this.#reconcileRolloutUsage(result);
   }
   async #reconcileRolloutUsage(result) {
     const thread = result?.thread || result;
     if (!thread || typeof thread !== "object") return result;
-    const snapshot = await this.#rollouts.read(thread);
+    const snapshot = await this.#rollouts.read(thread) || (thread?.id ? await this.#rollouts.readLatest(thread.id) : null);
     if (!snapshot) return result;
     const projected = applyRolloutSnapshot(thread, snapshot, {
       includeTurns: Array.isArray(thread.turns)
@@ -2696,6 +2829,10 @@ var CommandRouter = class {
   #inflight = /* @__PURE__ */ new Map();
   #readRequests = /* @__PURE__ */ new Map();
   #threadReadTails = /* @__PURE__ */ new Map();
+  // Metadata-only status probes must not wait behind a potentially large
+  // thread/read. The client reconciles snapshots by lifecycle/turn identity,
+  // so an older status response cannot resurrect a terminal turn.
+  #threadStatusTails = /* @__PURE__ */ new Map();
   #settingsWriteTails = /* @__PURE__ */ new Map();
   #nextSnapshotRevision = 0;
   #selectedThreadId = null;
@@ -2792,15 +2929,16 @@ var CommandRouter = class {
     const existing = this.#readRequests.get(key);
     if (existing) return existing;
     const threadId = command.type === "thread.read" || command.type === "thread.status" ? String(command.threadId || envelope.threadId || "").trim() : "";
-    const previous = threadId ? this.#threadReadTails.get(threadId) : null;
+    const tails = command.type === "thread.status" ? this.#threadStatusTails : this.#threadReadTails;
+    const previous = threadId ? tails.get(threadId) : null;
     const pending = (previous ? previous.catch(() => void 0) : Promise.resolve()).then(() => this.#execute(command, envelope)).finally(() => {
       if (this.#readRequests.get(key) === pending) this.#readRequests.delete(key);
-      if (threadId && this.#threadReadTails.get(threadId) === pending) {
-        this.#threadReadTails.delete(threadId);
+      if (threadId && tails.get(threadId) === pending) {
+        tails.delete(threadId);
       }
     });
     this.#readRequests.set(key, pending);
-    if (threadId) this.#threadReadTails.set(threadId, pending);
+    if (threadId) tails.set(threadId, pending);
     return pending;
   }
   #failure(config, message, fingerprint, error) {
@@ -5529,7 +5667,7 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
       ].includes(currentStatus.trim().toLowerCase());
       const eventTurnId = params?.turnId || params?.turn?.id;
       const currentTurnId = currentTurn?.id || thread?.currentTurnId || thread?.current_turn_id;
-      const staleTerminal = currentIsActive && (eventTurnId && currentTurnId && eventTurnId !== currentTurnId || !eventTurnId && currentTurnId);
+      const staleTerminal = currentIsActive;
       if (staleTerminal) {
         this.logger.info("app-server", "\u5FFD\u7565\u8986\u76D6\u8FDB\u884C\u4E2D\u4EFB\u52A1\u7684\u65E7\u7EC8\u6B62\u901A\u77E5", {
           method,
@@ -5703,8 +5841,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260912234611";
-    const runningBuild = "1.0.0+codex.20260912234611:1789256784798";
+    const runningVersion = "1.0.0+codex.20260913020110";
+    const runningBuild = "1.0.0+codex.20260913020110:1789264924912";
     const diskBundle = runningBuild ? await fs12.readFile(path13.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -6084,8 +6222,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260912234611",
-      buildId: "1.0.0+codex.20260912234611:1789256784798",
+      version: "1.0.0+codex.20260913020110",
+      buildId: "1.0.0+codex.20260913020110:1789264924912",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -6245,7 +6383,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260912234611:1789256784798";
+  const expectedBuild = "1.0.0+codex.20260913020110:1789264924912";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

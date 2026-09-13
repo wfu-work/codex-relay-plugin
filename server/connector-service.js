@@ -486,10 +486,12 @@ export class ConnectorService extends EventEmitter {
       // terminal notification belongs to stale App Server history. Ignore it
       // and let the subsequent snapshot/turn.started event carry the live
       // state. A terminal event for the same turn remains authoritative.
-      const staleTerminal = currentIsActive && (
-        (eventTurnId && currentTurnId && eventTurnId !== currentTurnId) ||
-        (!eventTurnId && currentTurnId)
-      );
+      // The reconciled snapshot is authoritative. Even when the stale
+      // notification happens to carry the same turn id, an active rollout
+      // means that terminal patch was emitted before the desktop writer
+      // finished persisting the current state. Forwarding it would make the
+      // phone briefly show "interrupted" until the next poll.
+      const staleTerminal = currentIsActive;
       if (staleTerminal) {
         this.logger.info("app-server", "忽略覆盖进行中任务的旧终止通知", {
           method, threadId, eventTurnId, currentTurnId,

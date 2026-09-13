@@ -251,7 +251,7 @@ test("concurrent thread listings with different request ids share one App Server
   assert.equal(calls.filter(([name]) => name === "listThreads").length, 1);
 });
 
-test("serializes status/read snapshots and annotates monotonic revisions", async () => {
+test("status probes do not wait behind a full history read", async () => {
   const { config } = setup();
   const calls = [];
   let releaseStatus;
@@ -280,15 +280,15 @@ test("serializes status/read snapshots and annotates monotonic revisions", async
   await new Promise((resolve) => setImmediate(resolve));
   const readPromise = router.handle(envelope({ type: "thread.read", threadId: "thread-allowed" }, "read-serial"));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, ["status:start"]);
+  assert.deepEqual(calls, ["status:start", "read"]);
   releaseStatus();
   const [status, read] = await Promise.all([statusPromise, readPromise]);
 
-  assert.deepEqual(calls, ["status:start", "status:end", "read"]);
+  assert.deepEqual(calls, ["status:start", "read", "status:end"]);
   assert.equal(status.success, true);
   assert.equal(read.success, true);
-  assert.equal(status.result.snapshotRevision, 1);
-  assert.equal(read.result.snapshotRevision, 2);
+  assert.equal(read.result.snapshotRevision, 1);
+  assert.equal(status.result.snapshotRevision, 2);
   assert.equal(status.result.snapshotSource, "status");
   assert.equal(read.result.snapshotSource, "read");
 });

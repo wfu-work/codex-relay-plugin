@@ -14,7 +14,7 @@
 - Vue 3 + Ant Design Vue 本机配置台：Relay 地址、Space、Connect Token、设备名、自动连接、重连参数
 - 与 Codex 视觉语言一致的浅色 / 深色主题和响应式布局
 - Token 存入用户目录下的本地 `secrets.json`（Unix 使用 `0600` 权限），并在本机配置台回显
-- Codex App Server 客户端：插件托管的本机 stdio 进程
+- Codex App Server 客户端：默认使用插件托管的本机 stdio 进程，也可连接官方 daemon Unix Socket 共享单一实例
 - App Server 通知实时转换为 Relay 事件，并提供 1000 条内存重放缓冲
 - 图片事件采用“缩略图 + 短期受控资源 URL”：原图通过认证数据通道上传到 Relay，移动端点击预览时再按过期时间读取
 - 图片输入：客户端通过 `image.upload.begin/append/finish/remove` 分块上传，`turn.start.attachmentIds` 引用已完成附件，转为 App Server 原生 `localImage` 输入；支持纯图片提问，最多 4 张、每张 6 MB
@@ -48,16 +48,16 @@ Connector 不向公网开放 App Server 或控制台。Relay 只需要接受出�
 在 standalone 可用时，可从控制台启动、停止并生成一次性配对码。配对码只返回给当前本机调用者，
 不会写入日志或 Relay 状态。
 
-官方 Remote Control 的控制 Socket 是官方客户端控制面，不是第三方可直接连接的 App Server。
+官方 Remote Control 的控制 Socket 同时由 App Server Daemon 提供本地 `app-server proxy` 入口；Relay 只通过该官方代理协议连接，不直接读写桌面私有 stdio。
 因此插件提供桌面桥接探测：只允许当前用户拥有的本机 Unix Socket 或回环 WebSocket，并在
 `initialize` 阶段继续执行官方授权。找不到官方授权端点时，桥接状态明确显示为阻断，不会修改
 代码签名、注入桌面进程或启动第二个执行后端。
 
 ### 执行后端
 
-插件始终托管本机 Codex App Server，并通过 Relay 提供外网桥接、认证和协议转发。控制台只保留执行路径、工作目录、自动启动和连接管理；不再提供共享后端或迁移安装模式。
+插件默认托管本机 Codex App Server，并通过 Relay 提供外网桥接、认证和协议转发。需要手机和桌面端操作同一任务时，可在高级设置中选择“共享官方 Daemon”，让两端连接同一个 Unix Socket。
 
-插件启动时运行 `codex app-server`，插件停止时结束自己创建的进程。若 App Server 异常退出，插件会按退避策略自动重启，并在状态接口中报告进程和错误信息。桌面版 Codex 继续使用自己的本地进程，两者通过 Relay 交换任务数据。
+独立模式下插件启动 `codex app-server` 并负责其生命周期；共享模式下插件启动 `codex app-server proxy --sock <socket>`，只负责代理连接，不会停止 daemon。若后端异常退出，插件会按退避策略重连，并在状态接口中报告传输模式和错误信息。共享模式要求桌面端也连接同一个官方 daemon；桌面私有 stdio 进程无法被第三方注入命令。
 
 ## 安装（GitHub，推荐）
 
@@ -343,7 +343,7 @@ App Server 会自动回退到 `updated_at`。`project.list` 返回官方项目�
 
 ## 输入框设置同步
 
-Flutter 和 Relay 的独立 App Server 会为同一任务同步模型、推理等级和权限
+Flutter 通过 Relay 读取任务的模型、推理等级和权限；独立模式依靠持久化快照同步，共享模式则从同一个 App Server 实例实时接收事件。
 通过 `thread/settings/update` 更新。Relay 将 `thread/settings/updated` 转为
 `thread.settings.updated`，并在 `thread.read` / `thread.status` 中附带 `threadSettings`
 快照和递增的 `revision`，用于首次打开任务、切换任务和断线恢复。
@@ -366,7 +366,7 @@ Flutter 的默认设置只作用于新任务，模型列表刷新和桌面端通
 
 历史响应、事件与图片上传共用有界发送队列，默认按 512 KiB/s 和每秒最多约 29 帧发送（单个大帧完整发送后等待其占用的字节时间）。队列最多 16 MiB / 512 帧，等待超过 25 秒会报告需要重新同步。同一图片在同一 Relay / Space / Endpoint 内合并并发上传，并在资源 URL 到期前复用。收到 `rate.limited` 后暂停 60 秒并降低发送速率；随后发生的 WebSocket 错误保留限流原因。连接更换时丢弃旧连接的排队响应，由客户端恢复同步，不重放过期请求。
 
-Relay 使用独立托管的 App Server 和配置的数据目录（`CODEX_HOME`）。桌面端保持自己的执行进程和会话；两者通过 Relay 的远程协议传递任务状态，不依赖桌面端内部 Socket。
+Relay 默认使用独立托管的 App Server 和配置的数据目录（`CODEX_HOME`）。启用共享模式后，Relay 使用官方 daemon Unix Socket；桌面端必须连接同一 daemon 才能共享写入者和实时事件。桌面私有 stdio 通道没有公开的第三方写入接口。
 
 手机端保存最后确认的 `sequence`，重连后发送 `sync.request`。缓冲仍覆盖该序号时返回增量事件；序号缺口或首次同步时返回 thread 快照。事件缓冲只在内存中，插件重启后序号重置。
 

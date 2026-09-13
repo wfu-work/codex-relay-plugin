@@ -14,6 +14,8 @@ export const DEFAULT_PERMISSIONS = Object.freeze({
   respondToApprovals: false,
 });
 
+export const DEFAULT_APP_SERVER_SOCKET = path.join(os.homedir(), ".codex", "app-server-control", "app-server-control.sock");
+
 export function defaultConfig() {
   return {
     version: 1,
@@ -31,6 +33,8 @@ export function defaultConfig() {
       executable: "codex",
       autoStartAppServer: true,
       defaultWorkingDirectory: "",
+      appServerTransport: "stdio",
+      appServerSocket: DEFAULT_APP_SERVER_SOCKET,
     },
     permissions: { ...DEFAULT_PERMISSIONS },
     allowedProjects: [],
@@ -222,6 +226,8 @@ function mergeConfig(base, patch) {
       executable: patch.codex?.executable ?? base.codex.executable,
       autoStartAppServer: patch.codex?.autoStartAppServer ?? base.codex.autoStartAppServer,
       defaultWorkingDirectory: patch.codex?.defaultWorkingDirectory ?? base.codex.defaultWorkingDirectory,
+      appServerTransport: patch.codex?.appServerTransport ?? base.codex.appServerTransport,
+      appServerSocket: patch.codex?.appServerSocket ?? base.codex.appServerSocket,
     },
     permissions: { ...base.permissions, ...(patch.permissions || {}) },
     allowedProjects: Array.isArray(patch.allowedProjects) ? patch.allowedProjects : base.allowedProjects,
@@ -295,6 +301,9 @@ export function validateConfig(config) {
     throw new Error("默认工作目录必须是绝对路径");
   }
   if (typeof config.codex.autoStartAppServer !== "boolean") throw new Error("App Server 自动启动配置必须是布尔值");
+  if (!["stdio", "unix"].includes(config.codex.appServerTransport)) throw new Error("App Server 传输模式无效");
+  if (typeof config.codex.appServerSocket !== "string") throw new Error("App Server Socket 路径无效");
+  if (config.codex.appServerTransport === "unix" && !config.codex.appServerSocket.trim()) throw new Error("共享 App Server 必须配置 Unix Socket 路径");
   if (!config.permissions || typeof config.permissions !== "object") throw new Error("远程权限配置无效");
   for (const name of Object.keys(DEFAULT_PERMISSIONS)) {
     if (typeof config.permissions[name] !== "boolean") throw new Error(`远程权限 ${name} 必须是布尔值`);

@@ -1,5 +1,5 @@
 <script setup>
-import { CodeOutlined, FolderOpenOutlined, LockOutlined } from '@ant-design/icons-vue';
+import { CodeOutlined, FolderOpenOutlined, LockOutlined, ApartmentOutlined } from '@ant-design/icons-vue';
 import { useRelay } from '../stores/relay.js';
 
 const { state, saveConfig } = useRelay();
@@ -15,7 +15,8 @@ const { state, saveConfig } = useRelay();
         <a-collapse-panel key="runtime" header="App Server 与重连参数">
           <a-form layout="vertical" :model="state.form">
             <a-row :gutter="[20, 2]">
-              <a-col :xs="24" :sm="12"><a-form-item label="Codex App Server"><a-input value="插件托管（独立进程）" disabled><template #prefix><CodeOutlined /></template></a-input><div class="field-help">Relay 始终启动并管理独立的 Codex App Server，不依赖桌面端 Socket。</div></a-form-item></a-col>
+              <a-col :xs="24" :sm="12"><a-form-item label="App Server 连接模式"><a-select v-model:value="state.form.appServerTransport" :options="[{value:'stdio',label:'插件托管（独立进程）'},{value:'unix',label:'共享官方 Daemon（单一写入者）'}]"><template #prefix><ApartmentOutlined /></template></a-select><div class="field-help">共享模式通过官方 Unix Socket 连接桌面共用的 App Server，避免任务写入冲突。</div></a-form-item></a-col>
+              <a-col v-if="state.form.appServerTransport === 'unix'" :xs="24" :sm="12"><a-form-item label="App Server Unix Socket"><a-input v-model:value="state.form.appServerSocket" placeholder="~/.codex/app-server-control/app-server-control.sock"><template #prefix><CodeOutlined /></template></a-input><div class="field-help">保持默认路径即可；共享模式连接时插件会自动启动官方 App Server Daemon。</div></a-form-item></a-col>
               <a-col :xs="24" :sm="12"><a-form-item label="Codex 命令"><a-input v-model:value="state.form.codexExecutable"><template #prefix><CodeOutlined /></template></a-input><div class="field-help">用于启动本机 Codex App Server。</div></a-form-item></a-col>
               <a-col :xs="24" :sm="12"><a-form-item label="默认工作目录"><a-input v-model:value="state.form.defaultWorkingDirectory" placeholder="留空使用插件目录"><template #prefix><FolderOpenOutlined /></template></a-input><div class="field-help">远程创建会话时使用的起始目录，可继续通过项目白名单限制范围。</div></a-form-item></a-col>
               <a-col :xs="24" :sm="12"><a-form-item label="Relay 心跳间隔（秒）"><a-input-number v-model:value="state.form.heartbeatSeconds" :min="5" :max="300" class="full-width" /><div class="field-help">间隔越短，断线发现越快；网络不稳定时可适当增大。</div></a-form-item></a-col>
@@ -33,11 +34,11 @@ const { state, saveConfig } = useRelay();
       <div class="guidance-intro">
         <span>运行策略</span>
         <h2 id="runtime-guide-title">默认值适合持续在线的本机 Connector</h2>
-        <p>Relay 始终使用独立的本机 App Server；桌面端与 Relay 的生命周期互不影响。</p>
+        <p>需要让手机和桌面共同操作同一任务时，请使用共享官方 Daemon 模式。</p>
       </div>
       <div class="guidance-list">
         <div><i></i><p><strong>自动连接减少重复操作</strong><span>插件启动后会使用已保存的 Relay 配置恢复连接；凭据缺失或无效时仍会停止并记录原因。</span></p></div>
-        <div><i></i><p><strong>插件托管独立执行后端</strong><span>Relay 启动独立 App Server，不会抢占桌面会话，也不会依赖桌面端的内部连接。</span></p></div>
+        <div><i></i><p><strong>共享模式保证单一写入者</strong><span>手机和桌面通过同一个 App Server 处理 turn.start、steer 和 interrupt，任务状态与事件保持一致。</span></p></div>
         <div><i></i><p><strong>重连采用逐步退避</strong><span>短暂网络波动会快速重试，连续失败后逐渐延长等待时间，直到达到设置的最大间隔。</span></p></div>
       </div>
     </section>

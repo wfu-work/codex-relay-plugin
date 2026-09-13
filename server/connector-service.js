@@ -172,7 +172,7 @@ export class ConnectorService extends EventEmitter {
     const wasConnected = ["connected", "connecting", "authenticating", "reconnecting"].includes(this.relay.state);
     if (wasConnected) await this.disconnect("configuration changed");
     const config = await this.configStore.update(patch, credentialPatch);
-    const backendChanged = ["executable", "defaultWorkingDirectory", "autoStartAppServer"]
+    const backendChanged = ["executable", "defaultWorkingDirectory", "autoStartAppServer", "appServerTransport", "appServerSocket"]
       .some(key => previous.codex[key] !== config.codex[key]);
     const accessChanged = JSON.stringify([previous.allowedProjects, previous.permissions, previous.readOnly])
       !== JSON.stringify([config.allowedProjects, config.permissions, config.readOnly]);

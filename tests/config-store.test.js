@@ -10,6 +10,16 @@ test("defaults Relay Endpoint ID separately from the local route ID", () => {
   assert.equal(config.relay.endpointId, "");
   assert.match(config.relay.deviceId, /^host_/);
   assert.equal(relayEndpointId(config.relay), "");
+  assert.equal(config.codex.appServerTransport, "stdio");
+});
+
+test("validates the shared Unix App Server transport", () => {
+  const config = defaultConfig();
+  config.codex.appServerTransport = "unix";
+  config.codex.appServerSocket = "";
+  assert.throws(() => validateConfig(config), /Unix Socket/);
+  config.codex.appServerSocket = "/tmp/codex-app-server.sock";
+  assert.doesNotThrow(() => validateConfig(config));
 });
 
 test("migrates a legacy manually assigned endpoint ID without replacing local routing", async (t) => {

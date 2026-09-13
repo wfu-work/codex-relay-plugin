@@ -32,6 +32,8 @@ export const relayState = reactive({
     codexExecutable: 'codex',
     defaultWorkingDirectory: '',
     autoStartAppServer: true,
+    appServerTransport: 'stdio',
+    appServerSocket: '~/.codex/app-server-control/app-server-control.sock',
     readOnly: false,
     permissions: Object.fromEntries(permissionNames.map((name) => [name, false])),
     allowedProjects: '',
@@ -198,6 +200,8 @@ function applyConfig(config) {
   relayState.form.codexExecutable = config.codex?.executable || 'codex';
   relayState.form.defaultWorkingDirectory = config.codex?.defaultWorkingDirectory || '';
   relayState.form.autoStartAppServer = Boolean(config.codex?.autoStartAppServer);
+  relayState.form.appServerTransport = config.codex?.appServerTransport || 'stdio';
+  relayState.form.appServerSocket = config.codex?.appServerSocket || '~/.codex/app-server-control/app-server-control.sock';
   relayState.form.readOnly = Boolean(config.readOnly);
   relayState.form.allowedProjects = (config.allowedProjects || []).join('\n');
   for (const name of permissionNames) relayState.form.permissions[name] = Boolean(config.permissions?.[name]);
@@ -229,6 +233,8 @@ function collectConfig() {
       executable: relayState.form.codexExecutable.trim() || 'codex',
       defaultWorkingDirectory: relayState.form.defaultWorkingDirectory.trim(),
       autoStartAppServer: relayState.form.autoStartAppServer,
+      appServerTransport: relayState.form.appServerTransport,
+      appServerSocket: relayState.form.appServerSocket.trim(),
     },
     permissions: { ...relayState.form.permissions },
     readOnly: relayState.form.readOnly,

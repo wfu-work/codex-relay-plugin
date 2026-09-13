@@ -183,6 +183,22 @@ test("App Server snapshot reads do not contend for another client's writer", asy
   assert.equal(snapshot.thread.resumeCount, 0);
 });
 
+test("write conflicts are surfaced as a non-retryable desktop writer error", async () => {
+  const configStore = {
+    get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),
+  };
+  const client = new AppServerClient(configStore, new Logger());
+  client.request = async () => {
+    const error = new Error("thread already has an active writer");
+    error.code = "APP_SERVER_ERROR";
+    throw error;
+  };
+  await assert.rejects(
+    client.startTurn({ threadId: "desktop-thread", text: "hello" }),
+    error => error.code === "THREAD_WRITER_BUSY" && /桌面端 Codex/.test(error.message),
+  );
+});
+
 test("snapshot reads project the live Desktop rollout over a stale interrupted turn", async (t) => {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "recodex-live-rollout-"));
   const cwd = path.join(codexHome, "project");

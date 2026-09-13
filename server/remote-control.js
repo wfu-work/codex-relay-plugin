@@ -102,9 +102,12 @@ export async function inspectRemoteControl({ home = os.homedir(), executable, so
   };
   const bridge = {
     state: running ? "ready" : "blocked",
-    endpoint: null,
-    attachable: false,
-    reason: running ? "官方控制 Socket 不是第三方 App Server 端点，需官方授权或桌面桥接代理" : "等待官方 Remote Control 或桌面宿主提供已授权的本地端点",
+    endpoint: running ? `unix://${control}` : null,
+    // `app-server proxy` is the supported local client for the daemon socket.
+    // This is separate from the ChatGPT Remote Control websocket and does not
+    // require ChatGPT account authentication.
+    attachable: running,
+    reason: running ? "官方 App Server Daemon 已启动，可通过共享 Unix Socket 连接" : "等待官方 App Server Daemon 启动并创建 Unix Socket",
   };
   return { checkedAt: new Date().toISOString(), official, bridge, paths: { controlSocket: control } };
 }

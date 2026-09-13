@@ -1,11 +1,14 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import os from "node:os";
+import path from "node:path";
 
 /**
- * The Relay always owns its own local Codex App Server. Keeping the transport
- * private makes the process lifecycle explicit and avoids attaching to a
- * desktop-owned socket that may disappear when the desktop is restarted.
+ * Transport for Codex App Server. In managed mode this starts a private
+ * stdio server. In shared mode it starts Codex's official `app-server proxy`
+ * and forwards bytes to the daemon Unix socket, so Relay and the desktop can
+ * use one writer and one event stream.
  */
 export class StdioAppServerTransport extends EventEmitter {
   child = null;
@@ -14,13 +17,21 @@ export class StdioAppServerTransport extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
+    this.mode = config.appServerTransport || "stdio";
   }
 
   get pid() { return this.child?.pid || null; }
   get writable() { return Boolean(this.child?.stdin?.writable); }
 
   async open() {
-    const child = spawn(this.config.executable || "codex", ["app-server"], {
+    const socket = this.config.appServerSocket?.replace(/^~(?=\/|$)/, os.homedir()) || "";
+    if (this.mode === "unix" && !socket) {
+      throw new Error("共享 App Server 未配置 Unix Socket 路径");
+    }
+    const args = this.mode === "unix"
+      ? ["app-server", "proxy", "--sock", path.resolve(socket)]
+      : ["app-server"];
+    const child = spawn(this.config.executable || "codex", args, {
       cwd: this.config.defaultWorkingDirectory || process.cwd(),
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RelayError } from "./errors.js";
@@ -66,10 +67,10 @@ export class AppServerClient extends EventEmitter {
       state: this.state,
       version: this.version,
       pid: transport?.pid || null,
-      connectionMode: "managed",
-      transport: "stdio",
+      connectionMode: this.#connectionConfig?.appServerTransport === "unix" ? "shared" : "managed",
+      transport: this.#connectionConfig?.appServerTransport === "unix" ? "unix-proxy" : "stdio",
       ownsProcess: Boolean(transport?.pid),
-      endpoint: null,
+      endpoint: this.#connectionConfig?.appServerSocket ? `unix://${this.#connectionConfig.appServerSocket}` : null,
       reconnectAttempt: this.#retryAttempt,
       nextRetryAt: this.nextRetryAt || null,
       subscribedThreads: this.#resumedThreads.size,
@@ -84,7 +85,13 @@ export class AppServerClient extends EventEmitter {
     const executable = codex.executable || "codex";
     const { stdout, stderr } = await execFileAsync(executable, ["--version"], { timeout: 10_000 });
     this.version = (stdout || stderr).trim();
-    return { executable, version: this.version, connectionMode: "managed", transport: "stdio" };
+    return {
+      executable,
+      version: this.version,
+      connectionMode: codex.appServerTransport === "unix" ? "shared" : "managed",
+      transport: codex.appServerTransport === "unix" ? "unix-proxy" : "stdio",
+      endpoint: codex.appServerSocket ? `unix://${codex.appServerSocket}` : null,
+    };
   }
 
   async start() {
@@ -118,6 +125,9 @@ export class AppServerClient extends EventEmitter {
     let transport;
     try {
       await this.checkAvailability();
+      if (config.appServerTransport === "unix" && config.autoStartAppServer !== false) {
+        await ensureAppServerDaemon(config);
+      }
       transport = new StdioAppServerTransport(config);
       if (generation !== this.#generation || !this.#wanted) throw new RelayError("APP_SERVER_UNAVAILABLE", "App Server 连接已取消");
       this.#transport = transport;
@@ -749,6 +759,7 @@ export class AppServerClient extends EventEmitter {
       this.#rememberResumedThread(id);
       return result;
     } catch (error) {
+      if (isActiveWriterConflict(error)) throw activeWriterError(id, error);
       // `thread/list` can expose an on-disk historical task before the App
       // Server has resumed it in the current process. Codex then rejects the
       // first turn with a precise "thread not found" error. Resume only that
@@ -756,16 +767,26 @@ export class AppServerClient extends EventEmitter {
       // task) must keep their original failure semantics.
       if (!isThreadNotLoadedError(error)) throw error;
       await this.resumeThread(id);
-      return this.request("turn/start", params);
+      try {
+        return await this.request("turn/start", params);
+      } catch (retryError) {
+        if (isActiveWriterConflict(retryError)) throw activeWriterError(id, retryError);
+        throw retryError;
+      }
     }
   }
 
-  steerTurn({ threadId, turnId, text }) {
-    return this.request("turn/steer", {
-      threadId,
-      expectedTurnId: turnId,
-      input: [{ type: "text", text }],
-    });
+  async steerTurn({ threadId, turnId, text }) {
+    try {
+      return await this.request("turn/steer", {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text }],
+      });
+    } catch (error) {
+      if (isActiveWriterConflict(error)) throw activeWriterError(threadId, error);
+      throw error;
+    }
   }
 
   async interruptTurn({ threadId, turnId }) {
@@ -790,7 +811,12 @@ export class AppServerClient extends EventEmitter {
           continue;
         }
         try {
-          await this.request("turn/interrupt", { threadId, turnId });
+          try {
+            await this.request("turn/interrupt", { threadId, turnId });
+          } catch (error) {
+            if (isActiveWriterConflict(error)) throw activeWriterError(threadId, error);
+            throw error;
+          }
           return { threadId, turnId, status: "requested" };
         } catch (error) {
           if (error.code !== "APP_SERVER_ERROR" || !/no active turn to interrupt/i.test(error.message)) throw error;
@@ -1033,6 +1059,36 @@ function isActiveWriterConflict(error) {
   return error?.code === "APP_SERVER_ERROR" &&
     typeof error?.message === "string" &&
     /already has an active writer/i.test(error.message);
+}
+
+async function ensureAppServerDaemon(config) {
+  const socket = String(config.appServerSocket || "").replace(/^~(?=\/|$)/, process.env.HOME || "");
+  if (!socket) throw new RelayError("APP_SERVER_UNAVAILABLE", "共享 App Server 未配置 Unix Socket 路径");
+  try {
+    const stat = await fs.stat(socket);
+    if (stat.isSocket()) return;
+  } catch { /* daemon is not running yet */ }
+  try {
+    await execFileAsync(config.executable || "codex", ["app-server", "daemon", "start"], {
+      cwd: config.defaultWorkingDirectory || process.cwd(),
+      env: process.env,
+      timeout: 20_000,
+      maxBuffer: 64 * 1024,
+    });
+  } catch (error) {
+    throw new RelayError(
+      "APP_SERVER_UNAVAILABLE",
+      `无法自动启动共享 App Server Daemon：${String(error.stderr || error.message || "启动失败").trim()}`,
+    );
+  }
+}
+
+function activeWriterError(threadId, cause) {
+  return new RelayError(
+    "THREAD_WRITER_BUSY",
+    "该任务正在桌面端 Codex 中运行，手机命令未发送。请等待桌面任务结束，或让桌面端连接共享 App Server 后重试。",
+    { threadId, cause: cause?.message || "active writer" },
+  );
 }
 
 function isObject(value) {

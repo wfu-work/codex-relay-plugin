@@ -118,10 +118,14 @@ export class RolloutSnapshots {
       const buffer = Buffer.alloc(stat.size - start);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
       if (!bytesRead) return null;
-      const text = buffer.subarray(0, bytesRead).toString("utf8");
+      const text = Buffer.concat([
+        reusable ? (cached.record.remainder || Buffer.alloc(0)) : Buffer.alloc(0),
+        buffer.subarray(0, bytesRead),
+      ]).toString("utf8");
       // The first line is usually a fragment when the bounded window starts
       // in the middle of a JSONL record. Discard it and parse complete rows.
       const lines = text.split("\n");
+      const trailing = lines.pop() || "";
       if (!reusable && start > 0) lines.shift();
       const record = reusable ? cached.record : {
         file: original,
@@ -149,6 +153,10 @@ export class RolloutSnapshots {
         }
         projectRow(record, row, notifications, thread.id);
       }
+      // Keep an incomplete final JSONL row for the next tick. Codex normally
+      // appends newline terminated rows, but preserving this fragment avoids
+      // dropping the first delta when a write is observed mid-flush.
+      record.remainder = Buffer.from(trailing, "utf8");
       if (!record.current) return null;
       record.offset = stat.size;
       this.#tailRecords.set(thread.id, { file: original, ino: stat.ino, offset: stat.size, record });

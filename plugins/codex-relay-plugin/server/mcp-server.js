@@ -20173,8 +20173,12 @@ var RolloutSnapshots = class {
       const buffer = Buffer.alloc(stat.size - start);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
       if (!bytesRead) return null;
-      const text3 = buffer.subarray(0, bytesRead).toString("utf8");
+      const text3 = Buffer.concat([
+        reusable ? cached2.record.remainder || Buffer.alloc(0) : Buffer.alloc(0),
+        buffer.subarray(0, bytesRead)
+      ]).toString("utf8");
       const lines = text3.split("\n");
+      const trailing = lines.pop() || "";
       if (!reusable && start > 0) lines.shift();
       const record2 = reusable ? cached2.record : {
         file: original,
@@ -20205,6 +20209,7 @@ var RolloutSnapshots = class {
         }
         projectRow(record2, row, notifications, thread.id);
       }
+      record2.remainder = Buffer.from(trailing, "utf8");
       if (!record2.current) return null;
       record2.offset = stat.size;
       this.#tailRecords.set(thread.id, { file: original, ino: stat.ino, offset: stat.size, record: record2 });
@@ -25296,8 +25301,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error2) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error2.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260913093231";
-    const runningBuild = "1.0.0+codex.20260913093231:1789291978891";
+    const runningVersion = "1.0.0+codex.20260913094037";
+    const runningBuild = "1.0.0+codex.20260913094037:1789292450640";
     const diskBundle = runningBuild ? await fs13.readFile(path14.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -25677,8 +25682,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260913093231",
-      buildId: "1.0.0+codex.20260913093231:1789291978891",
+      version: "1.0.0+codex.20260913094037",
+      buildId: "1.0.0+codex.20260913094037:1789292450640",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -25838,7 +25843,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260913093231:1789291978891";
+  const expectedBuild = "1.0.0+codex.20260913094037:1789292450640";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

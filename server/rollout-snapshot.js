@@ -32,6 +32,21 @@ export class RolloutSnapshots {
 
   clear() { this.#records.clear(); }
 
+  /**
+   * Returns thread ids present in Codex's rollout directory. This is
+   * read-only and lets the Relay discover tasks created by the official
+   * Desktop App without competing for its App Server writer.
+   */
+  async threadIds() {
+    try {
+      await this.#refreshIndex();
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+    return [...this.#index.keys()];
+  }
+
   async read(thread) {
     if (!thread?.id || !thread.path || !thread.cwd) return null;
     const existing = this.#pending.get(thread.id);

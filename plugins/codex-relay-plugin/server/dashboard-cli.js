@@ -4641,6 +4641,20 @@ var RolloutSnapshots = class {
   clear() {
     this.#records.clear();
   }
+  /**
+   * Returns thread ids present in Codex's rollout directory. This is
+   * read-only and lets the Relay discover tasks created by the official
+   * Desktop App without competing for its App Server writer.
+   */
+  async threadIds() {
+    try {
+      await this.#refreshIndex();
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+    return [...this.#index.keys()];
+  }
   async read(thread) {
     if (!thread?.id || !thread.path || !thread.cwd) return null;
     const existing = this.#pending.get(thread.id);
@@ -5507,6 +5521,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
     const id = normalizeThreadId(threadId);
     const liveRollout = await this.#rollouts.readLatest(id);
     if (liveRollout?.replaced === true && liveRollout.currentTurn?.status === "inProgress") {
+      this.publishRolloutNotifications(liveRollout);
       return {
         thread: applyRolloutSnapshot(
           { id, path: liveRollout.file, cwd: liveRollout.cwd },
@@ -5526,6 +5541,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
       }
       const snapshot = await this.#rollouts.readLatest(id);
       if (!snapshot) throw error;
+      this.publishRolloutNotifications(snapshot);
       return {
         thread: applyRolloutSnapshot(
           { id, path: snapshot.file, cwd: snapshot.cwd },
@@ -5555,6 +5571,7 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
     } catch (error) {
       const snapshot = await this.#rollouts.readLatest(id);
       if (!snapshot) throw error;
+      this.publishRolloutNotifications(snapshot);
       return {
         thread: applyRolloutSnapshot(
           { id, path: snapshot.file, cwd: snapshot.cwd },
@@ -5573,9 +5590,14 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
       includeTurns: Array.isArray(thread.turns)
     });
     const projectedResult = result?.thread ? { ...result, thread: projected } : projected;
-    for (const [method, params] of snapshot.notifications || []) {
-      if (method === "thread/tokenUsage/updated") this.emit("notification", method, params);
-    }
+    this.publishRolloutNotifications(snapshot, {
+      // A replaced journal belongs to a different writer (normally the
+      // official Desktop App), so its lifecycle events are not emitted by
+      // this App Server connection and must be forwarded in full. For the
+      // managed connection itself, preserve token-only reconciliation to
+      // avoid duplicating live notifications.
+      includeLifecycle: snapshot.replaced === true
+    });
     const sourceTurns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
     const targetTurns = Array.isArray(projected.turns) ? projected.turns : [];
     const byId = new Map(targetTurns.map((turn) => [turn?.id, turn]));
@@ -5600,6 +5622,24 @@ var AppServerClient = class _AppServerClient extends EventEmitter2 {
   /** Metadata-only persisted read used by snapshot reconciliation. */
   readThreadStatusSnapshot(threadId) {
     return this.readThreadStatus(threadId, { ensureResumed: false });
+  }
+  /** Read a Desktop rollout without sending a request to the App Server. */
+  async readRolloutSnapshot(threadId) {
+    return this.#rollouts.readLatest(threadId);
+  }
+  async rolloutThreadIds() {
+    return this.#rollouts.threadIds();
+  }
+  /** Publish notifications recovered from an incremental rollout read. */
+  publishRolloutNotifications(snapshot, { includeLifecycle = true } = {}) {
+    if (!snapshot || !Array.isArray(snapshot.notifications)) return;
+    for (const [method, params] of snapshot.notifications) {
+      if (!includeLifecycle && method !== "thread/tokenUsage/updated") continue;
+      this.emit("notification", method, {
+        ...params,
+        ...snapshot.cwd ? { cwd: snapshot.cwd } : {}
+      });
+    }
   }
   /**
    * Ensure this App Server process is subscribed to a historical thread.
@@ -9091,6 +9131,10 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
   #unsupportedNotificationMethods = /* @__PURE__ */ new Set();
   static MAX_THREAD_ACCESS_ENTRIES = 1e3;
   static MAX_PENDING_EVENTS = 256;
+  // Rollout files are the only shared source of truth when the official
+  // Desktop App owns its private App Server writer. Keep this short enough
+  // for live mobile output while avoiding a tight filesystem loop.
+  static ROLLOUT_WATCH_INTERVAL_MS = 1e3;
   constructor(options = {}) {
     super();
     this.logger = options.logger || new Logger();
@@ -9118,6 +9162,10 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
     this.#pendingEvents = [];
     this.#eventWorker = null;
     this.#eventQueueOverflowed = false;
+    this.#rolloutWatchTimer = null;
+    this.#rolloutWatchInFlight = false;
+    this.#rolloutWatchGeneration = 0;
+    this.#rolloutWatchFingerprints = /* @__PURE__ */ new Map();
     this.threadAccess = /* @__PURE__ */ new Map();
     this.eventStreamId = randomUUID4();
     this.router = new CommandRouter({
@@ -9154,6 +9202,7 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
     this.dashboard = dashboard2;
   }
   async stop() {
+    this.#stopRolloutWatcher();
     this.#pendingEvents.length = 0;
     this.#eventQueueOverflowed = false;
     await this.disconnect("connector stopped");
@@ -9176,6 +9225,7 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
     }
   }
   async disconnect(reason = "manual disconnect") {
+    this.#stopRolloutWatcher();
     await this.relay.disconnect(reason);
     await this.instanceLock?.release();
     return this.status();
@@ -9256,6 +9306,81 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
   #pendingEvents;
   #eventWorker;
   #eventQueueOverflowed;
+  #rolloutWatchTimer;
+  #rolloutWatchInFlight;
+  #rolloutWatchGeneration;
+  #rolloutWatchFingerprints;
+  #startRolloutWatcher() {
+    if (this.#rolloutWatchTimer || typeof this.appServer.readRolloutSnapshot !== "function") return;
+    const generation = ++this.#rolloutWatchGeneration;
+    const tick = async () => {
+      this.#rolloutWatchTimer = null;
+      if (generation !== this.#rolloutWatchGeneration) return;
+      if (this.relay.state === "connected" && this.appServer.state === "ready" && !this.#rolloutWatchInFlight) {
+        this.#rolloutWatchInFlight = true;
+        try {
+          const ids = await this.appServer.rolloutThreadIds();
+          const batch = ids.slice(0, 100);
+          await Promise.allSettled(batch.map((id) => this.#pollRollout(id)));
+        } catch (error) {
+          this.logger.warn("app-server", "\u684C\u9762\u4EFB\u52A1 rollout \u540C\u6B65\u5931\u8D25", { message: error.message });
+        } finally {
+          this.#rolloutWatchInFlight = false;
+        }
+      }
+      if (generation === this.#rolloutWatchGeneration && this.relay.state === "connected" && this.appServer.state === "ready") {
+        this.#rolloutWatchTimer = setTimeout(tick, _ConnectorService.ROLLOUT_WATCH_INTERVAL_MS);
+        this.#rolloutWatchTimer.unref?.();
+      }
+    };
+    tick().catch((error) => this.logger.warn("app-server", "\u684C\u9762\u4EFB\u52A1 watcher \u5F02\u5E38", { message: error.message }));
+  }
+  #stopRolloutWatcher() {
+    ++this.#rolloutWatchGeneration;
+    clearTimeout(this.#rolloutWatchTimer);
+    this.#rolloutWatchTimer = null;
+    this.#rolloutWatchInFlight = false;
+    this.#rolloutWatchFingerprints.clear();
+  }
+  async #pollRollout(threadId) {
+    const id = String(threadId || "").trim();
+    if (!id) return;
+    const snapshot = await this.appServer.readRolloutSnapshot(id);
+    if (!snapshot) return;
+    this.appServer.publishRolloutNotifications(snapshot);
+    const turn = snapshot.currentTurn;
+    if (!turn || typeof turn !== "object") return;
+    const status = String(turn.status || "").trim();
+    const fingerprint = JSON.stringify([
+      turn.id || "",
+      status,
+      turn.completedAt || null,
+      turn.durationMs || null
+    ]);
+    if (this.#rolloutWatchFingerprints.get(id) === fingerprint) return;
+    this.#rolloutWatchFingerprints.set(id, fingerprint);
+    const updatedAt = Date.parse(snapshot.updatedAt || "");
+    const active = status === "inProgress" || status === "active" || status === "running";
+    const recent = Number.isFinite(updatedAt) && Date.now() - updatedAt < 2 * 60 * 1e3;
+    if (!active && !recent) return;
+    this.#enqueueEvent(
+      {
+        type: "thread.updated",
+        sourceMethod: "rollout.watch",
+        data: {
+          threadId: id,
+          cwd: snapshot.cwd,
+          status: { type: active ? "active" : status || "idle" },
+          currentTurn: { ...turn, items: [] }
+        }
+      },
+      {
+        threadId: id,
+        cwd: snapshot.cwd,
+        turn: { ...turn, items: [] }
+      }
+    );
+  }
   #resetEventStream() {
     this.eventBuffer.invalidateReplay();
     this.eventStreamId = randomUUID4();
@@ -9336,7 +9461,8 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
         bufferedBytes: this.eventBuffer.bytes,
         threadAccessEntries: this.threadAccess.size,
         pendingEventQueue: this.#pendingEvents.length,
-        eventQueueOverflowed: this.#eventQueueOverflowed
+        eventQueueOverflowed: this.#eventQueueOverflowed,
+        rolloutWatcher: Boolean(this.#rolloutWatchTimer || this.#rolloutWatchInFlight)
       },
       dashboard: this.dashboard?.status() || { state: "stopped", url: null }
     };
@@ -9445,6 +9571,7 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
       }
     });
     this.relay.on("connected", async () => {
+      this.#startRolloutWatcher();
       this.relay.send({
         version: 1,
         type: "host.snapshot",
@@ -9456,6 +9583,7 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
     });
     this.relay.on("status", (status) => this.emit("status", status));
     this.relay.on("disconnected", () => {
+      this.#stopRolloutWatcher();
       this.instanceLock?.release().catch((error) => {
         this.logger.warn("connector", "\u91CA\u653E Connector \u5B9E\u4F8B\u9501\u5931\u8D25", { message: error.message });
       });
@@ -9695,8 +9823,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260913065230";
-    const runningBuild = "1.0.0+codex.20260913065230:1789282363340";
+    const runningVersion = "1.0.0+codex.20260913091346";
+    const runningBuild = "1.0.0+codex.20260913091346:1789290840267";
     const diskBundle = runningBuild ? await fs13.readFile(path14.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -10076,8 +10204,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260913065230",
-      buildId: "1.0.0+codex.20260913065230:1789282363340",
+      version: "1.0.0+codex.20260913091346",
+      buildId: "1.0.0+codex.20260913091346:1789290840267",
       ...dashboard2.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);
@@ -10237,7 +10365,7 @@ async function ensureAgent(options = {}) {
   const configStore = options.configStore || new ConfigStore();
   const configDir = configStore.configDir;
   let existing = await readRuntimeInfo(configDir);
-  const expectedBuild = "1.0.0+codex.20260913065230:1789282363340";
+  const expectedBuild = "1.0.0+codex.20260913091346:1789290840267";
   if (existing && expectedBuild && existing.buildId !== expectedBuild) {
     await retireAgent(existing.pid, configDir, options.timeoutMs);
     existing = null;

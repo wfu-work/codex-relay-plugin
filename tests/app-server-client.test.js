@@ -261,6 +261,37 @@ test("status reads recover a desktop-owned active turn when the Relay index miss
   assert.equal(result.thread.currentTurn.status, "inProgress");
 });
 
+test("rollout watcher publishes incremental Desktop lifecycle notifications", async (t) => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "recodex-rollout-watch-"));
+  const cwd = path.join(codexHome, "project");
+  const sessions = path.join(codexHome, "sessions");
+  const threadId = "55555555-5555-4555-8555-555555555555";
+  const turnId = "66666666-6666-4666-8666-666666666666";
+  const file = path.join(sessions, `rollout-2026-09-13T12-00-00-${threadId}.jsonl`);
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(sessions, { recursive: true });
+  const row = (payload, timestamp) => JSON.stringify({ type: "event_msg", timestamp, payload });
+  await fs.writeFile(file, [
+    JSON.stringify({ type: "session_meta", timestamp: "2026-09-13T12:00:00.000Z", payload: { id: threadId, cwd } }),
+    row({ type: "task_started", thread_id: threadId, turn_id: turnId, started_at: 1 }, "2026-09-13T12:00:01.000Z"),
+  ].join("\n") + "\n");
+  const configStore = { get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }) };
+  const client = new AppServerClient(configStore, new Logger(), { codexHome });
+  const notifications = [];
+  client.on("notification", (method, params) => notifications.push([method, params]));
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+
+  const first = await client.readRolloutSnapshot(threadId);
+  assert.equal(first.currentTurn.id, turnId);
+  await fs.appendFile(file, row({ type: "item_started", thread_id: threadId, turn_id: turnId, item: { id: "item-1", type: "AgentMessage", content: [{ type: "Text", text: "hello" }] } }, "2026-09-13T12:00:02.000Z") + "\n");
+  const second = await client.readRolloutSnapshot(threadId);
+  client.publishRolloutNotifications(second);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0][0], "item/started");
+  assert.equal(notifications[0][1].threadId, threadId);
+  assert.equal(notifications[0][1].cwd, cwd);
+});
+
 test("thread catalog collapses duplicate ids across persisted pages", async () => {
   const configStore = {
     get: () => ({ codex: { executable: "codex", defaultWorkingDirectory: "" } }),

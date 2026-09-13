@@ -19,6 +19,10 @@ export class ConnectorService extends EventEmitter {
   #unsupportedNotificationMethods = new Set();
   static MAX_THREAD_ACCESS_ENTRIES = 1000;
   static MAX_PENDING_EVENTS = 256;
+  // Rollout files are the only shared source of truth when the official
+  // Desktop App owns its private App Server writer. Keep this short enough
+  // for live mobile output while avoiding a tight filesystem loop.
+  static ROLLOUT_WATCH_INTERVAL_MS = 1000;
 
   constructor(options = {}) {
     super();
@@ -47,6 +51,10 @@ export class ConnectorService extends EventEmitter {
     this.#pendingEvents = [];
     this.#eventWorker = null;
     this.#eventQueueOverflowed = false;
+    this.#rolloutWatchTimer = null;
+    this.#rolloutWatchInFlight = false;
+    this.#rolloutWatchGeneration = 0;
+    this.#rolloutWatchFingerprints = new Map();
     this.threadAccess = new Map();
     this.eventStreamId = randomUUID();
     this.router = new CommandRouter({
@@ -86,6 +94,7 @@ export class ConnectorService extends EventEmitter {
   }
 
   async stop() {
+    this.#stopRolloutWatcher();
     this.#pendingEvents.length = 0;
     this.#eventQueueOverflowed = false;
     await this.disconnect("connector stopped");
@@ -113,6 +122,7 @@ export class ConnectorService extends EventEmitter {
   }
 
   async disconnect(reason = "manual disconnect") {
+    this.#stopRolloutWatcher();
     await this.relay.disconnect(reason);
     await this.instanceLock?.release();
     return this.status();
@@ -202,6 +212,97 @@ export class ConnectorService extends EventEmitter {
   #pendingEvents;
   #eventWorker;
   #eventQueueOverflowed;
+  #rolloutWatchTimer;
+  #rolloutWatchInFlight;
+  #rolloutWatchGeneration;
+  #rolloutWatchFingerprints;
+
+  #startRolloutWatcher() {
+    if (this.#rolloutWatchTimer || typeof this.appServer.readRolloutSnapshot !== "function") return;
+    const generation = ++this.#rolloutWatchGeneration;
+    const tick = async () => {
+      this.#rolloutWatchTimer = null;
+      if (generation !== this.#rolloutWatchGeneration) return;
+      if (this.relay.state === "connected" && this.appServer.state === "ready" && !this.#rolloutWatchInFlight) {
+        this.#rolloutWatchInFlight = true;
+        try {
+          const ids = await this.appServer.rolloutThreadIds();
+          // A large history should never starve the event loop. Rollout reads
+          // are incremental and bounded, so a small concurrent batch keeps
+          // active desktop turns within roughly one second of the phone.
+          // Keep the batch bounded so a machine with a large history does not
+          // starve the Relay event loop. The regular catalog sync still
+          // exposes older tasks on demand.
+          const batch = ids.slice(0, 100);
+          await Promise.allSettled(batch.map(id => this.#pollRollout(id)));
+        } catch (error) {
+          this.logger.warn("app-server", "桌面任务 rollout 同步失败", { message: error.message });
+        } finally {
+          this.#rolloutWatchInFlight = false;
+        }
+      }
+      if (generation === this.#rolloutWatchGeneration && this.relay.state === "connected" && this.appServer.state === "ready") {
+        this.#rolloutWatchTimer = setTimeout(tick, ConnectorService.ROLLOUT_WATCH_INTERVAL_MS);
+        this.#rolloutWatchTimer.unref?.();
+      }
+    };
+    tick().catch(error => this.logger.warn("app-server", "桌面任务 watcher 异常", { message: error.message }));
+  }
+
+  #stopRolloutWatcher() {
+    ++this.#rolloutWatchGeneration;
+    clearTimeout(this.#rolloutWatchTimer);
+    this.#rolloutWatchTimer = null;
+    this.#rolloutWatchInFlight = false;
+    this.#rolloutWatchFingerprints.clear();
+  }
+
+  async #pollRollout(threadId) {
+    const id = String(threadId || "").trim();
+    if (!id) return;
+    const snapshot = await this.appServer.readRolloutSnapshot(id);
+    if (!snapshot) return;
+    // readLatest returns only rows appended since the previous read. The
+    // AppServerClient emits those rows as normalized notifications, which
+    // preserves the same path used by managed App Server events.
+    this.appServer.publishRolloutNotifications(snapshot);
+
+    const turn = snapshot.currentTurn;
+    if (!turn || typeof turn !== "object") return;
+    const status = String(turn.status || "").trim();
+    const fingerprint = JSON.stringify([
+      turn.id || "",
+      status,
+      turn.completedAt || null,
+      turn.durationMs || null,
+    ]);
+    if (this.#rolloutWatchFingerprints.get(id) === fingerprint) return;
+    this.#rolloutWatchFingerprints.set(id, fingerprint);
+    const updatedAt = Date.parse(snapshot.updatedAt || "");
+    const active = status === "inProgress" || status === "active" || status === "running";
+    const recent = Number.isFinite(updatedAt) && Date.now() - updatedAt < 2 * 60 * 1000;
+    // Historical completed tasks do not need a synthetic status event. Active
+    // or recently changed rows do, so a newly created Desktop task appears in
+    // the mobile catalog without waiting for its next manual refresh.
+    if (!active && !recent) return;
+    this.#enqueueEvent(
+      {
+        type: "thread.updated",
+        sourceMethod: "rollout.watch",
+        data: {
+          threadId: id,
+          cwd: snapshot.cwd,
+          status: { type: active ? "active" : status || "idle" },
+          currentTurn: { ...turn, items: [] },
+        },
+      },
+      {
+        threadId: id,
+        cwd: snapshot.cwd,
+        turn: { ...turn, items: [] },
+      },
+    );
+  }
 
   #resetEventStream() {
     this.eventBuffer.invalidateReplay();
@@ -290,6 +391,7 @@ export class ConnectorService extends EventEmitter {
         threadAccessEntries: this.threadAccess.size,
         pendingEventQueue: this.#pendingEvents.length,
         eventQueueOverflowed: this.#eventQueueOverflowed,
+        rolloutWatcher: Boolean(this.#rolloutWatchTimer || this.#rolloutWatchInFlight),
       },
       dashboard: this.dashboard?.status() || { state: "stopped", url: null },
     };
@@ -414,6 +516,7 @@ export class ConnectorService extends EventEmitter {
       }
     });
     this.relay.on("connected", async () => {
+      this.#startRolloutWatcher();
       this.relay.send({
         version: 1,
         type: "host.snapshot",
@@ -425,6 +528,7 @@ export class ConnectorService extends EventEmitter {
     });
     this.relay.on("status", (status) => this.emit("status", status));
     this.relay.on("disconnected", () => {
+      this.#stopRolloutWatcher();
       this.instanceLock?.release().catch((error) => {
         this.logger.warn("connector", "释放 Connector 实例锁失败", { message: error.message });
       });

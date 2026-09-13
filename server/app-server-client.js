@@ -423,6 +423,7 @@ export class AppServerClient extends EventEmitter {
     // active turns; completed tasks still use the normal full-history path.
     const liveRollout = await this.#rollouts.readLatest(id);
     if (liveRollout?.replaced === true && liveRollout.currentTurn?.status === "inProgress") {
+      this.publishRolloutNotifications(liveRollout);
       return {
         thread: applyRolloutSnapshot(
           { id, path: liveRollout.file, cwd: liveRollout.cwd },
@@ -446,6 +447,7 @@ export class AppServerClient extends EventEmitter {
         // so the phone keeps its lifecycle and latest output in sync.
         const snapshot = await this.#rollouts.readLatest(id);
         if (!snapshot) throw error;
+        this.publishRolloutNotifications(snapshot);
         return {
           thread: applyRolloutSnapshot(
             { id, path: snapshot.file, cwd: snapshot.cwd },
@@ -480,6 +482,7 @@ export class AppServerClient extends EventEmitter {
       // newer active turn on the phone.
       const snapshot = await this.#rollouts.readLatest(id);
       if (!snapshot) throw error;
+      this.publishRolloutNotifications(snapshot);
       return {
         thread: applyRolloutSnapshot(
           { id, path: snapshot.file, cwd: snapshot.cwd },
@@ -514,9 +517,14 @@ export class AppServerClient extends EventEmitter {
 
     // Replay newly appended token_count rows immediately. The App Server may
     // not emit them to this connection when Desktop owns the writer.
-    for (const [method, params] of snapshot.notifications || []) {
-      if (method === "thread/tokenUsage/updated") this.emit("notification", method, params);
-    }
+    this.publishRolloutNotifications(snapshot, {
+      // A replaced journal belongs to a different writer (normally the
+      // official Desktop App), so its lifecycle events are not emitted by
+      // this App Server connection and must be forwarded in full. For the
+      // managed connection itself, preserve token-only reconciliation to
+      // avoid duplicating live notifications.
+      includeLifecycle: snapshot.replaced === true,
+    });
 
     const sourceTurns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
     const targetTurns = Array.isArray(projected.turns) ? projected.turns : [];
@@ -544,6 +552,27 @@ export class AppServerClient extends EventEmitter {
   /** Metadata-only persisted read used by snapshot reconciliation. */
   readThreadStatusSnapshot(threadId) {
     return this.readThreadStatus(threadId, { ensureResumed: false });
+  }
+
+  /** Read a Desktop rollout without sending a request to the App Server. */
+  async readRolloutSnapshot(threadId) {
+    return this.#rollouts.readLatest(threadId);
+  }
+
+  async rolloutThreadIds() {
+    return this.#rollouts.threadIds();
+  }
+
+  /** Publish notifications recovered from an incremental rollout read. */
+  publishRolloutNotifications(snapshot, { includeLifecycle = true } = {}) {
+    if (!snapshot || !Array.isArray(snapshot.notifications)) return;
+    for (const [method, params] of snapshot.notifications) {
+      if (!includeLifecycle && method !== "thread/tokenUsage/updated") continue;
+      this.emit("notification", method, {
+        ...params,
+        ...(snapshot.cwd ? { cwd: snapshot.cwd } : {}),
+      });
+    }
   }
 
   /**

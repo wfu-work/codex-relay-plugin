@@ -233,7 +233,10 @@ export class ConnectorService extends EventEmitter {
           // Keep the batch bounded so a machine with a large history does not
           // starve the Relay event loop. The regular catalog sync still
           // exposes older tasks on demand.
-          const batch = ids.slice(0, 100);
+          // Only the newest journals can contain a live Desktop turn. A
+          // bounded batch prevents a large historical Codex directory from
+          // monopolising the event loop and Relay queue.
+          const batch = ids.slice(0, 24);
           await Promise.allSettled(batch.map(id => this.#pollRollout(id)));
         } catch (error) {
           this.logger.warn("app-server", "桌面任务 rollout 同步失败", { message: error.message });
@@ -262,13 +265,17 @@ export class ConnectorService extends EventEmitter {
     if (!id) return;
     const snapshot = await this.appServer.readRolloutSnapshot(id);
     if (!snapshot) return;
-    // readLatest returns only rows appended since the previous read. The
-    // AppServerClient emits those rows as normalized notifications, which
-    // preserves the same path used by managed App Server events.
-    this.appServer.publishRolloutNotifications(snapshot);
-
     const turn = snapshot.currentTurn;
     if (!turn || typeof turn !== "object") return;
+    const alreadyObserved = this.#rolloutWatchFingerprints.has(id);
+    // The first read is a snapshot of an existing Desktop journal. Never
+    // replay its historical tail into the Relay event queue: the phone can
+    // hydrate that history when it opens the task, while replaying it here
+    // causes queue bursts and makes old tokens appear to refresh forever.
+    // Once observed, RolloutSnapshots returns only appended rows.
+    if (alreadyObserved || snapshot.replaced !== true) {
+      this.appServer.publishRolloutNotifications(snapshot);
+    }
     const status = String(turn.status || "").trim();
     const fingerprint = JSON.stringify([
       turn.id || "",

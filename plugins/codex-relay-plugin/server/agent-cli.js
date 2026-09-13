@@ -4037,6 +4037,10 @@ var RolloutSnapshots = class {
   #indexedAt = 0;
   #indexing;
   #records = /* @__PURE__ */ new Map();
+  // Large journals are projected from a bounded tail. Keep that projection
+  // and its file offset so the watcher only parses bytes appended since the
+  // previous tick instead of replaying the same tail on every poll.
+  #tailRecords = /* @__PURE__ */ new Map();
   #pending = /* @__PURE__ */ new Map();
   constructor({ codexHome = process.env.CODEX_HOME || path2.join(os2.homedir(), ".codex"), indexIntervalMs = 2e3 } = {}) {
     this.#root = path2.join(codexHome, "sessions");
@@ -4044,6 +4048,7 @@ var RolloutSnapshots = class {
   }
   clear() {
     this.#records.clear();
+    this.#tailRecords.clear();
   }
   /**
    * Returns thread ids present in Codex's rollout directory. This is
@@ -4057,7 +4062,7 @@ var RolloutSnapshots = class {
       if (error?.code === "ENOENT") return [];
       throw error;
     }
-    return [...this.#index.keys()];
+    return [...this.#index.keys()].sort((a, b) => String(this.#index.get(b)?.[0] || "").localeCompare(String(this.#index.get(a)?.[0] || "")));
   }
   async read(thread) {
     if (!thread?.id || !thread.path || !thread.cwd) return null;
@@ -4108,18 +4113,20 @@ var RolloutSnapshots = class {
     const handle = await fs.open(original, "r");
     try {
       const stat = await handle.stat();
-      const start = Math.max(0, stat.size - MAX_TAIL_READ_BYTES);
+      const cached = this.#tailRecords.get(thread.id);
+      const reusable = cached && cached.file === original && cached.ino === stat.ino && stat.size >= cached.offset;
+      const start = reusable ? cached.offset : Math.max(0, stat.size - MAX_TAIL_READ_BYTES);
       const buffer = Buffer.alloc(stat.size - start);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
       if (!bytesRead) return null;
       const text3 = buffer.subarray(0, bytesRead).toString("utf8");
       const lines = text3.split("\n");
-      if (start > 0) lines.shift();
-      const record = {
+      if (!reusable && start > 0) lines.shift();
+      const record = reusable ? cached.record : {
         file: original,
         cwd: path2.resolve(thread.cwd),
         ino: stat.ino,
-        offset: stat.size,
+        offset: start,
         remainder: Buffer.alloc(0),
         turns: [],
         current: null,
@@ -4145,6 +4152,8 @@ var RolloutSnapshots = class {
         projectRow(record, row, notifications, thread.id);
       }
       if (!record.current) return null;
+      record.offset = stat.size;
+      this.#tailRecords.set(thread.id, { file: original, ino: stat.ino, offset: stat.size, record });
       return {
         file: original,
         cwd: record.cwd,
@@ -4152,7 +4161,10 @@ var RolloutSnapshots = class {
         currentTurn: structuredClone(record.current),
         updatedAt: record.updatedAt,
         notifications,
-        replaced: true
+        // A bounded tail is a replacement projection only on its first read.
+        // Subsequent reads contain appended rows and can be forwarded as
+        // ordinary deltas without replaying historical events.
+        replaced: !reusable
       };
     } finally {
       await handle.close();
@@ -9315,7 +9327,7 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
         this.#rolloutWatchInFlight = true;
         try {
           const ids = await this.appServer.rolloutThreadIds();
-          const batch = ids.slice(0, 100);
+          const batch = ids.slice(0, 24);
           await Promise.allSettled(batch.map((id) => this.#pollRollout(id)));
         } catch (error) {
           this.logger.warn("app-server", "\u684C\u9762\u4EFB\u52A1 rollout \u540C\u6B65\u5931\u8D25", { message: error.message });
@@ -9342,9 +9354,12 @@ var ConnectorService = class _ConnectorService extends EventEmitter5 {
     if (!id) return;
     const snapshot = await this.appServer.readRolloutSnapshot(id);
     if (!snapshot) return;
-    this.appServer.publishRolloutNotifications(snapshot);
     const turn = snapshot.currentTurn;
     if (!turn || typeof turn !== "object") return;
+    const alreadyObserved = this.#rolloutWatchFingerprints.has(id);
+    if (alreadyObserved || snapshot.replaced !== true) {
+      this.appServer.publishRolloutNotifications(snapshot);
+    }
     const status = String(turn.status || "").trim();
     const fingerprint = JSON.stringify([
       turn.id || "",
@@ -9818,8 +9833,8 @@ var EnvironmentService = class {
       this.remoteControl?.inspect ? Promise.resolve().then(() => this.remoteControl.inspect()).catch((error) => ({ checkedAt, official: { state: "error", installed: false, reason: clean(error.message) }, bridge: { state: "blocked", attachable: false, endpoint: null, reason: "Remote Control \u72B6\u6001\u68C0\u67E5\u5931\u8D25" } })) : Promise.resolve(null)
     ]);
     const status = await this.service.status();
-    const runningVersion = "1.0.0+codex.20260913091346";
-    const runningBuild = "1.0.0+codex.20260913091346:1789290840267";
+    const runningVersion = "1.0.0+codex.20260913093231";
+    const runningBuild = "1.0.0+codex.20260913093231:1789291978891";
     const diskBundle = runningBuild ? await fs13.readFile(path14.join(this.pluginRoot, "server/agent-cli.js"), "utf8").catch(() => null) : null;
     const needsRestart = runningBuild && diskBundle !== null ? !diskBundle.includes(JSON.stringify(runningBuild)) : installed?.version && runningVersion !== "development" ? installed.version !== runningVersion : null;
     const owned = processes.items.filter((p) => p.scope === "same" && (p.kind === "backend" || p.kind === "relay"));
@@ -10199,8 +10214,8 @@ async function getRuntime() {
       pid: process.pid,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       generation: crypto7.randomUUID(),
-      version: "1.0.0+codex.20260913091346",
-      buildId: "1.0.0+codex.20260913091346:1789290840267",
+      version: "1.0.0+codex.20260913093231",
+      buildId: "1.0.0+codex.20260913093231:1789291978891",
       ...dashboard.connectionInfo()
     };
     await writeRuntimeInfo(configStore.configDir, info);

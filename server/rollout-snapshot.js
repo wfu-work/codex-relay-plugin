@@ -23,6 +23,10 @@ export class RolloutSnapshots {
   #indexedAt = 0;
   #indexing;
   #records = new Map();
+  // Large journals are projected from a bounded tail. Keep that projection
+  // and its file offset so the watcher only parses bytes appended since the
+  // previous tick instead of replaying the same tail on every poll.
+  #tailRecords = new Map();
   #pending = new Map();
 
   constructor({ codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), indexIntervalMs = 2000 } = {}) {
@@ -30,7 +34,7 @@ export class RolloutSnapshots {
     this.indexIntervalMs = indexIntervalMs;
   }
 
-  clear() { this.#records.clear(); }
+  clear() { this.#records.clear(); this.#tailRecords.clear(); }
 
   /**
    * Returns thread ids present in Codex's rollout directory. This is
@@ -44,7 +48,11 @@ export class RolloutSnapshots {
       if (error?.code === "ENOENT") return [];
       throw error;
     }
-    return [...this.#index.keys()];
+    // Journal names contain the creation timestamp. Poll newest tasks first
+    // so an active Desktop turn is observed within one watcher interval even
+    // when the machine has years of historical sessions.
+    return [...this.#index.keys()].sort((a, b) =>
+      String(this.#index.get(b)?.[0] || "").localeCompare(String(this.#index.get(a)?.[0] || "")));
   }
 
   async read(thread) {
@@ -104,7 +112,9 @@ export class RolloutSnapshots {
     const handle = await fs.open(original, "r");
     try {
       const stat = await handle.stat();
-      const start = Math.max(0, stat.size - MAX_TAIL_READ_BYTES);
+      const cached = this.#tailRecords.get(thread.id);
+      const reusable = cached && cached.file === original && cached.ino === stat.ino && stat.size >= cached.offset;
+      const start = reusable ? cached.offset : Math.max(0, stat.size - MAX_TAIL_READ_BYTES);
       const buffer = Buffer.alloc(stat.size - start);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
       if (!bytesRead) return null;
@@ -112,12 +122,12 @@ export class RolloutSnapshots {
       // The first line is usually a fragment when the bounded window starts
       // in the middle of a JSONL record. Discard it and parse complete rows.
       const lines = text.split("\n");
-      if (start > 0) lines.shift();
-      const record = {
+      if (!reusable && start > 0) lines.shift();
+      const record = reusable ? cached.record : {
         file: original,
         cwd: path.resolve(thread.cwd),
         ino: stat.ino,
-        offset: stat.size,
+        offset: start,
         remainder: Buffer.alloc(0),
         turns: [],
         current: null,
@@ -140,6 +150,8 @@ export class RolloutSnapshots {
         projectRow(record, row, notifications, thread.id);
       }
       if (!record.current) return null;
+      record.offset = stat.size;
+      this.#tailRecords.set(thread.id, { file: original, ino: stat.ino, offset: stat.size, record });
       return {
         file: original,
         cwd: record.cwd,
@@ -147,7 +159,10 @@ export class RolloutSnapshots {
         currentTurn: structuredClone(record.current),
         updatedAt: record.updatedAt,
         notifications,
-        replaced: true,
+        // A bounded tail is a replacement projection only on its first read.
+        // Subsequent reads contain appended rows and can be forwarded as
+        // ordinary deltas without replaying historical events.
+        replaced: !reusable,
       };
     } finally { await handle.close(); }
   }

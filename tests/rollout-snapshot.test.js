@@ -61,6 +61,19 @@ test("readLatest recovers the newest turn when a journal contains oversized comp
     assert.ok(snapshot);
     assert.equal(snapshot.currentTurn.id, turn);
     assert.equal(snapshot.currentTurn.status, "inProgress");
+    await fs.appendFile(file, JSON.stringify({
+      type: "event_msg",
+      timestamp: "2026-09-13T12:00:02.000Z",
+      payload: {
+        type: "item_started",
+        thread_id: id,
+        turn_id: turn,
+        item: { id: "item-1", type: "AgentMessage", content: [{ type: "Text", text: "delta" }] },
+      },
+    }) + "\n");
+    const delta = await snapshots.readLatest(id);
+    assert.equal(delta.replaced, false);
+    assert.deepEqual(delta.notifications.map(([method]) => method), ["item/started"]);
   } finally {
     await fs.rm(codexHome, { recursive: true, force: true });
   }
